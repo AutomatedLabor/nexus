@@ -1,660 +1,370 @@
-# Ownership, Borrowing, and Memory in Aether
+# Ownership, borrowing, and memory — honestly
 
-> Audience: anyone wondering where Aether's borrow checker is.
-> Prerequisites: a passing familiarity with Rust, Swift, or Go's
-> GC. 30 minutes.
+> Audience: you've heard Aether is "Rust-like" and you want to know about ownership.
+> **Short version:** Aether v1 has GC and immutability-by-default — *no borrow checker*. The v2 plan adds an affine type system with ownership and borrow checking. This tutorial is honest about v1 and the v2 design.
 
-This tutorial is **honest** about Aether v1's memory model. Aether
-v1 has **no ownership system, no borrow checker, no lifetimes**.
-Memory is managed by a garbage collector. Mutability is opt-in via
-`let mut`. There are no null-pointer dereferences because `Option`
-replaces null. There is no `unsafe`. This is the *current* reality,
-and this document is structured around it.
+This tutorial covers what Aether v1 *does* have (garbage collection, immutable-by-default bindings, `mut` annotations, the `Option`/`Result` discipline that replaces null), what it *deliberately doesn't* have (a borrow checker, lifetime parameters, affine types, move semantics), and the v2 plan that introduces them — sketching the intended syntax, the trade-offs, and the relationship to the existing AST.
 
-For the v2 plan — affine types, borrow checking, lifetimes — see
-[../rfcs/rfc-004-borrow-checker.md](../rfcs/rfc-004-borrow-checker.md).
-For the design rationale behind "GC for v1, ownership for v2",
-see
-[../decisions/adr-06-gc-over-borrow-checker-for-v1.md](../decisions/adr-06-gc-over-borrow-checker-for-v1.md).
+---
 
-## 1. The v1 reality
+## 1. The honest summary
 
-Aether v1's memory model has three properties:
+Aether v1 is **garbage-collected**. Every Aether value lives in the host JavaScript runtime's heap, and the JS garbage collector reclaims memory when no Aether reference holds it. There is no `free()`, no `drop`, no `Box`, no manual memory management. The v1 evaluator (in `aether/core/eval/eval.ts`) is a tree-walker: every binding lives in an `Env` (a lexical scope chain), every closure holds a reference to its `Env`, and the JS GC handles the rest.
 
-1. **Garbage collection.** All heap-allocated values (strings,
-   arrays, maps, closures, structs, enum variants) are managed
-   by a garbage collector (the host JavaScript runtime's GC, in
-   v1). You do not free memory; the GC reclaims unreachable
-   objects automatically.
-2. **Immutability by default.** A `let` binding is read-only. A
-   `let mut` binding is read-write. A `const` binding is a
-   compile-time constant.
-3. **No nulls, no exceptions.** The language uses `Option<T>` for
-   "may be absent" and `Result<T, E>` for "may fail". There is no
-   `null` value and no `throw`/`catch`.
+Aether v1 is **immutable by default**. `let x = ...` introduces a binding you cannot reassign. `let mut x = ...` lets you reassign `x` itself. There is no "borrowed reference" (`&x`), no "mutable reference" (`&mut x`), no "move" — values are *copied* for primitives (int, float, bool, char, unit) and *shared by reference* for compound types (arrays, maps, closures, structs, enum variants). Sharing is fine because there's no mutation to coordinate (except through the binding's own `let mut`).
 
-These three properties together make Aether v1 "safe by default"
-in a meaningful sense: you cannot dereference null, you cannot
-use-after-free (because there is no `free`), you cannot double-free
-(because there is no `free`), and you cannot forget to handle an
-error (because `Result` is a value and `?` propagates).
+Aether v1 has **no `unsafe`**, **no FFI**, and **no raw pointers**. A program cannot, by construction, read freed memory, double-free, or have a use-after-free. The trade-off: no zero-cost abstractions over memory layout, no control over allocation, no `Drop` trait. Performance is the host JS engine's performance; pause times are the host GC's pause times.
 
-What v1 *does not* have:
+The v2 plan (see [RFC-004 borrow checker](../rfcs/rfc-004-borrow-checker.md)) introduces an **affine type system** with ownership, borrowing, and lifetimes — closer to Rust. v2 will be opt-in per module, so v1 code keeps running on the GC runtime. We sketch the v2 syntax in §4.
 
-- **No borrow checker.** You can have as many references to a
-  value as you want. The compiler does not track them. You can
-  mutate through one while another reads.
-- **No lifetimes.** A value lives as long as it is reachable from
-  a root. There is no `'a` syntax.
-- **No move semantics.** All values are reference types in v1.
-  Assigning a value to a variable copies the reference, not the
-  value. The GC reclaims the value when no references remain.
-- **No affine types.** A `let` binding can be used zero, one, or
-  many times. The compiler does not enforce "use exactly once".
+---
 
-## 2. The v2 plan
+## 2. What v1 actually has
 
-The v2 plan adds an **affine type system** and a **borrow checker**
-to Aether. The design is sketched in
-[../rfcs/rfc-004-borrow-checker.md](../rfcs/rfc-004-borrow-checker.md).
-The high-level shape is:
+### Garbage collection (host GC)
 
-- **Affine types.** Each value has an *affinity*: copyable,
-  movable, or unique. Most values are movable. `Copy` types (like
-  `int`, `bool`, `char`) can be duplicated. Unique types (like
-  `Channel<T>` handles) can be used exactly once.
-- **Borrow check.** A `&T` reference is a shared borrow; a
-  `&mut T` reference is an exclusive borrow. The compiler
-  enforces "many readers XOR one writer".
-- **Lifetimes.** Each reference has a lifetime, written `'a`. The
-  compiler infers lifetimes in most cases; explicit annotations
-  are needed only for function signatures that take or return
-  references.
-- **Move semantics.** Assigning a non-`Copy` value moves it; the
-  old binding is no longer usable. For an explicit copy, use
-  `clone()`.
+Aether v1's runtime is the JavaScript runtime. Every Aether value is a JS value: `int`/`float` are `number`, `string` is `string`, `bool` is `boolean`, `()` is `null`, arrays are `Array`, maps are `Map`, structs are `{ __struct: name, fields: {...} }`, enum variants are `{ __variant: name, variant: ..., data: [...] }`, closures are `{ __closure: ..., fn: FnDecl, env: Env }`. (See the `Value` type in `aether/core/eval/eval.ts`.) Memory management is delegated entirely to the JS GC.
 
-This v2 design is closer to Rust's ownership system than to Go's
-GC or Swift's ARC. The plan is to ship it as an opt-in mode in v2
-and the default in v3, with the GC remaining for backward
-compatibility and for code that does not need the borrow checker.
+This is documented in [ADR-06 GC over borrow checker for v1](../decisions/adr-06-gc-over-borrow-checker-for-v1.md). The decision was: for a teaching playground and a weekend-of-work v1 implementation, a borrow checker is the wrong cost/benefit. The borrow checker would have doubled the implementation size, would have made every tutorial example fail with a confusing lifetime error before getting to the actual point, and would have been largely irrelevant for the small programs the playground is for. The v2 plan brings it in carefully (RFC-004), keeping v1 working.
 
-Why the split? Because building a borrow checker is a multi-year
-project, and Aether v1 was supposed to ship *something runnable*
-in a weekend. The GC was the right choice for v1; the borrow
-checker is the right choice for v2. See
-[../decisions/adr-06-gc-over-borrow-checker-for-v1.md](../decisions/adr-06-gc-over-borrow-checker-for-v1.md)
-for the full argument.
-
-The rest of this document describes the **v1 reality** in detail
-and points at the **v2 plan** where appropriate.
-
-## 3. Safe by default in v1
-
-"Safe by default" in v1 means four concrete things.
-
-### 3.1 Immutability by default
-
-`let` bindings are immutable. To mutate, you must write `let mut`.
-This makes mutation explicit at the binding site, which makes code
-easier to read and reason about:
+### Immutable by default
 
 ```aether
 let x = 42;
-x = 43;
-// → cannot assign to immutable variable 'x'
+// x = 43;       // ERROR: cannot assign to immutable variable 'x'
+
+let mut y = 0;
+y = y + 1;       // OK
+print(y);        // 1
 ```
 
-```aether
-let mut y = 42;
-y = 43;   // OK
-print(y);   // → 43
+`let` introduces an immutable binding — the *binding* is immutable, the *value* may still be a mutable object. `let mut` introduces a mutable binding.
+
+The type checker's check is in `aether/core/sema/sema.ts`:
+
+```ts
+if (info.kind !== "param") this.err(`cannot assign to immutable variable '${base.name}'`, s.loc);
 ```
 
-The type checker enforces this at compile time. There is no
-runtime cost — the immutability check happens entirely in
-`aether/core/sema/sema.ts`.
+A function parameter is always mutable (you can reassign it inside the function body) — this is a small ergonomic choice; parameters are local to the function and reassigning them doesn't affect the caller.
 
-This catches a class of bugs: typos that overwrite a value you
-meant to keep, accidental mutation in a closure, and shared-state
-race conditions (in single-threaded v1, this last one is moot, but
-in v2 with async it will matter).
-
-### 3.2 No null via `Option`
-
-There is no `null` literal in Aether. The way to represent "may be
-absent" is `Option<T>`:
-
-```aether
-enum Option<T> { Some(T), None, }
-
-fn lookup(xs: [int], i: int) -> Option<int> {
-  if i < 0 { Option::None }
-  else if i >= len(xs) { Option::None }
-  else { Option::Some(xs[i]) }
-}
-
-match lookup([1, 2, 3], 5) {
-  Option::Some(v) => print(f"found {v}"),
-  Option::None    => print("not found"),
-}
-// → not found
-```
-
-The compiler does not let you use an `Option<T>` as if it were a
-`T`. You must extract the inner value, either by pattern matching
-or by using a function like `unwrap`:
-
-```aether
-let x: Option<int> = Option::Some(42);
-print(x + 1);
-// → operator '+' not defined for Option<int> and int
-```
-
-Compare this to TypeScript, where `x` might be `null` and `x + 1`
-would silently produce `1` or `NaN` at runtime. Aether's static
-check eliminates a whole class of null-pointer bugs.
-
-### 3.3 Error handling via `Result`
-
-Computation that can fail returns `Result<T, E>`. There is no
-`throw`/`catch`:
-
-```aether
-enum Result<T, E> { Ok(T), Err(E), }
-
-fn parse_int(s: string) -> Result<int, string> {
-  // Imagine parsing logic.
-  if s == "42" { Result::Ok(42) } else { Result::Err("not 42") }
-}
-
-match parse_int("42") {
-  Result::Ok(n)   => print(f"got {n}"),
-  Result::Err(e)  => print(f"error: {e}"),
-}
-// → got 42
-```
-
-The `?` operator propagates errors:
-
-```aether
-fn double_it(s: string) -> Result<int, string> {
-  let n = parse_int(s)?;
-  Result::Ok(n * 2)
-}
-
-match double_it("21") {
-  Result::Ok(n)  => print(f"doubled: {n}"),
-  Result::Err(e) => print(f"error: {e}"),
-}
-// → doubled: 42
-```
-
-See [error-handling.md](error-handling.md) for the full
-`Result`/`Option` story.
-
-### 3.4 No `unsafe`, no `free`, no raw pointers
-
-There is no `unsafe` block, no manual `free`, no raw pointer
-arithmetic, no FFI. You cannot shoot yourself in the foot with
-memory safety in Aether v1, because there are no feet-shooting
-tools available.
-
-The trade-off: Aether v1 cannot directly call C libraries, cannot
-allocate raw buffers, cannot write a garbage collector in itself.
-Those are all v2 (and later) concerns. The FFI plan is in
-[../spec/14-interoperability.md](../spec/14-interoperability.md).
-
-## 4. What mutation looks like
-
-Aether v1 has three kinds of mutation:
-
-### 4.1 Reassigning a `let mut` binding
-
-```aether
-let mut x = 0;
-x = x + 1;
-print(x);   // → 1
-```
-
-### 4.2 Compound assignment on a `let mut` binding
-
-```aether
-let mut x = 10;
-x += 5;
-x *= 2;
-print(x);   // → 30
-```
-
-The full set: `+= -= *= /= %= &= |= ^= <<= >>=`.
-
-### 4.3 Index-assigning into an array or map
-
-```aether
-let mut xs = [1, 2, 3];
-xs[1] = 99;
-print(xs);   // → [1, 99, 3]
-
-let mut m = { "a": 1 };
-m["b"] = 2;
-print(m["b"]);   // → 2
-```
-
-The index-assign works because `xs` and `m` are reference types —
-the underlying object is shared, and the binding `xs` is just a
-pointer. In v2 with the borrow checker, you will need to mark the
-binding `mut` to do this (or use a `&mut` reference). In v1, the
-binding does not need to be `mut` for index-assignment because the
-binding itself is not reassigned; the underlying object is mutated
-through the reference.
-
-This is one of the rough edges of v1 that the v2 borrow checker
-will fix. For now, the convention is to use `let mut` for any
-binding you intend to mutate through, even though the compiler
-does not require it.
-
-### 4.4 Mutating struct fields
-
-Struct fields can be mutated through `let mut`:
-
-```aether
-struct Counter { count: int }
-
-let mut c = Counter { count: 0 };
-c.count = c.count + 1;
-c.count = c.count + 1;
-print(c.count);   // → 2
-```
-
-In v1, this works because the struct is a reference type and the
-binding is `mut`. In v2, the struct will need to be declared with
-`mut` fields if you want to mutate them after construction.
-
-## 5. What is shared and what is copied
-
-This is the part that is most different from Rust and most similar
-to JavaScript / Python / Lua.
-
-### 5.1 Reference semantics
-
-Strings, arrays, maps, structs, and enum variants are **reference
-types**. Assigning one to a variable copies the reference, not the
-value. Two variables can refer to the same object:
-
-```aether
-let mut xs = [1, 2, 3];
-let ys = xs;          // ys and xs refer to the same array
-xs[0] = 99;
-print(ys[0]);        // → 99  (ys sees the change!)
-```
-
-In Rust, this code would either move `xs` (and then `xs` would be
-unusable) or borrow `xs` (and then `xs[0] = 99` would require a
-`&mut`). In Aether v1, both `xs` and `ys` are valid, and both see
-the mutation.
-
-This is the JS/Python model. It is simpler to learn, but it
-allows a class of bugs where you accidentally mutate something
-that someone else is reading. The v2 borrow checker will catch
-these at compile time.
-
-### 5.2 Value semantics
-
-Primitives (`int`, `float`, `bool`, `char`, `unit`) have value
-semantics. Assignment copies the value:
-
-```aether
-let x = 42;
-let y = x;
-y = 99;
-print(x);   // → 42  (unchanged)
-print(y);   // → 99
-```
-
-Tuples have value semantics if all their elements do (i.e., if
-they contain only primitives):
-
-```aether
-let p = (1, 2);
-let q = p;
-// ... q.0 = 99 is not allowed anyway because tuples are immutable
-```
-
-### 5.3 Cloning
-
-In v1, there is no `clone()` method; you must clone manually. For
-arrays, the stdlib `collections` module provides a `slice(arr, 0,
-len(arr))` that produces a shallow copy. For maps, you can build
-a new map from the entries:
+### Reference semantics for compound types
 
 ```aether
 let xs = [1, 2, 3];
-let ys = slice(xs, 0, len(xs));
-xs[0] = 99;
-print(ys[0]);    // → 1  (ys is a separate array)
+let ys = xs;          // ys and xs refer to the same array
+let mut xs_mut = xs;
+xs_mut[0] = 99;
+print(xs[0]);        // 99 — xs sees the change!
+print(ys[0]);        // 99 — ys too
 ```
 
-In v2, the plan is to provide a `clone()` method on all types and
-a `Copy` trait that types can implement to indicate that they are
-cheap to copy.
+Arrays, maps, structs, and enum variants are *references* — assigning one to a new binding shares the underlying object. There's no implicit copy.
 
-## 6. Closures and captures
+The immutable-binding rule protects the *binding*, not the *object*: `let xs = [1, 2, 3];` prevents `xs = [...]` but does *not* prevent `xs[0] = 99` (index-assign goes through the binding to the underlying array). To prevent the array itself from being mutated, you'd need a deeper-immutable wrapper, which v1 doesn't provide. (v2's borrow checker would express this as "the binding is a shared reference `&[T]`, not a mutable reference `&mut [T]`" — see §4.)
 
-A closure captures variables from its enclosing scope. In v1, the
-capture is **by reference**: the closure holds a reference to the
-captured variable, and mutations through the closure are visible
-to the outer scope.
+### `Option` and `Result` for safety
+
+Aether has no `null`. The closest thing is the `Option<T>` enum, which explicitly marks "this might not have a value". You can't call `xs[5]` on a 3-element array and get `null` back — you get a panic. You can't dereference a missing map key — `mapGet` panics if the key is absent (use `mapHas` to check first).
+
+```aether
+fn find(xs: [int], target: int) -> Option<int> {
+  let mut i = 0;
+  while i < len(xs) {
+    if xs[i] == target { return Option::Some(i); }
+    i = i + 1;
+  }
+  Option::None
+}
+
+match find([1, 2, 3], 2) {
+  Option::Some(i) => print(f"found at {i}"),
+  Option::None => print("not found"),
+}
+```
+
+`Result<T, E>` is the equivalent for fallible operations — see [error-handling.md](error-handling.md). The combination of "no nulls", "explicit Option/Result", and "panic on programmer errors" is the v1 safety story.
+
+### Panics on programmer errors
+
+```aether
+let xs = [1, 2, 3];
+print(xs[5]);      // panic: array index out of bounds: 5
+panic("oh no");    // panic: oh no
+```
+
+Index out of bounds, missing map key, division by zero, modulo by zero, missing struct field, no match arm matched, the explicit `panic(msg)` call — all of these throw a `PanicSignal` (see `aether/core/eval/eval.ts` for the full list), which is caught at the top level and reported in `runtime.error`. The program aborts; the output captured before the panic is preserved.
+
+There is no `try/catch` in v1 — panics are unrecoverable. The v2 plan adds `Result`-based error recovery (which v1 already has) and a structured-panic mechanism for unrecoverable cases; see [RFC-002 bytecode VM](../rfcs/rfc-002-bytecode-vm.md).
+
+### No `unsafe`, no FFI
+
+Aether v1 has no way to write `unsafe` code, no way to call into JS or C, no way to read raw memory. A program cannot, by construction, have a memory-safety bug. The trade-off is that you can't do low-level systems work in v1: no in-place buffer manipulation, no zero-copy parsing, no SIMD intrinsics. v2's borrow checker (RFC-004) is the foundation that would make a future `unsafe` block meaningful, because it provides the safety baseline that `unsafe` is opting out of.
+
+---
+
+## 3. Why v1 doesn't have a borrow checker
+
+The decision is documented in [ADR-06](../decisions/adr-06-gc-over-borrow-checker-for-v1.md). The short version:
+
+1. **Implementation cost.** A borrow checker is roughly the size of the rest of the compiler. It would have doubled v1's implementation size and pushed the "weekend of work" goal out by months.
+2. **Teaching friction.** Every tutorial example would have to explain lifetimes before it could explain anything else. "Hello, world" would compile but `let s = format("hello, {}", name);` would fail with a borrow error in a beginner's hands.
+3. **Limited upside for v1.** The playground runs small programs in a single tab. Memory leaks are bounded by the tab's lifetime. The JS GC is good enough. Borrow checking buys you performance and predictability, neither of which v1 needs.
+4. **No alternative safety net in place.** Rust's borrow checker is the *only* memory safety mechanism; if you turn it off (`unsafe`), you have nothing. Aether v1's GC plus immutable-by-default plus Option/Result discipline is the safety net — borrow checking is layered on top, not the foundation.
+
+The decision is reversible. The AST is the same; v2 introduces affine types as an opt-in mode per module. v1 code keeps working on the GC runtime; v2 code opts in to the borrow checker and gets the safety/performance benefits. See [RFC-004](../rfcs/rfc-004-borrow-checker.md).
+
+---
+
+## 4. The v2 plan — affine types, borrowing, lifetimes
+
+This is **design-only** — none of the syntax below runs in v1. It's the planned v2 surface, sketched in [RFC-004 borrow checker](../rfcs/rfc-004-borrow-checker.md).
+
+### Affine types
+
+In v2, every value has an *affine* type: it can be used at most once (move semantics), or it can be `Copy` (used many times — primitives, tuples of `Copy` types, etc.). This is Rust's model.
+
+The intended syntax (subject to change — see the RFC for the latest):
+
+```aether
+// v2 sketch — does NOT run in v1
+
+let s = String::from("hello");
+let t = s;        // s moves into t; s is no longer usable
+// print(s);      // ERROR: use of moved value 's'
+print(t);         // OK
+
+let n = 42;
+let m = n;        // n is Copy — n is still usable
+print(n);         // OK
+print(m);         // OK
+```
+
+### References
+
+`&x` is a shared reference (read-only); `&mut x` is a mutable reference (read-write).
+
+```aether
+// v2 sketch
+
+fn sum(xs: &[int]) -> int {                // shared reference to an array
+  let mut acc = 0;
+  for x in xs { acc = acc + x; }
+  acc
+}
+
+fn fill(xs: &mut [int], v: int) {          // mutable reference
+  let mut i = 0;
+  while i < len(xs) {
+    xs[i] = v;
+    i = i + 1;
+  }
+}
+
+let mut arr = [0, 0, 0];
+fill(&mut arr, 99);
+print(sum(&arr));    // 297
+print(arr);         // [99, 99, 99]
+```
+
+### Lifetimes
+
+References have lifetimes — the scope in which the reference is valid. The compiler infers them in most cases; you can write them explicitly when needed.
+
+```aether
+// v2 sketch
+
+struct Parser<'a> {                          // 'a is a lifetime parameter
+  source: &'a string,
+  pos: int,
+}
+
+fn parse<'a>(src: &'a string) -> Parser<'a> {  // Parser borrows from src
+  Parser { source: src, pos: 0 }
+}
+
+let src = String::from("hello, world");
+let p = parse(&src);                          // p borrows src
+// drop(src);                                 // ERROR: src is borrowed by p
+print(p.source);                             // OK
+```
+
+### Drop
+
+When an owned value goes out of scope, its `Drop` implementation runs (if any). For most types this is a no-op; for types that wrap a resource (file handle, socket), it releases the resource.
+
+```aether
+// v2 sketch
+
+fn write_file(path: string) -> Result<(), string> {
+  let f = File::open(path)?;                  // f owns a file handle
+  f.write("hello")?;
+  // f's Drop closes the file here — no explicit close needed
+  Result::Ok(())
+}
+```
+
+### Traits
+
+v2 will introduce traits — named interfaces that types can implement. `Copy`, `Drop`, `Display`, `Ord` are the built-in ones; user-defined traits are coming.
+
+```aether
+// v2 sketch
+
+trait Display {
+  fn fmt(self) -> string;
+}
+
+impl Display for int {
+  fn fmt(self) -> string { str(self) }
+}
+
+fn print_any<T: Display>(x: T) {
+  print(x.fmt());
+}
+```
+
+This is the part of v2 most likely to change shape before implementation. See [RFC-004](../rfcs/rfc-004-borrow-checker.md) for the design discussion.
+
+### Opt-in per module
+
+v2 is designed so that v1 code keeps working. A module without `&`/`&mut`/`lifetime` annotations runs on the GC runtime exactly as v1 does. A module with them opts in to the borrow checker. Mixed modules (some functions borrow-checked, some not) are an open design question.
+
+---
+
+## 5. A v1 idiom that v2 would borrow-check
+
+The classic example: a closure that captures a mutable reference and outlives the data it borrows.
+
+In v1, this just works (because of the GC):
 
 ```aether
 let mut counter = 0;
-let inc = fn() -> int {
+let bump = fn() -> int {
   counter = counter + 1;
   counter
 };
-
-print(inc());   // → 1
-print(inc());   // → 2
-print(inc());   // → 3
-print(counter);  // → 3  (outer scope sees the change)
+// bump captures counter by reference; counter lives as long as bump does
+// because they share the JS GC heap.
+print(bump());  // 1
+print(bump());  // 2
+print(bump());  // 3
 ```
 
-This is the JavaScript model. In v2 with the borrow checker, the
-capture mode will be inferred: `&T` for read-only captures,
-`&mut T` for read-write captures, and `move T` for captures that
-outlive the scope. See
-[../rfcs/rfc-004-borrow-checker.md](../rfcs/rfc-004-borrow-checker.md)
-for the plan.
-
-A common gotcha: a closure that captures a `let mut` variable
-will continue to mutate it after the variable goes out of scope.
-This is fine in v1 because the GC keeps the variable alive; in
-v2, the borrow checker will require the closure to take ownership
-or borrow explicitly.
+In v2, this would have to either (a) move `counter` into the closure (so the closure owns it and the outer scope can't use it anymore), or (b) borrow `counter` with a `&mut` reference (so the closure has a mutable borrow, and the outer scope can't use it while the borrow is alive — i.e., until the closure is dropped). The borrow checker would reject:
 
 ```aether
-fn make_counter() -> fn() -> int {
-  let mut counter = 0;
+// v2 sketch — won't compile
+
+let mut counter = 0;
+let bump = fn() -> int {
+  counter = counter + 1;     // borrows counter mutably
+  counter
+};
+print(counter);              // ERROR: counter is borrowed by bump
+print(bump());               // OK
+```
+
+because `counter` is borrowed by `bump` when we try to read it. The v1 GC version doesn't have this problem because there's no borrow tracking. The trade-off: the v1 version is easier to write, the v2 version is easier to reason about (you know `counter` isn't being mutated behind your back, because the borrow checker enforced it).
+
+This is the *honest* version of the v1/v2 story: v1 doesn't have this problem because it doesn't try to solve it. The borrow checker in v2 is the price you pay for the safety guarantees.
+
+---
+
+## 6. When does the GC actually run?
+
+Aether v1 doesn't run the GC — the host JS engine does. Aether programs allocate JS objects (arrays, struct-tagged dicts, variant-tagged dicts, closures) by constructing them, and never explicitly frees them. The V8 (or SpiderMonkey, or JSC) GC reclaims them when they're unreachable.
+
+This has three practical consequences:
+
+1. **Pause times are not under Aether's control.** A long-lived program with a big heap will see pauses when the JS GC runs a major collection. Aether can't mitigate this; the playground UI just freezes briefly.
+2. **Allocation patterns matter for performance.** Repeatedly allocating small objects in a tight loop (e.g., `for i in 0 .. 1000 { push(out, Point { x: i, y: i }); }`) creates GC pressure. See [performance.md](performance.md) § on allocation.
+3. **No `Drop`.** Resources are reclaimed by the GC, not by a destructor. If you open a file handle (in v2 with FFI) and the GC hasn't run, the handle stays open. v2's affine types plus `Drop` is the fix.
+
+---
+
+## 7. A memory-honesty checklist
+
+If you're coming from Rust, here's what to expect:
+
+| Concern                          | v1                                  | v2 (planned)                              |
+|----------------------------------|-------------------------------------|-------------------------------------------|
+| Memory safety                    | Yes (via GC)                        | Yes (via GC or borrow checker, opt-in)    |
+| Deterministic destruction        | No                                  | Yes for affine types                      |
+| Zero-cost abstraction            | No                                  | Yes for affine types                      |
+| Move semantics                   | No (everything shared by reference)  | Yes for affine types                      |
+| Borrow checking                  | No                                  | Yes, opt-in                               |
+| Lifetimes                        | No                                  | Yes, opt-in                               |
+| `unsafe` / FFI                   | No                                  | Yes, opt-in (post-RFC-004)                |
+| `null`                           | No (use `Option`)                   | No                                        |
+| Implicit memory leaks            | Bounded by GC; no leaks in practice | Bounded by GC for v1 code, manual for v2 |
+| Drop order                       | Not defined (GC)                    | LIFO for affine scopes                    |
+
+If you're coming from Python or JavaScript: Aether v1's memory model is exactly what you're used to. The only additions are the type checker (which catches a lot of bugs at compile time) and the immutable-by-default rule (which makes accidental mutation harder).
+
+---
+
+## 8. A worked example — a ref-counted counter, the v1 way
+
+Aether v1 doesn't have reference counting (the GC handles it). But we can build a "counter" abstraction using a mutable captured binding:
+
+```aether
+fn make_counter(start: int) -> fn() -> int {
+  let mut count = start;
   fn() -> int {
-    counter = counter + 1;
-    counter
+    count = count + 1;
+    count
   }
 }
 
-let c = make_counter();
-print(c());   // → 1
-print(c());   // → 2
+let c1 = make_counter(0);
+let c2 = make_counter(100);
+
+print(c1());  // 1
+print(c1());  // 2
+print(c1());  // 3
+print(c2());  // 101
+print(c2());  // 102
+print(c1());  // 4
 ```
 
-In Rust, this would not compile because `counter` does not live
-long enough. In Aether v1, the closure keeps `counter` alive via
-the GC. In Aether v2, this will compile but require an explicit
-`move`:
+`make_counter` returns a closure that captures `count` by reference. Each call to `make_counter` creates a *new* `count` and a *new* closure capturing it. `c1` and `c2` have independent counters. The closures and the `count` bindings live as long as the closures do — the GC reclaims them when the closures become unreachable.
+
+This is the v1 way of building stateful objects. In v2, this would have to use a `Box<RefCell<int>>` (move semantics, interior mutability) or a more explicit pattern. The v1 version is simpler and works because of the GC.
+
+---
+
+## 9. A warning about `mut` arrays
 
 ```aether
-// v2 sketch (not v1 syntax):
-fn make_counter() -> fn() -> int {
-  let mut counter = 0;
-  move fn() -> int {
-    counter = counter + 1;
-    counter
-  }
-}
+let xs = [1, 2, 3];   // immutable binding, mutable array
+let mut ys = xs;       // ys and xs are the same array
+ys[0] = 99;
+print(xs[0]);          // 99 — xs sees the change
 ```
 
-## 7. What the v1 type checker enforces
+The `let mut` on `ys` allows reassigning the *binding* `ys`. It does *not* give `ys` a fresh copy of the array. The array itself is mutable (because Aether's arrays are JS arrays, which are mutable), and `ys` and `xs` both refer to the same one.
 
-The v1 type checker (`aether/core/sema/sema.ts`) enforces these
-memory-related rules:
-
-- `let` bindings cannot be reassigned.
-- Compound assignment requires a `let mut` (or `let mut`-equivalent
-  like a function parameter — but parameters are not mutable in
-  v1).
-- `break` and `continue` are only valid inside a loop.
-- `return` is only valid inside a function.
-- Array indices must be `int`.
-- Map keys must match the map's key type.
-- Struct field access must refer to a declared field.
-
-The checker does **not** enforce:
-
-- Borrow discipline (multiple mutable references are fine).
-- Use-after-move (there is no move).
-- Lifetime constraints (there are no lifetimes).
-- Move-out-of-borrow (because there is no move).
-- Definite assignment (you can read an uninitialized variable and
-  get a runtime panic).
-
-These are all v2+ concerns. See
-[../spec/03-type-system.md](../spec/03-type-system.md) §6 for the
-v2 plan.
-
-## 8. What the v1 evaluator does at runtime
-
-The v1 evaluator (`aether/core/eval/eval.ts`) runs the program by
-walking the AST. Memory management is delegated to the host
-JavaScript runtime:
-
-- Strings are JavaScript strings (immutable, GC'd).
-- Arrays are JavaScript arrays (mutable, GC'd).
-- Maps are JavaScript `Map` objects (mutable, GC'd).
-- Structs and enum variants are JavaScript objects with a
-  `__struct` or `__enum` discriminator (mutable, GC'd).
-- Closures are JavaScript closures (GC'd, capturing the lexical
-  scope).
-
-The evaluator does not allocate memory manually; it creates
-JavaScript objects and lets the host GC reclaim them. This is the
-simplest possible implementation, and it is fast enough for the
-playground (see [performance.md](performance.md) for numbers).
-
-The runtime panics that the evaluator can throw are listed in
-[../reference/error-catalog.md](../reference/error-catalog.md)
-under "Runtime errors". The most common ones are:
-
-- `array index out of bounds: N`
-- `map key not found: ...`
-- `division by zero`
-- `modulo by zero`
-- `execution step limit exceeded (1000000)`
-- `assertion failed: A != B`
-- `panic: <message>`
-
-## 9. Migrating from Rust mental model
-
-If you are coming from Rust, here is what to keep and what to
-discard.
-
-### 9.1 Keep
-
-- `enum` with `Option` and `Result` is the same shape.
-- `match` is the same shape, with the same exhaustiveness intent.
-- `let` and `let mut` mean what you expect.
-- The `?` operator works on `Result` and `Option`.
-- String slices and array slices are similar conceptually.
-
-### 9.2 Discard
-
-- There is no `&`, no `&mut`, no `*`. References are implicit.
-- There is no `move`. All values are reference types in v1.
-- There is no `clone()`. Copy manually or use the stdlib.
-- There is no `Copy` trait. Primitives are value types
-  automatically.
-- There is no `Drop`. The GC handles cleanup.
-- There is no `unsafe`.
-- There are no lifetimes (`'a`).
-- There is no `Box`, `Rc`, `Arc`. Everything is GC'd.
-- Struct fields are mutable through `let mut` bindings; there is
-  no `&mut self` distinction.
-
-### 9.3 What this means in practice
-
-In Rust, you would write:
-
-```rust
-fn main() {
-    let mut v = Vec::new();
-    for i in 0..10 {
-        v.push(i);
-    }
-    let sum: i32 = v.iter().sum();
-    println!("{}", sum);
-}
-```
-
-In Aether v1, you write:
+If you want a fresh copy, write `let ys = [...xs]` (array spread) or use the stdlib `slice(xs, 0, len(xs))`:
 
 ```aether
-let mut v: [int] = [];
-for i in range(0, 10) {
-  v = push(v, i);
-}
-let sum = reduce(v, fn(a: int, b: int) -> int { a + b }, 0);
-print(sum);
-// → 45
+let xs = [1, 2, 3];
+let ys = [...xs];     // a new array, fresh copy
+ys[0] = 99;
+print(xs[0]);         // 1 — xs is unchanged
+print(ys[0]);         // 99
 ```
 
-Note that `push` in v1 is *non-mutating* — it returns a new array
-with the element appended. To get the Rust-like "push in place"
-behavior, you assign the result back: `v = push(v, i)`. The
-stdlib's `push` is the inline builtin; it actually does mutate
-the array in place under the hood, but the type system treats it
-as non-mutating for clarity. See
-[../tutorials/stdlib-tour.md](stdlib-tour.md) §3 for the
-explanation.
+This is the v1 way to express "copy the data" — explicit spread or `slice`. The v2 borrow checker would prevent the silent aliasing in the first example by requiring either `&` (shared borrow, no mutation) or `&mut` (exclusive borrow, mutation allowed but no other references).
 
-(Yes, this is slightly confusing. The v2 plan is to introduce
-methods like `v.push(i)` that mutate in place and a `&mut` borrow
-that makes this explicit. For v1, the convention is to assign
-back.)
+---
 
-## 10. Migrating from the JavaScript / Python mental model
+## 10. What's next
 
-If you are coming from JS or Python, Aether v1 should feel
-familiar. The main differences:
+- [ownership.md's sibling, error-handling.md](error-handling.md) — `Result<T, E>` and the `?` operator, which compose with the safety story above.
+- [concurrency.md](concurrency.md) — the honest v1 story (synchronous) and the v2 plan (async/await with channels).
+- [performance.md](performance.md) — what the GC and the tree-walker cost you in practice.
+- [decisions/adr-06-gc-over-borrow-checker-for-v1.md](../decisions/adr-06-gc-over-borrow-checker-for-v1.md) — the decision document.
+- [rfcs/rfc-004-borrow-checker.md](../rfcs/rfc-004-borrow-checker.md) — the v2 design RFC.
 
-- **Static types.** You can write `let x = 42` and let the
-  compiler infer, or `let x: int = 42` to be explicit. You
-  cannot write `x = "hello"` later; the type was fixed at
-  declaration.
-- **No `null`, no `undefined`.** Use `Option<T>` and `Result<T, E>`.
-- **No exceptions.** Use `Result` and `?`.
-- **Immutability by default.** `let` is read-only; write `let mut`
-  to mutate.
-- **No `for ... in` over objects.** Use the stdlib `map_keys` /
-  `map_values` / `map_entries` to iterate over a map.
-
-See
-[../guides/migration-from-typescript.md](../guides/migration-from-typescript.md)
-and
-[../guides/migration-from-python.md](../guides/migration-from-python.md)
-for the full mapping tables.
-
-## 11. The lifecycle of an Aether object
-
-Here is what happens to an Aether object from creation to
-collection:
-
-1. **Creation.** You write `let xs = [1, 2, 3];`. The evaluator
-   creates a JavaScript array `[1, 2, 3]` and binds the name `xs`
-   to it. The binding lives in the current environment record.
-2. **Use.** You write `print(xs[0]);`. The evaluator looks up
-   `xs`, finds the array, indexes it, prints the result.
-3. **Aliasing.** You write `let ys = xs;`. The evaluator copies
-   the reference; now `xs` and `ys` both point to the same
-   JavaScript array.
-4. **Going out of scope.** The block in which `xs` and `ys` were
-   declared ends. The environment record is discarded. The
-   JavaScript references from the environment are gone.
-5. **Collection.** When no references to the array remain, the
-   JavaScript GC reclaims it. This happens at some
-   implementation-defined time after step 4.
-
-You do not need to worry about any of this. The compiler does not
-expose it. There is no `Drop` trait, no `defer`, no `finally`. The
-v2 plan adds `defer` for resource cleanup (closing files, etc.);
-see [../spec/07-functions-closures-async.md](../spec/07-functions-closures-async.md)
-for the design.
-
-## 12. A worked example: a small linked list
-
-Here is a small program that builds a singly linked list and sums
-it. The interesting bit is that this *just works* in v1 without
-any borrow checker worry:
-
-```aether
-enum List<T> {
-  Empty,
-  Cons(T, List<T>),
-}
-
-fn sum(l: List<int>) -> int {
-  match l {
-    List::Empty         => 0,
-    List::Cons(h, t)    => h + sum(t),
-  }
-}
-
-fn from_array(xs: [int]) -> List<int> {
-  if len(xs) == 0 { List::Empty }
-  else { List::Cons(xs[0], from_array(slice(xs, 1, len(xs)))) }
-}
-
-let l = from_array([1, 2, 3, 4, 5]);
-print(sum(l));
-// → 15
-```
-
-In Rust, this would not compile with the standard `Box<List<T>>`
-approach because of the borrow checker and lifetime rules. You
-would need to use `Rc` or `Box` carefully. In Aether v1, the GC
-just handles it: each `Cons` variant is a heap-allocated object
-that the GC reclaims when it becomes unreachable.
-
-This is the *power* of GC for v1: recursive data structures are
-trivial. The cost is performance (GC pauses, allocation overhead)
-and a class of bugs (mutation through shared references). For v2,
-the plan is to provide `Rc<T>` and `Box<T>` for explicit control
-when you need it; the GC remains the default.
-
-## 13. The honest tradeoff
-
-Aether v1 chooses:
-
-- **Simplicity over control.** No borrow checker means no borrow
-  checker errors. It also means no compile-time guarantee of
-  memory safety in the Rust sense.
-- **GC over manual management.** The GC handles cleanup. You do
-  not need to think about free, drop, or ownership. The cost is
-  GC pauses, allocation overhead, and a larger runtime footprint.
-- **Immutability as the default** for the binding, not for the
-  value. The binding is read-only by default; the underlying
-  object is still mutable through other references.
-
-For the playground, the documentation site, and learning the
-language, this is the right tradeoff. For shipping a high-
-performance server, you would want the v2 borrow checker. The
-plan is to get there, but to do it without sacrificing the v1
-simplicity for users who do not need it. See
-[../rfcs/rfc-004-borrow-checker.md](../rfcs/rfc-004-borrow-checker.md)
-for the v2 design and
-[../decisions/adr-06-gc-over-borrow-checker-for-v1.md](../decisions/adr-06-gc-over-borrow-checker-for-v1.md)
-for the v1 decision.
-
-## 14. Where to go next
-
-- **[error-handling.md](error-handling.md)** — `Result`, `Option`,
-  the `?` operator. The other half of "safe by default".
-- **[concurrency.md](concurrency.md)** — what v1's
-  single-threaded evaluator means and what v2 async looks like.
-- **[performance.md](performance.md)** — what the GC and the
-  tree-walking interpreter cost in practice.
-- **[../decisions/adr-06-gc-over-borrow-checker-for-v1.md](../decisions/adr-06-gc-over-borrow-checker-for-v1.md)**
-  — the design decision behind v1's choice.
-- **[../rfcs/rfc-004-borrow-checker.md](../rfcs/rfc-004-borrow-checker.md)**
-  — the v2 design for ownership.
-
-Aether v1 is "safe by default" in the small, "no guarantees" in
-the large. v2 will close the gap. Until then, the playground is
-the right place to learn the language; production use should
-wait for v2.
+Aether v1's memory story is, in three sentences: GC handles reclamation, immutable-by-default handles most of the safety, `Option`/`Result` handle the absence/error cases, and panics catch the rest. v2 adds affine types and a borrow checker, opt-in, layered on top — not replacing v1, augmenting it.

@@ -1,0 +1,170 @@
+// string_utils.ae
+// ================
+// Five small string algorithms implemented in pure Aether using only
+// the inline builtins (len, str, push, assert_eq, print):
+//
+//   reverse(s)           -> string          "hello" -> "olleh"
+//   is_palindrome(s)     -> bool            "racecar" -> true
+//   word_count(s)        -> int             "a b c" -> 3
+//   capitalize(s)        -> string          "hello" -> "Hello"
+//   run_length_encode(s) -> string          "aaabb" -> "a3b2"
+//
+// We use `str(s[i])` to read characters one at a time (string indexing
+// returns `char` per the type checker but a 1-char string at runtime).
+// We never mutate strings in place — every helper builds a fresh one
+// by concatenation, which is the canonical Aether style.
+
+// Lookup tables for case conversion. Index by ASCII position.
+let LOWER = "abcdefghijklmnopqrstuvwxyz";
+let UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+// Reverse: walk from the back to the front, appending each char.
+fn reverse(s: string) -> string {
+  let mut out = "";
+  let mut i = len(s) - 1;
+  while i >= 0 {
+    out = out + str(s[i]);
+    i = i - 1;
+  }
+  out
+}
+
+// A string is a palindrome if it equals its reverse.
+fn is_palindrome(s: string) -> bool {
+  s == reverse(s)
+}
+
+// Word count: count runs of non-space characters separated by one or
+// more spaces. Multiple consecutive spaces don't count as extra words.
+fn word_count(s: string) -> int {
+  let mut count = 0;
+  let mut in_word = false;
+  let mut i = 0;
+  while i < len(s) {
+    let c = str(s[i]);
+    if c == " " || c == "\t" || c == "\n" {
+      in_word = false;
+    } else {
+      if !in_word {
+        count = count + 1;
+        in_word = true;
+      };
+    };
+    i = i + 1;
+  }
+  count
+}
+
+// Uppercase a single ASCII letter. Non-letters pass through unchanged.
+// We scan the LOWER lookup string for a match; if found, return the
+// char at the same index in UPPER. Otherwise return c as-is.
+fn to_upper_char(c: string) -> string {
+  let mut i = 0;
+  while i < len(LOWER) {
+    if str(LOWER[i]) == c {
+      return str(UPPER[i]);
+    };
+    i = i + 1;
+  }
+  c
+}
+
+// Capitalize the first character of the string. Empty strings stay empty.
+// Only ASCII a-z are uppercased; anything else (already upper, digit,
+// punctuation) passes through unchanged.
+fn capitalize(s: string) -> string {
+  if len(s) == 0 {
+    return "";
+  };
+  let first = to_upper_char(str(s[0]));
+  let mut rest = "";
+  let mut i = 1;
+  while i < len(s) {
+    rest = rest + str(s[i]);
+    i = i + 1;
+  }
+  first + rest
+}
+
+// Run-length encode: collapse runs of identical chars into "cN" pairs.
+//   "aaabb"     -> "a3b2"
+//   "aabbbaa"   -> "a2b3a2"
+// We walk the string tracking the current run char + count; when the
+// char changes (or we hit the end), we append "cN" to the output.
+fn run_length_encode(s: string) -> string {
+  if len(s) == 0 {
+    return "";
+  };
+  let mut out = "";
+  let mut run_char = str(s[0]);
+  let mut run_len = 1;
+  let mut i = 1;
+  while i < len(s) {
+    let c = str(s[i]);
+    if c == run_char {
+      run_len = run_len + 1;
+    } else {
+      out = out + run_char + str(run_len);
+      run_char = c;
+      run_len = 1;
+    };
+    i = i + 1;
+  }
+  // flush last run
+  out + run_char + str(run_len)
+}
+
+// --- Demonstration ----------------------------------------------------
+
+print("== String utilities in pure Aether ==");
+print("");
+
+print("reverse:");
+print(f"  reverse(\"hello\")       = \"{reverse("hello")}\"");
+print(f"  reverse(\"Aether\")      = \"{reverse("Aether")}\"");
+print(f"  reverse(\"\")            = \"{reverse("")}\"");
+print(f"  reverse(\"racecar\")      = \"{reverse("racecar")}\"");
+print("");
+
+print("is_palindrome:");
+print(f"  \"racecar\" -> {is_palindrome("racecar")}");
+print(f"  \"noon\"    -> {is_palindrome("noon")}");
+print(f"  \"hello\"   -> {is_palindrome("hello")}");
+print(f"  \"\"        -> {is_palindrome("")}");
+print(f"  \"a\"       -> {is_palindrome("a")}");
+print("");
+
+print("word_count:");
+print(f"  \"the quick brown fox\" -> {word_count("the quick brown fox")}");
+print(f"  \"  one  two   three \"  -> {word_count("  one  two   three ")}");
+print(f"  \"\"                    -> {word_count("")}");
+print(f"  \"solo\"                -> {word_count("solo")}");
+print("");
+
+print("capitalize (ASCII a-z only):");
+print(f"  capitalize(\"hello\")   = \"{capitalize("hello")}\"");
+print(f"  capitalize(\"aether\")  = \"{capitalize("aether")}\"");
+print(f"  capitalize(\"\")        = \"{capitalize("")}\"");
+print(f"  capitalize(\"X\")       = \"{capitalize("X")}\"");
+print("");
+
+print("run_length_encode:");
+print(f"  \"aaabb\"    -> \"{run_length_encode("aaabb")}\"");
+print(f"  \"aabbbaa\"  -> \"{run_length_encode("aabbbaa")}\"");
+print(f"  \"abc\"      -> \"{run_length_encode("abc")}\"");
+print(f"  \"\"         -> \"{run_length_encode("")}\"");
+print(f"  \"zzzzzzz\"  -> \"{run_length_encode("zzzzzzz")}\"");
+print("");
+
+// Sanity assertions
+assert_eq(reverse("hello"), "olleh");
+assert_eq(reverse(""), "");
+assert_eq(is_palindrome("racecar"), true);
+assert_eq(is_palindrome("hello"), false);
+assert_eq(word_count("a b c"), 3);
+assert_eq(word_count(""), 0);
+assert_eq(capitalize("hello"), "Hello");
+assert_eq(capitalize(""), "");
+assert_eq(run_length_encode("aaabb"), "a3b2");
+assert_eq(run_length_encode("abc"), "a1b1c1");
+print("All assertions passed.");

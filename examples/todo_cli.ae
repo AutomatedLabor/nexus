@@ -1,0 +1,142 @@
+// todo_cli.ae
+// ============
+// A tiny in-memory todo list manager. We model each todo as a struct
+// with an integer id, a text description, and a `done` flag. The list
+// itself is a flat array of `Todo` structs. We implement the four
+// classic operations:
+//
+//   add_todo(todos, text, next_id)   -> appends a new todo
+//   list_todos(todos)               -> prints the list with [x]/[ ] markers
+//   complete(todos, id)             -> marks the todo with `id` as done
+//   remove(todos, id)                -> removes the todo with `id`
+//
+// The id counter is a `mut next_id` in the top-level scope that the
+// caller bumps after each `add_todo`. The todo list itself is mutated
+// in place by `push` inside `add_todo` (arrays are reference types),
+// so the caller reassigns the returned array to itself purely for
+// clarity. After each operation we print the resulting list so the run
+// log is a full transcript of the simulated session.
+
+struct Todo {
+  id: int,
+  text: string,
+  done: bool,
+}
+
+// Find the index of a todo by id, or -1 if missing. Linear scan; fine
+// for tiny lists.
+fn find_index(todos: [Todo], id: int) -> int {
+  let mut idx = -1;
+  let mut i = 0;
+  while i < len(todos) {
+    if todos[i].id == id {
+      idx = i;
+    };
+    i = i + 1;
+  }
+  idx
+}
+
+// Append a fresh todo to the list. The id counter is passed by value;
+// the caller bumps it after each call. We mutate `todos` in place via
+// `push` and return the same array (arrays are reference types).
+fn add_todo(todos: [Todo], text: string, next_id: int) -> [Todo] {
+  let t = Todo { id: next_id, text: text, done: false };
+  push(todos, t);
+  todos
+}
+
+// Mark the todo with the given id as done. Mutates in place.
+fn complete(todos: [Todo], id: int) -> bool {
+  let i = find_index(todos, id);
+  if i < 0 {
+    return false;
+  };
+  todos[i].done = true;
+  true
+}
+
+// Remove the todo with the given id by building a filtered copy. We
+// keep all todos whose id is NOT the target. We use a manual loop
+// rather than `filter` so the result type stays `[Todo]` (the higher-
+// order `filter` builtin unifies the element type to a fresh type
+// variable, which the type checker can't always infer through a
+// struct-typed array bound).
+fn remove(todos: [Todo], id: int) -> [Todo] {
+  let out = [];
+  for t in todos {
+    if t.id != id {
+      push(out, t);
+    }
+  }
+  out
+}
+
+// Render the list. Done items show `[x]`, open items `[ ]`. We pad the
+// id column to 2 chars for alignment (good enough for 1-99 todos).
+fn list_todos(todos: [Todo]) {
+  if len(todos) == 0 {
+    print("  (no todos)");
+    return;
+  };
+  for t in todos {
+    let mark = if t.done { "x" } else { " " };
+    let mut id_str = str(t.id);
+    if t.id < 10 {
+      id_str = " " + id_str;
+    };
+    print(f"  [{mark}] #{id_str}  {t.text}");
+  }
+}
+
+// --- Demonstration: a short simulated session -------------------------
+
+print("== Todo CLI (struct + array of records) ==");
+print("");
+
+let mut todos: [Todo] = [];
+let mut next_id = 1;
+
+print("After adding 4 todos:");
+todos = add_todo(todos, "Write matrix_ops.ae", next_id);
+next_id = next_id + 1;
+todos = add_todo(todos, "Write quicksort.ae", next_id);
+next_id = next_id + 1;
+todos = add_todo(todos, "Write game_of_life.ae", next_id);
+next_id = next_id + 1;
+todos = add_todo(todos, "Write comparison.md", next_id);
+next_id = next_id + 1;
+list_todos(todos);
+print("");
+
+print("Marking #2 (quicksort) as done:");
+let ok2 = complete(todos, 2);
+print(f"  complete returned: {ok2}");
+list_todos(todos);
+print("");
+
+print("Trying to complete nonexistent #99:");
+let ok99 = complete(todos, 99);
+print(f"  complete returned: {ok99}");
+print("");
+
+print("Removing #1 (matrix_ops):");
+todos = remove(todos, 1);
+list_todos(todos);
+print("");
+
+print("Marking #4 (comparison) done, then removing #3:");
+let ok4 = complete(todos, 4);
+print(f"  complete(#4) returned: {ok4}");
+todos = remove(todos, 3);
+list_todos(todos);
+print("");
+
+// Sanity assertions
+assert_eq(len(todos), 2);
+assert_eq(todos[0].id, 2);
+assert_eq(todos[0].done, true);
+assert_eq(todos[0].text, "Write quicksort.ae");
+assert_eq(todos[1].id, 4);
+assert_eq(todos[1].done, true);
+print("All assertions passed.");

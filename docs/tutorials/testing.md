@@ -1,466 +1,524 @@
 # Testing in Aether
 
-> Audience: anyone wanting to write tests for Aether code.
-> Prerequisites: [language-basics.md](language-basics.md),
-> [error-handling.md](error-handling.md). 25 minutes.
+> Audience: you want to verify your Aether programs work.
+> Time: ~25 minutes. Every example is runnable.
 
-Aether v1 has three layers of testing:
+Aether v1 ships with two testing primitives — `assert(cond)` and `assert_eq(a, b)` — and the implementation itself is tested with Vitest. There is no first-class test runner in v1 (no `test` blocks, no `describe`/`it`, no `@test` decorator, no `aether test` command). The v2 plan adds one (see §5).
 
-1. **Inline assertions** — `assert` and `assert_eq` builtins,
-   usable inside any Aether program.
-2. **Test functions** — a convention for writing named tests
-   that the playground can run as a single program.
-3. **Implementation tests** — Vitest tests in TypeScript that
-   exercise the Aether compiler itself (`aether/core/eval/eval.test.ts`
-   etc., 700+ tests).
+This tutorial covers: writing assertions, organizing a "test file" with assertions, what to assert on, and the v2 plan.
 
-This tutorial covers the first two. The third is documented in
-[../decisions/adr-09-vitest-for-implementation-tests.md](../decisions/adr-09-vitest-for-implementation-tests.md).
+---
 
-## 1. Inline assertions
+## 1. The two primitives
 
-The two assertion builtins are `assert` and `assert_eq`.
+### `assert(cond, msg?)`
+
+Panics if `cond` is false.
 
 ```aether
-assert(cond);             // panics if cond is false
-assert(cond, "message");  // panics with a custom message
-assert_eq(a, b);          // panics if a != b
+fn fib(n: int) -> int {
+  if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+}
+
+assert(fib(0) == 0);
+assert(fib(1) == 1);
+assert(fib(2) == 1);
+assert(fib(10) == 55);
+assert(fib(20) == 6765);
+
+print("all fib assertions passed");
 ```
 
-`assert` takes a `bool` (and optionally a message). If the bool
-is false, it panics with `assertion failed` or
-`assertion failed: <message>`. The panic propagates up the call
-stack and aborts the program.
+If any assertion fails, the program panics with `assertion failed` (or `assertion failed: <msg>` if you passed a third argument) and the rest of the program doesn't run. If all assertions pass, the print runs.
 
-`assert_eq` takes two values of any type. It compares them with
-deep equality (`valueEq` in the evaluator). If they differ, it
-panics with `assertion failed: A != B` where `A` and `B` are the
-display forms of the two values.
+`assert` is an inline builtin. The implementation in `aether/core/eval/eval.ts` is:
 
-### 1.1 Example: a passing test
+```ts
+set("assert", (cond, msg) => {
+  if (!truthy(cond)) throw new PanicSignal(`assertion failed${msg ? ": " + display(msg) : ""}`);
+});
+```
+
+So `assert(false, "expected positive")` panics with `assertion failed: expected positive`.
+
+### `assert_eq(a, b, msg?)`
+
+Panics if `a` and `b` aren't deeply equal.
+
+```aether
+assert_eq(2 + 2, 4);
+assert_eq("hello" + " " + "world", "hello world");
+assert_eq([1, 2, 3], [1, 2, 3]);
+assert_eq((1, "two"), (1, "two"));
+assert_eq(Option::Some(42), Option::Some(42));
+assert_eq(Result::Ok(42), Result::Ok(42));
+
+let p1 = Point { x: 3, y: 4 };   // assume struct Point
+let p2 = Point { x: 3, y: 4 };
+assert_eq(p1, p2);              // structurally equal
+
+print("all equality assertions passed");
+```
+
+`assert_eq` uses the evaluator's `valueEq` (deep structural equality). For numbers, strings, bools, chars, this is `===`. For arrays, it's elementwise `valueEq`. For tuples, it's elementwise. For maps, it's key-value equality. For structs and enum variants, it's structural — same name, same fields, same field values. The deep equality is in `aether/core/eval/eval.ts`.
+
+If `a` and `b` aren't equal, the panic message is `assertion failed: <display(a)> != <display(b)>`. The third argument overrides the message: `assert_eq(a, b, "expected a == b")`.
+
+### What `assert_eq` does *not* check
+
+- Floating-point equality is exact — `assert_eq(0.1 + 0.2, 0.3)` will *fail* because of float rounding (0.1 + 0.2 = 0.30000000000000004). Use `assert(abs((0.1 + 0.2) - 0.3) < 1e-9)` for approximate equality.
+- Map key order is *not* compared — `assert_eq` on maps checks the same keys with the same values, regardless of insertion order.
+- Set equality is value-based.
+- Function values compare by identity — two different closures with the same signature are not equal.
+
+---
+
+## 2. A test file in v1
+
+There's no `test` block. The convention is: write a regular Aether program whose last statements are assertions. If the program runs to completion, the assertions passed. If it panics, the assertion(s) failed.
+
+```aether
+// tests.ae — a self-contained test program.
+
+// --- code under test ---
+fn factorial(n: int) -> int {
+  if n <= 1 { 1 } else { n * factorial(n - 1) }
+}
+
+fn is_prime(n: int) -> bool {
+  if n < 2 { return false; }
+  let mut i = 2;
+  while i * i <= n {
+    if n % i == 0 { return false; }
+    i = i + 1;
+  }
+  true
+}
+
+fn reverse_string(s: string) -> string {
+  let mut out = "";
+  let mut i = len(s) - 1;
+  while i >= 0 {
+    out = out + slice(s, i, i + 1);
+    i = i - 1;
+  }
+  out
+}
+
+// --- tests ---
+assert_eq(factorial(0), 1);
+assert_eq(factorial(1), 1);
+assert_eq(factorial(5), 120);
+assert_eq(factorial(10), 3628800);
+
+assert_eq(is_prime(2), true);
+assert_eq(is_prime(3), true);
+assert_eq(is_prime(4), false);
+assert_eq(is_prime(17), true);
+assert_eq(is_prime(25), false);
+assert_eq(is_prime(1), false);
+assert_eq(is_prime(0), false);
+
+assert_eq(reverse_string("hello"), "olleh");
+assert_eq(reverse_string(""), "");
+assert_eq(reverse_string("a"), "a");
+assert_eq(reverse_string("ab"), "ba");
+
+print("all tests passed");
+```
+
+Paste this in the playground, hit Run, and you should see `all tests passed` in the Output tab. If you change `factorial(5)` to return `121`, the program will panic with `assertion failed: 120 != 121` and the print won't run.
+
+### Multiple assertion failures
+
+`assert` and `assert_eq` panic on the first failure, so you see only one error at a time. There's no "run all tests, collect failures" mechanism in v1. The v2 plan (§5) adds proper test runners with failure aggregation.
+
+---
+
+## 3. What to test
+
+### Pure functions
+
+The default. Easy to test — give inputs, assert outputs:
 
 ```aether
 fn add(a: int, b: int) -> int { a + b }
 
 assert_eq(add(2, 3), 5);
-assert_eq(add(0, 0), 0);
 assert_eq(add(-1, 1), 0);
-print("all add tests passed");
-// → all add tests passed
+assert_eq(add(0, 0), 0);
+assert_eq(add(1_000_000, 1_000_000), 2_000_000);
 ```
 
-### 1.2 Example: a failing test
+### Edge cases
+
+Test the boundaries: empty arrays, zero, negative numbers, single-element arrays, the maximum int, the empty string.
 
 ```aether
-fn buggy_add(a: int, b: int) -> int { a + b + 1 }
+fn sum(xs: [int]) -> int {
+  reduce(xs, fn(a: int, b: int) -> int { a + b }, 0)
+}
 
-assert_eq(buggy_add(2, 3), 5);
-// → assertion failed: 6 != 5
+assert_eq(sum([]), 0);
+assert_eq(sum([1]), 1);
+assert_eq(sum([1, 2, 3]), 6);
+assert_eq(sum([-1, -2, -3]), -6);
+assert_eq(sum([1_000_000, -1_000_000]), 0);
 ```
 
-The panic message includes both the actual and expected values,
-which makes it easy to see what went wrong.
+### Property tests (light)
 
-### 1.3 Custom messages
+You can't generate random inputs in v1 easily (well, you can use `crypto.randomInt` from the stdlib), but you can write "for all x in [list], check property":
 
 ```aether
-fn sqrt(n: float) -> float {
-  assert(n >= 0, "sqrt of negative number");
-  // ... pretend to compute sqrt
-  n
+fn reverse_twice_is_identity(xs: [int]) -> bool {
+  // a property test: reverse(reverse(xs)) == xs
+  let rev1 = reverse(xs);   // stdlib reverse
+  let rev2 = reverse(rev1);
+  rev2 == xs
 }
 
-sqrt(-1.0);
-// → assertion failed: sqrt of negative number
+let test_cases = [
+  [],
+  [1],
+  [1, 2],
+  [1, 2, 3],
+  [5, 4, 3, 2, 1],
+];
+
+for xs in test_cases {
+  assert(reverse_twice_is_identity(xs));
+}
+print("reverse property tests passed");
 ```
 
-The custom message is shown in the panic output, after the
-`assertion failed:` prefix.
+### Functions that return `Result` / `Option`
 
-### 1.4 What `assert_eq` compares
-
-`assert_eq` uses the evaluator's `valueEq` function, which
-performs deep equality:
-
-- Primitives (`int`, `float`, `bool`, `string`, `char`) compare
-  by value.
-- Tuples compare element-wise.
-- Arrays compare element-wise (same length, same elements).
-- Maps compare entry-wise (same keys, same values).
-- Structs compare field-wise (same `__struct` tag, same
-  fields).
-- Enum variants compare by tag and by inner values.
-
-So you can use `assert_eq` on compound values:
+Test both arms:
 
 ```aether
-assert_eq([1, 2, 3], [1, 2, 3]);           // → ok
-assert_eq({ "a": 1, "b": 2 }, { "a": 1, "b": 2 });  // → ok
-struct Point { x: int, y: int }
-assert_eq(Point { x: 1, y: 2 }, Point { x: 1, y: 2 });  // → ok
+fn parse_int(s: string) -> result<int, string> {
+  if s == "42" { Result::Ok(42) }
+  else { Result::Err(f"bad: {s}") }
+}
+
+assert_eq(parse_int("42"), Result::Ok(42));
+assert_eq(parse_int("hello"), Result::Err("bad: hello"));
+
+match parse_int("42") {
+  Result::Ok(n) => assert_eq(n, 42),
+  Result::Err(e) => panic(f"unexpected: {e}"),
+}
+
+match parse_int("hello") {
+  Result::Ok(n) => panic(f"unexpected ok: {n}"),
+  Result::Err(e) => assert_eq(e, "bad: hello"),
+}
 ```
 
-## 2. Writing test functions
+The `assert_eq` form is more concise; the `match` form lets you test the error message text exactly.
 
-The Aether v1 convention is to write tests as ordinary
-functions with the prefix `test_`. There is no test runner
-in v1 — the playground just runs the program from top to
-bottom — so the convention is to *call* each test function
-from the bottom of the file.
+### Functions that panic
+
+There's no `assert_panic` in v1. To test that a function panics, you'd have to call it and observe that the program aborts — which you can't do from within the same program. The v2 plan adds `assert_panic(fn)` (see §5).
+
+In v1, you test the *precondition* instead: if `divide(10, 0)` is supposed to panic, you assert that the *call site* checks first:
 
 ```aether
-// stats.ae — a small statistics module + tests.
-
-fn mean(xs: [int]) -> float {
-  let total = reduce(xs, fn(a: int, b: int) -> int { a + b }, 0);
-  (total as float) / (len(xs) as float)
+fn safe_divide(a: int, b: int) -> result<int, string> {
+  if b == 0 { Result::Err("div by zero") }
+  else { Result::Ok(a / b) }
 }
 
-fn max_of(xs: [int]) -> int {
-  let mut best = xs[0];
-  for x in xs {
-    if x > best { best = x; }
-  }
-  best
-}
-
-fn test_mean() {
-  assert_eq(mean([1, 2, 3, 4, 5]), 3.0);
-  assert_eq(mean([7]), 7.0);
-  assert_eq(mean([1, 1, 1, 1]), 1.0);
-}
-
-fn test_max_of() {
-  assert_eq(max_of([1, 2, 3, 4, 5]), 5);
-  assert_eq(max_of([5, 4, 3, 2, 1]), 5);
-  assert_eq(max_of([3, 1, 4, 1, 5, 9, 2, 6]), 9);
-}
-
-test_mean();
-test_max_of();
-print("all tests passed");
-// → all tests passed
+assert_eq(safe_divide(10, 2), Result::Ok(5));
+assert_eq(safe_divide(10, 0), Result::Err("div by zero"));
 ```
 
-When you run this in the playground, the output is `all tests
-passed`. If any test fails, the panic message is shown instead.
+This is the recommended style anyway — return `Result` instead of panicking, then test both arms.
 
-## 3. Grouping tests with `describe` (convention)
+### Functions that print
 
-There is no built-in `describe` or `it`. The convention is to
-use a function that takes a name and a thunk:
+To test that a function prints specific output, capture stdout... well, you can't directly in v1. The workaround is to make the function return a string instead of printing, and test the string:
 
 ```aether
-fn describe(name: string, body: fn() -> ()) {
-  print(f"  running {name}");
-  body();
+fn format_row(name: string, age: int) -> string {
+  f"{name} ({age})"
 }
 
-describe("mean", fn() -> () {
-  assert_eq(mean([1, 2, 3]), 2.0);
-  assert_eq(mean([7]), 7.0);
-});
-
-describe("max_of", fn() -> () {
-  assert_eq(max_of([1, 2, 3]), 3);
-  assert_eq(max_of([3, 2, 1]), 3);
-});
-
-print("done");
+assert_eq(format_row("Ada", 36), "Ada (36)");
+assert_eq(format_row("", 0), " (0)");
 ```
 
-This is just a convention. There is no test framework in v1;
-the playground runs whatever you give it.
-
-## 4. Negative tests
-
-For "this should panic" tests, there is no `assert_panic` in v1.
-The convention is to comment the expected behavior:
+If the function genuinely needs to print, you can refactor it into "compute the string, then print the string":
 
 ```aether
-fn factorial(n: int) -> int {
-  if n < 0 { panic("factorial of negative number"); }
-  if n <= 1 { 1 } else { n * factorial(n - 1) }
+fn report(name: string, age: int) -> () {
+  print(format_row(name, age));
 }
-
-// Expected: panic with "factorial of negative number"
-// factorial(-1);
 ```
 
-To actually run a negative test, you would need to copy the
-code into the playground, comment it back in, run it, and
-verify the panic message. The v2 plan includes an `assert_panic`
-helper; see
-[../spec/15-conformance-and-tests.md](../spec/15-conformance-and-tests.md).
+Then test `format_row` directly. The `report` function is a thin wrapper that you don't unit-test.
 
-## 5. Property-based tests
+---
 
-Aether v1 has no QuickCheck-style property testing. The
-convention is to write a small loop that exercises a property
-over a range of inputs:
+## 4. Running tests — the v1 workflow
 
-```aether
-fn reverse_twice(xs: [int]) -> [int] {
-  reverse(reverse(xs))
-}
+There's no `aether test` command. The workflow is:
 
-fn test_reverse_twice() {
-  for n in range(0, 20) {
-    let xs = range(0, n);
-    assert_eq(reverse_twice(xs), xs);
-  }
-}
+1. Write a `.ae` file with your code and your assertions.
+2. Load it in the playground, hit Run.
+3. Read the Output tab — if you see "all tests passed" (or whatever your final print says), the tests passed. If you see `panic: assertion failed: ...`, they didn't.
 
-test_reverse_twice();
-print("ok");
-```
+For a real test suite, you'd have multiple `.ae` files (one per module under test) and run them all. v1 doesn't have a runner that does this — you do it manually or with a small shell script. The v2 plan (§5) automates this.
 
-For random inputs, use the `random_int` and `shuffle` functions
-from the `crypto` stdlib:
+### The implementation's own tests
 
-```aether
-fn test_sort_preserves_length() {
-  for _ in range(0, 100) {
-    let xs = shuffle([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-    let sorted = sort(xs);
-    assert_eq(len(sorted), len(xs));
-  }
-}
-
-test_sort_preserves_length();
-print("ok");
-```
-
-## 6. Test-driven development in Aether
-
-The recommended workflow in the playground is:
-
-1. Write a small test that fails.
-2. Write the implementation that makes it pass.
-3. Refactor with the test as a safety net.
-
-Here is an example:
-
-```aether
-// Step 1: write the test.
-fn test_add() {
-  assert_eq(add(2, 3), 5);
-  assert_eq(add(0, 0), 0);
-  assert_eq(add(-1, 1), 0);
-}
-
-// Step 2: write a stub.
-fn add(a: int, b: int) -> int { 0 }
-
-// Step 3: run the test — it should fail.
-test_add();
-// → assertion failed: 0 != 5
-
-// Step 4: fix the implementation.
-fn add_fixed(a: int, b: int) -> int { a + b }
-
-// Step 5: update the test to call add_fixed.
-fn test_add_fixed() {
-  assert_eq(add_fixed(2, 3), 5);
-  assert_eq(add_fixed(0, 0), 0);
-  assert_eq(add_fixed(-1, 1), 0);
-}
-
-test_add_fixed();
-print("ok");
-// → ok
-```
-
-The playground's step counter (visible in the Inspector's Steps
-tab) gives you a rough idea of how much work each test does.
-Use it as a sanity check; if a test takes 100,000 steps to run,
-it is probably doing too much.
-
-## 7. Running tests via the playground
-
-The playground runs the entire source as a single program.
-There is no "test mode." The convention is:
-
-1. Put the implementation at the top of the file.
-2. Put the test functions in the middle, prefixed with `test_`.
-3. Put the test invocations at the bottom.
-4. End with `print("all tests passed")` or similar.
-
-If any test panics, the program aborts at that point and the
-panic message is shown. The tests above the failing one are
-marked as "passed" implicitly (they ran without panicking).
-
-A larger example structure:
-
-```aether
-// stats.ae
-
-// --- implementation ---
-
-fn mean(xs: [int]) -> float {
-  let total = reduce(xs, fn(a: int, b: int) -> int { a + b }, 0);
-  (total as float) / (len(xs) as float)
-}
-
-fn median(xs: [int]) -> float {
-  let sorted = sort(xs);
-  let n = len(sorted);
-  if n % 2 == 0 {
-    let mid = n / 2;
-    (sorted[mid - 1] as float + sorted[mid] as float) / 2.0
-  } else {
-    sorted[n / 2] as float
-  }
-}
-
-fn variance(xs: [int]) -> float {
-  let m = mean(xs);
-  let sq = map(xs, fn(x: int) -> float {
-    let d = (x as float) - m;
-    d * d
-  });
-  reduce(sq, fn(a: float, b: float) -> float { a + b }, 0.0) / (len(xs) as float)
-}
-
-// --- tests ---
-
-fn test_mean() {
-  assert_eq(mean([1, 2, 3, 4, 5]), 3.0);
-  assert_eq(mean([7]), 7.0);
-}
-
-fn test_median() {
-  assert_eq(median([1, 2, 3, 4, 5]), 3.0);
-  assert_eq(median([1, 2, 3, 4]), 2.5);
-  assert_eq(median([7]), 7.0);
-}
-
-fn test_variance() {
-  assert_eq(variance([2, 4, 4, 4, 5, 5, 7, 9]), 4.0);
-}
-
-// --- run ---
-
-test_mean();
-test_median();
-test_variance();
-print("all tests passed");
-```
-
-## 8. The planned test runner (v2)
-
-The v2 plan, sketched in
-[../spec/15-conformance-and-tests.md](../spec/15-conformance-and-tests.md),
-includes:
-
-- A `test` keyword for declaring tests:
-  ```aether
-  test "mean of empty" { ... }
-  test "median odd length" { ... }
-  ```
-- A `aether test` CLI command that runs all tests in a package.
-- An `assert_panic` builtin for negative tests.
-- A property-testing library based on the `crypto` random
-  functions.
-- Coverage reporting based on the evaluator's step counter.
-
-None of this is in v1. The v1 convention (write tests as
-functions, call them at the bottom) is the workaround.
-
-## 9. What to test
-
-A good test suite covers:
-
-1. **Happy path.** The function works on typical inputs.
-2. **Edge cases.** Empty arrays, single-element arrays, zero,
-   negative numbers, very large numbers.
-3. **Property tests.** Invariants that should hold for all
-   inputs (e.g., `reverse(reverse(xs)) == xs`).
-4. **Negative tests.** Inputs that should panic.
-
-For most functions, aim for 3-10 tests covering the happy path,
-the edge cases, and one or two property tests. More tests are
-not always better; a few well-chosen tests are usually enough.
-
-## 10. The implementation test suite
-
-The Aether compiler itself has 700+ tests, written in Vitest
-(TypeScript). They live next to the source:
+The Aether implementation (the TypeScript code that implements the compiler and runtime) is tested with **Vitest**, not with Aether itself. See [ADR-09 vitest for implementation tests](../decisions/adr-09-vitest-for-implementation-tests.md) for the rationale. The Vitest tests are at:
 
 - `aether/core/lexer/lexer.test.ts` — lexer tests.
 - `aether/core/parser/parser.test.ts` — parser tests.
 - `aether/core/sema/sema.test.ts` — type checker tests.
-- `aether/core/eval/eval.test.ts` — evaluator tests.
-- `aether/stdlib/*/index.test.ts` — stdlib tests, one per
-  module.
+- `aether/core/eval/eval.test.ts` — runtime tests.
+- `aether/stdlib/*/index.test.ts` — stdlib tests (one per module).
 
-To run them:
+There are 703 of these tests. They use the standard Vitest API (`describe`, `it`, `expect`) and call `compileAndRun(source)` from `aether/core/index.ts`, then assert on the resulting `CompileResult`. For example:
 
-```bash
-bun test
+```ts
+// aether/core/eval/eval.test.ts (illustrative)
+import { describe, it, expect } from "vitest";
+import { compileAndRun } from "../../core";
+
+describe("fib", () => {
+  it("fib(10) = 55", () => {
+    const r = compileAndRun("fn fib(n: int) -> int { if n < 2 { n } else { fib(n-1) + fib(n-2) } } fib(10)");
+    expect(r.runtime?.value).toBe(55);
+    expect(r.ok).toBe(true);
+  });
+});
 ```
 
-See
-[../decisions/adr-09-vitest-for-implementation-tests.md](../decisions/adr-09-vitest-for-implementation-tests.md)
-for the choice of Vitest and
-[../tutorials/tooling.md](../tutorials/tooling.md) for the
-current tooling state.
+This is how the implementation knows "703 tests pass" — that's the count of Vitest test cases across the four core modules and the ten stdlib modules.
 
-## 11. A worked example: testing a JSON parser
+---
 
-Here is a small program that defines and tests a (sketch) JSON
-parser. The parser is incomplete; the tests focus on shape,
-not on parsing every JSON form.
+## 5. The v2 plan — a real test runner
+
+The v2 design (sketched in [RFC-003 modules and packages](../rfcs/rfc-003-modules-and-packages.md) § 9 and [RFC-005 LSP](../rfcs/rfc-005-lsp.md) § 4) is:
+
+### `test` blocks in `.ae` files
 
 ```aether
-enum Json {
-  Null,
-  Bool(bool),
-  Num(float),
-  Str(string),
-  Arr([Json]),
-  Obj(map[string]Json),
+// v2 sketch — does NOT run in v1
+
+fn factorial(n: int) -> int {
+  if n <= 1 { 1 } else { n * factorial(n - 1) }
 }
 
-fn parse_null(s: string) -> Json {
-  if s == "null" { Json::Null }
-  else { panic(f"expected null, got {s}") }
+test "factorial of small numbers" {
+  assert_eq(factorial(0), 1);
+  assert_eq(factorial(1), 1);
+  assert_eq(factorial(5), 120);
+  assert_eq(factorial(10), 3628800);
 }
 
-fn parse_bool(s: string) -> Json {
-  if s == "true" { Json::Bool(true) }
-  else if s == "false" { Json::Bool(false) }
-  else { panic(f"expected true/false, got {s}") }
+test "factorial of zero" {
+  assert_eq(factorial(0), 1);
 }
 
-fn test_parse_null() {
-  assert_eq(parse_null("null"), Json::Null);
+test "factorial panics on negative" {
+  assert_panic(fn() { factorial(-1); });
 }
-
-fn test_parse_bool() {
-  assert_eq(parse_bool("true"), Json::Bool(true));
-  assert_eq(parse_bool("false"), Json::Bool(false));
-}
-
-test_parse_null();
-test_parse_bool();
-print("all json tests passed");
-// → all json tests passed
 ```
 
-## 12. Where to go next
+`test "name" { body }` is a top-level item. The runner collects all `test` blocks across the module (and its imports), runs each one in a fresh environment, and reports pass/fail counts.
 
-- **[../decisions/adr-09-vitest-for-implementation-tests.md](../decisions/adr-09-vitest-for-implementation-tests.md)**
-  — why Vitest for the compiler tests.
-- **[../spec/15-conformance-and-tests.md](../spec/15-conformance-and-tests.md)**
-  — the v2 test runner plan.
-- **[../tutorials/tooling.md](../tutorials/tooling.md)** — the
-  current state of Aether tooling.
-- **[../guides/idiomatic-aether.md](../guides/idiomatic-aether.md)**
-  — patterns for writing testable code.
+### `aether test` command
 
-Aether v1's testing story is bare-bones: `assert` and `assert_eq`
-plus a convention. It is enough for small programs and for
-learning the language. The v2 plan adds a real test runner; see
-[../spec/15-conformance-and-tests.md](../spec/15-conformance-and-tests.md)
-for the design.
+```sh
+aether test                 # run all tests in the current module + deps
+aether test path/to/file    # run tests in a specific file
+aether test --watch         # re-run on change
+aether test --filter "factorial*"  # name pattern
+```
+
+### Failure aggregation
+
+The runner collects all failures, not just the first. You see:
+
+```
+FAIL  factorial_test.ae
+  - factorial of negative numbers
+    panic: assertion failed: 1 != 2
+    at factorial_test.ae:7:3
+  - factorial panics on negative
+    expected panic, got Ok
+
+PASS  fibonacci_test.ae
+  + fib(10) = 55
+  + fib(20) = 6765
+
+2 failed, 2 passed, 4 total
+```
+
+### `assert_panic`
+
+```aether
+test "divide by zero panics" {
+  assert_panic(fn() { divide(10, 0); });
+}
+```
+
+`assert_panic(fn)` runs the closure and asserts that it panics. Useful for testing that preconditions are enforced.
+
+### Property-based testing (planned)
+
+```aether
+test "reverse is involutive" {
+  prop_check(fn(xs: [int]) -> bool {
+    reverse(reverse(xs)) == xs
+  }, gen_array_of(gen_int, 0, 100), 100);   // 100 random arrays
+}
+```
+
+`prop_check` runs the property with generated inputs and reports the first failing case. Inspired by QuickCheck. This is further out than the basic test runner — it's tracked in [RFC-003](../rfcs/rfc-003-modules-and-packages.md) § 9.
+
+### Coverage
+
+```sh
+aether test --coverage
+```
+
+Reports line/branch coverage. Useful for finding untested code paths. The v2 plan tracks this; v1 has no coverage tooling.
+
+### Relationship to Vitest
+
+The Aether implementation itself stays on Vitest — those tests verify the *TypeScript* implementation of Aether. The v2 `test` blocks run *Aether* programs that verify *user code*. The two layers don't conflict; they test different things.
+
+---
+
+## 6. A v1 idiom — the "table test"
+
+While you wait for v2, you can structure tests as data:
+
+```aether
+fn factorial(n: int) -> int {
+  if n <= 1 { 1 } else { n * factorial(n - 1) }
+}
+
+// A table of (input, expected) pairs.
+let cases = [
+  (0, 1),
+  (1, 1),
+  (5, 120),
+  (10, 3628800),
+];
+
+let mut failures = 0;
+for c in cases {
+  let input = c.0;
+  let expected = c.1;
+  let actual = factorial(input);
+  if actual != expected {
+    failures = failures + 1;
+    print(f"FAIL: factorial({input}) = {actual}, expected {expected}");
+  }
+}
+
+if failures == 0 {
+  print(f"all {len(cases)} cases passed");
+} else {
+  print(f"{failures}/{len(cases)} cases failed");
+  panic("table test failures");
+}
+```
+
+This pattern — collect (input, expected) pairs, loop, compare, report — is the v1 substitute for `test` blocks. The output is more legible than a single panic, and you see all failures at once.
+
+A subtle point: you can't easily catch a panic from inside `factorial` in v1, so the table-test pattern works only for functions that don't panic. For functions that might panic, refactor them to return `Result` instead.
+
+---
+
+## 7. Worked example — testing a JSON parser
+
+```aether
+// (sketch — based on examples/json_parser.ae)
+
+enum JV {
+  Nul,
+  Bool(bool),
+  Int(int),
+  Str(string),
+  Arr([JV]),
+  Obj([(string, JV)]),
+}
+
+fn parse_json(s: string) -> JV {
+  // ... the actual implementation from examples/json_parser.ae ...
+  JV::Nul   // placeholder
+}
+
+// --- Tests ---
+
+// 1. Empty object.
+let p1 = parse_json("{}");
+match p1 {
+  JV::Obj(entries) => assert_eq(len(entries), 0),
+  _ => panic("expected Obj"),
+}
+
+// 2. Simple string.
+let p2 = parse_json("\"hello\"");
+assert_eq(p2, JV::Str("hello"));
+
+// 3. Integer.
+let p3 = parse_json("42");
+assert_eq(p3, JV::Int(42));
+
+// 4. Boolean.
+let p4 = parse_json("true");
+assert_eq(p4, JV::Bool(true));
+
+// 5. Null.
+let p5 = parse_json("null");
+assert_eq(p5, JV::Nul);
+
+// 6. Nested.
+let p6 = parse_json("{\"a\":[1,2,{\"b\":3}]}");
+match p6 {
+  JV::Obj(entries) => {
+    let kv = entries[0];
+    assert_eq(kv.0, "a");
+    match kv.1 {
+      JV::Arr(items) => {
+        assert_eq(items[0], JV::Int(1));
+        assert_eq(items[1], JV::Int(2));
+        match items[2] {
+          JV::Obj(inner) => {
+            let inner_kv = inner[0];
+            assert_eq(inner_kv.0, "b");
+            assert_eq(inner_kv.1, JV::Int(3));
+          },
+          _ => panic("expected Obj inside array"),
+        }
+      },
+      _ => panic("expected Arr"),
+    }
+  },
+  _ => panic("expected top-level Obj"),
+}
+
+print("all JSON parser tests passed");
+```
+
+This is the kind of test the example file's own `assert_eq` calls already do — see `examples/json_parser.ae` for the real version. The pattern is "parse the input, match on the structure, assert_eq on the leaves". For deeply nested data, the `match` form is more verbose than ideal; v2's `assert_eq` would pretty-print the diff when it fails.
+
+---
+
+## 8. What's next
+
+- [error-handling.md](error-handling.md) — `Result` and `?`, which compose with `assert_eq`.
+- [decisions/adr-09-vitest-for-implementation-tests.md](../decisions/adr-09-vitest-for-implementation-tests.md) — why the implementation uses Vitest, not Aether.
+- [rfcs/rfc-003-modules-and-packages.md](../rfcs/rfc-003-modules-and-packages.md) § 9 — the v2 test runner.
+- [rfcs/rfc-005-lsp.md](../rfcs/rfc-005-lsp.md) § 4 — the LSP testing integration.
+
+Aether v1's testing story is, in three sentences: `assert` and `assert_eq` for in-program assertions, table tests for collecting (input, expected) pairs, and the playground's Run button as the test runner. v2 adds `test` blocks, an `aether test` command, failure aggregation, `assert_panic`, and property-based testing — and the Vitest tests of the TypeScript implementation continue in parallel.

@@ -1,0 +1,132 @@
+// game_of_life.ae
+// =================
+// Conway's Game of Life on an 8x8 grid, evolved for 5 generations.
+//
+// Rules: a live cell with 2 or 3 live neighbors survives; a dead cell
+// with exactly 3 live neighbors becomes live; everything else dies or
+// stays dead. We use fixed boundaries (out-of-range cells are treated
+// as dead). Each generation is computed into a fresh grid; the print
+// function renders it as `#` for live and `.` for dead.
+//
+// The starting pattern is an "R-pentomino" packed into the middle of
+// 8x8, which produces visible motion over 5 generations while staying
+// inside the playground's step budget. We print the initial state
+// and each subsequent generation with a generation header.
+
+// Build an R x C grid of zeros.
+fn zeros(rows: int, cols: int) -> [[int]] {
+  let m = [];
+  for i in range(0, rows, 1) {
+    let row = [];
+    for j in range(0, cols, 1) {
+      push(row, 0);
+    }
+    push(m, row);
+  }
+  m
+}
+
+// Pretty-print a grid as `#`/`.`.
+fn print_grid(label: string, g: [[int]]) {
+  print(label);
+  for row in g {
+    let mut line = "  ";
+    for v in row {
+      let c = if v == 1 { "#" } else { "." };
+      line = line + c;
+    }
+    print(line);
+  }
+}
+
+// Safe get: returns 0 for out-of-bounds, otherwise g[i][j].
+fn get_cell(g: [[int]], i: int, j: int) -> int {
+  if i < 0 || i >= len(g) {
+    return 0;
+  };
+  if j < 0 || j >= len(g[0]) {
+    return 0;
+  };
+  g[i][j]
+}
+
+// Count the 8 neighbors of (i, j).
+fn count_neighbors(g: [[int]], i: int, j: int) -> int {
+  let mut n = 0;
+  let mut di = -1;
+  while di <= 1 {
+    let mut dj = -1;
+    while dj <= 1 {
+      if !(di == 0 && dj == 0) {
+        n = n + get_cell(g, i + di, j + dj);
+      };
+      dj = dj + 1;
+    }
+    di = di + 1;
+  }
+  n
+}
+
+// Compute the next generation into a fresh grid. We must not mutate
+// `g` in place: each cell's new state depends on the *current* state
+// of all 8 neighbors.
+fn step(g: [[int]]) -> [[int]] {
+  let rows = len(g);
+  let cols = len(g[0]);
+  let mut next = zeros(rows, cols);
+  for i in range(0, rows, 1) {
+    for j in range(0, cols, 1) {
+      let n = count_neighbors(g, i, j);
+      let alive = g[i][j] == 1;
+      let mut new_state = 0;
+      if alive {
+        if n == 2 || n == 3 {
+          new_state = 1;
+        };
+      } else {
+        if n == 3 {
+          new_state = 1;
+        };
+      };
+      next[i][j] = new_state;
+    }
+  }
+  next
+}
+
+// --- Demonstration ----------------------------------------------------
+
+print("== Conway's Game of Life (8x8, 5 generations) ==");
+print("");
+
+let mut g = zeros(8, 8);
+
+// R-pentomino inside the middle of the 8x8 grid (rows 3-4, cols 3-5).
+g[3][4] = 1;
+g[3][5] = 1;
+g[4][3] = 1;
+g[4][4] = 1;
+g[5][4] = 1;
+
+print_grid("Generation 0:", g);
+print("");
+
+// Evolve 5 generations, printing each.
+let mut gen = 1;
+while gen <= 5 {
+  g = step(g);
+  print_grid(f"Generation {gen}:", g);
+  print("");
+  gen = gen + 1;
+}
+
+// Sanity check: count live cells at gen 5.
+let mut live = 0;
+for i in range(0, 8, 1) {
+  for j in range(0, 8, 1) {
+    live = live + g[i][j];
+  }
+}
+print(f"Live cells at generation 5: {live}");
+assert(live > 0);
+print("All assertions passed.");

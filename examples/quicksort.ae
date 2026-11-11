@@ -1,0 +1,40 @@
+// quicksort.ae — functional quicksort using builtin filter and array concat
+fn show(arr: [int]) -> string {
+  // Build the string via reduce to avoid for-loop-scope quirks.
+  fn join(arr: [int]) -> string {
+    reduce(arr, fn(acc: string, x: int) -> string {
+      if acc == "" { str(x) } else { acc + ", " + str(x) }
+    }, "")
+  }
+  "[" + join(arr) + "]"
+}
+
+fn quicksort(arr: [int]) -> [int] {
+  if len(arr) <= 1 {
+    return arr;
+  };
+  let pivot = arr[0];
+  let less = filter(arr, fn(x: int) -> bool { x < pivot });
+  let equal = filter(arr, fn(x: int) -> bool { x == pivot });
+  let greater = filter(arr, fn(x: int) -> bool { x > pivot });
+  // Array concatenation via + then recurse on the sides.
+  quicksort(less) + equal + quicksort(greater)
+}
+
+print("== Quicksort ==");
+print("");
+let input = [5, 2, 8, 1, 9, 3, 7, 4, 6, 0];
+print(f"input:  {show(input)}");
+print(f"sorted: {show(quicksort(input))}");
+print("");
+let cases = [
+  [3, 1, 2],
+  [42],
+  [9, 8, 7, 6, 5, 4, 3, 2, 1],
+  [1, 1, 1, 1]
+];
+for c in cases {
+  print(f"  {show(c)} -> {show(quicksort(c))}");
+}
+print("");
+print("Quicksort done.");

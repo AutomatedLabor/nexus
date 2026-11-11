@@ -1,0 +1,131 @@
+// matrix_ops.ae
+// ===============
+// 2D matrix math using nested arrays. We implement:
+//
+//   zeros(rows, cols)         build a zero matrix
+//   print_matrix(m)           pretty-print with brackets
+//   transpose(m)              rows <-> columns
+//   multiply(a, b)            matrix product (cols(a) must == rows(b))
+//
+// Matrices are arrays of rows: m[i][j] is row i, column j. We use
+// `for i in range(0, n)` for the outer loops and `for j in range(0, m)`
+// for the inner loops. We mutate elements in place via `m[i][j] = v`
+// (the evaluator supports nested index assignment into arrays of
+// arrays). Note: Aether's block grammar requires that a non-trailing
+// `for` statement be followed by either another statement or the
+// closing brace of the enclosing block — a `;` after the `}` of a
+// `for` body is not valid syntax (it's parsed as the start of an
+// empty expression statement). Trailing `if/else` blocks may be
+// terminated with `;` because the `if` is an expression; `for` is a
+// statement, so it isn't.
+
+// Build an R x C matrix filled with zero.
+fn zeros(rows: int, cols: int) -> [[int]] {
+  let m = [];
+  for i in range(0, rows, 1) {
+    let row = [];
+    for j in range(0, cols, 1) {
+      push(row, 0);
+    }
+    push(m, row);
+  }
+  m
+}
+
+// Pretty-print a matrix as a column of rows, each in [a, b, c] form.
+fn print_matrix(label: string, m: [[int]]) {
+  print(label);
+  for row in m {
+    let mut line = "  [";
+    let mut first = true;
+    for v in row {
+      if first {
+        first = false;
+      } else {
+        line = line + ", ";
+      };
+      // Pad single-digit numbers so the columns line up nicely.
+      let mut s = str(v);
+      if v < 10 && v >= 0 {
+        s = " " + s;
+      };
+      line = line + s;
+    }
+    print(line + "]");
+  }
+}
+
+// Transpose: result[j][i] = m[i][j].
+fn transpose(m: [[int]]) -> [[int]] {
+  let rows = len(m);
+  let cols = len(m[0]);
+  let mut t = zeros(cols, rows);
+  for i in range(0, rows, 1) {
+    for j in range(0, cols, 1) {
+      t[j][i] = m[i][j];
+    }
+  }
+  t
+}
+
+// Multiply two matrices. a is R x K, b is K x C, result is R x C.
+// result[i][j] = sum over k of a[i][k] * b[k][j].
+fn multiply(a: [[int]], b: [[int]]) -> [[int]] {
+  let r = len(a);
+  let k = len(a[0]);
+  let c = len(b[0]);
+  let mut result = zeros(r, c);
+  for i in range(0, r, 1) {
+    for j in range(0, c, 1) {
+      let mut sum = 0;
+      for x in range(0, k, 1) {
+        sum = sum + a[i][x] * b[x][j];
+      }
+      result[i][j] = sum;
+    }
+  }
+  result
+}
+
+// --- Demonstration ----------------------------------------------------
+
+print("== Matrix ops (nested arrays) ==");
+print("");
+
+let a = [[1, 2, 3], [4, 5, 6]];            // 2 x 3
+let b = [[7, 8], [9, 10], [11, 12]];        // 3 x 2
+
+print_matrix("A (2x3):", a);
+print("");
+print_matrix("B (3x2):", b);
+print("");
+
+print("A^T (transpose, 3x2):");
+let at = transpose(a);
+print_matrix("", at);
+print("");
+
+print("A * B (2x3 * 3x2 = 2x2):");
+let ab = multiply(a, b);
+print_matrix("", ab);
+print("");
+
+// Identity check: A * I == A, where I is 3x3 identity.
+let i3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+print("A * I (2x3 * 3x3 = 2x3) should equal A:");
+let ai = multiply(a, i3);
+print_matrix("", ai);
+print("");
+
+// Transpose of transpose is the original.
+print("A^T^T should equal A:");
+let att = transpose(at);
+print_matrix("", att);
+print("");
+
+// Sanity assertions
+assert_eq(at, [[1, 4], [2, 5], [3, 6]]);
+assert_eq(ab, [[58, 64], [139, 154]]);
+assert_eq(ai, a);
+assert_eq(att, a);
+print("All assertions passed.");

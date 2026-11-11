@@ -1,134 +1,161 @@
 <p align="center">
   <pre>
-   █████╗ ███████╗██████╗  ██████╗ ██╗  ██╗
-  ██╔══██╗╚══███╔╝██╔══██╗██╔═══██╗╚██╗██╔╝
-  ███████║  ███╔╝ ██████╔╝██║   ██║ ╚███╔╝
-  ██╔══██║ ███╔╝  ██╔══██╗██║   ██║ ██╔██╗
-  ██║  ██║███████╗██████╔╝╚██████╔╝██╔╝ ██╗
-  ╚═╝  ╚═╝╚══════╝╚═════╝  ╚═════╝ ╚═╝  ╚═╝
-  </pre>
+ ██████╗ ██╗  ██╗██╗   ██╗███████╗██╗  ████████╗██╗  ██╗███████╗████╗  ██████╗
+██╔═══██╗╚██╗██╔╝██║   ██║██╔════╝██║  ╚══██╔══╝██║  ██║██╔════╝██╔██╗██╔═══██╗
+██║   ██║ ╚███╔╝ ██║   ██║███████╗██║     ██║   ███████║█████╗  ██║╚██╗██║   ██║
+██║   ██║ ██╔██╗ ██║   ██║╚════██║██║     ██║   ██╔══██║██╔══╝  ██║ ╚██╗██║   ██║
+╚██████╔╝██╔╝ ██╗╚██████╔╝███████║██║     ██║   ██║  ██║███████╗██║  ╚█╔██████╔╝
+ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝     ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝   ╚═╝╚═════╝
+</pre>
 </p>
 
-<h1 align="center">ATLAS</h1>
+<h1 align="center">Project Nexus — Aether</h1>
 <p align="center">
-  <em>An opinionated, environment-aware fullstack starter — Next.js 16 · TypeScript · Prisma · Vercel.</em>
+  <em>A statically-typed, expression-oriented language with a tree-walking interpreter (v1) and a planned bytecode VM (v2), with an interactive web playground.</em>
 </p>
 
 <p align="center">
+  <img alt="Next.js" src="https://img.shields.io/badge/Next.js-16-black?logo=next.js" />
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white" />
+  <img alt="Vercel" src="https://img.shields.io/badge/Vercel-live-black?logo=vercel" />
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" />
-  <img alt="Next.js" src="https://img.shields.io/badge/Next.js-16-black.svg" />
-  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178c6.svg" />
-  <img alt="Vercel" src="https://img.shields.io/badge/Vercel-ready-black.svg" />
-  <img alt="PRs Welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" />
+  <img alt="Tests: vitest" src="https://img.shields.io/badge/tests-703%20passing-brightgreen?logo=vitest" />
 </p>
 
 ---
 
-## Overview
+## What is Aether?
 
-**ATLAS** is a fullstack web application scaffold designed to be reproducible
-from a clean sandbox container. It ships with a Next.js 16 App Router
-frontend, a Prisma-backed data layer, an opinionated component library based
-on shadcn/ui, and an exhaustive **environment cartography** under
-[`docs/environment/`](docs/environment/00-index.md) so that any agent or
-human picking up the repo can know exactly which tools, runtime versions,
-filesystem limits, and CPU/memory budget they are working with.
-
-The project is intentionally small, well-typed, and vercel-ready: `bun install`
-→ `bun run dev` (or `vercel deploy`) and you are live.
+**Aether** is a small, statically-typed, expression-oriented programming
+language designed to be easy to learn, easy to teach, and easy to embed.
+v1 ships a **tree-walking interpreter** (lexer → parser → semantic checker
+→ evaluator) written in pure TypeScript that runs both in Node and in the
+browser. v2 (planned) will replace the evaluator with a bytecode VM, add
+async/await, modules, and a real toolchain (LSP, formatter, linter,
+package manager). The interactive web playground — built on Next.js 16 —
+lets you write, run, and explore Aether programs without installing
+anything.
 
 ## Features
 
-- ⚡️ **Next.js 16** App Router, React Server Components, streaming
-- 🎨 **Tailwind CSS** + **shadcn/ui** component library (50+ components)
-- 🗄️ **Prisma** ORM with SQLite default (`prisma/schema.prisma`)
-- 🧪 **Bun-first** toolchain (fast install, fast test, fast build)
-- 🛰️ **Caddy** reverse-proxy config included for self-hosting
-- 📚 **Environment cartography** — real probe data for OS, hardware,
-  filesystem, software, network, and a computational benchmark suite
-- 🤖 **Agent-friendly** — every assumption about the runtime is written
-  down; nothing is left to "you know, the usual setup"
+**Language (v1, done)**
+- Statically-typed with inference, generics, and structural function types
+- Expression-oriented (every statement yields a value)
+- First-class closures, immutable bindings, sum & record types
+- 703 passing tests across lexer, parser, semantic checker, evaluator, stdlib
+- 11 example programs (fib, fizzbuzz, primes, quicksort, game-of-life, BF, …)
+
+**Standard library (v1, done)**
+- 10 modules — math, collections, string, text, regex, io, datetime, encoding, crypto, async
+- ~110 documented functions with type signatures and descriptions
+- Browser-safe: io/crypto branch on `typeof process` and throw in-browser
+
+**Playground (v1, done)**
+- 6 views: Playground, Explorer, Standard Library, Examples, Benchmarks, About
+- Runs Aether entirely in-browser (no server roundtrip per Run)
+- Dark/light theme, sticky footer, fully responsive, shadcn/ui components
+- Live demo: see **Links** below
+
+**Toolchain (v2, planned)**
+- Bytecode VM (RFC-002), async/await (RFC-001), modules & packages (RFC-003)
+- LSP (RFC-005), formatter, linter, package manager
 
 ## Quick start
 
 ```bash
-# 1. Install deps (bun is the supported package manager — see bun.lock)
+# 1. Install dependencies (Bun is the supported package manager)
 bun install
 
-# 2. Set up the database
-bunx prisma migrate dev
+# 2. Run the language tests (703 tests across 14 files)
+bunx vitest run aether
+# → Test Files  14 passed (14)
+#   Tests       703 passed (703)
 
-# 3. Run the dev server
+# 3. Start the playground dev server
 bun run dev
 # → http://localhost:3000
 
-# 4. (Optional) Deploy to Vercel
-vercel
+# 4. (Optional) Run a quick Aether program
+echo 'println("hello, world!")' > /tmp/hello.ae
+# (Run it inside the playground — there's no standalone CLI yet.)
 ```
 
-> The sandbox this repo was built in ships with Node 24, Bun 1.3, and the
-> Vercel CLI pre-installed. See [`docs/environment/03-software.md`](docs/environment/03-software.md)
-> for the full tool inventory.
+> The playground is the canonical way to run Aether programs in v1.
+> A standalone CLI is planned for v2 (see `docs/rfcs/rfc-003-modules-and-packages.md`).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  Browser[Browser / Client] -->|HTTPS| Next[Next.js 16 App Router]
-  Next -->|Server Components| UI[shadcn/ui + Tailwind]
-  Next -->|Route Handlers| API[/app/api/route.ts]
-  API --> Prisma[Prisma Client]
-  Prisma --> DB[(SQLite / Postgres)]
-  Next -->|deploy| Vercel[Vercel Edge / Node Runtime]
-  Caddy[Caddy reverse proxy] -.->|self-host| Next
-  Env[docs/environment/] -.->|informs| Next
+  UI["Playground UI<br/>(Next.js, shadcn/ui)"] -->|fetch /api/examples| API["Next.js API<br/>(route handlers)"]
+  UI -->|import @aether/core| Core["Aether core<br/>(lexer · parser · sema · eval)"]
+  UI -->|import @aether/stdlib| Stdlib["Stdlib<br/>(10 modules, ~110 fns)"]
+  Core -->|registerBuiltins| Stdlib
+  Core -->|execute| Output["Program output<br/>(print → console capture)"]
+  API -->|read| Examples[("examples/*.ae<br/>11 sample programs")]
+  UI -->|theme / view state| Store["Zustand store<br/>(client-side)"]
 ```
 
-## Documentation
-
-| Topic | File |
-|-------|------|
-| Environment cartography (index) | [`docs/environment/00-index.md`](docs/environment/00-index.md) |
-| OS & hardware probe | [`docs/environment/01-os-hardware.md`](docs/environment/01-os-hardware.md) |
-| Filesystem probe | [`docs/environment/02-filesystem.md`](docs/environment/02-filesystem.md) |
-| Software inventory | [`docs/environment/03-software.md`](docs/environment/03-software.md) |
-| Network probe | [`docs/environment/05-network.md`](docs/environment/05-network.md) |
-| Runtime smoke tests | [`docs/environment/06-runtime-capabilities.md`](docs/environment/06-runtime-capabilities.md) |
-| Computational benchmarks | [`docs/environment/07-benchmarks.md`](docs/environment/07-benchmarks.md) |
-| Contributing guide | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
-| Code of conduct | [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) |
-
-## Project layout
+## Repo structure
 
 ```
-atlas/
+nexus/
+├── aether/
+│   ├── core/                # Lexer, parser, AST, semantic checker, evaluator
+│   │   ├── lexer/
+│   │   ├── parser/
+│   │   ├── ast/
+│   │   ├── types/
+│   │   ├── sema/
+│   │   └── eval/
+│   ├── stdlib/              # 10 modules, ~110 functions
+│   │   ├── math/  collections/  string/  text/  regex/
+│   │   ├── io/  datetime/  encoding/  crypto/  async/
+│   │   └── index.ts         # registerAll + STDLIB_MANIFEST
+│   ├── vm/                  # (planned) bytecode VM — RFC-002
+│   └── tools/               # (planned) LSP, formatter, linter, CLI
 ├── src/
-│   ├── app/            # Next.js App Router pages & route handlers
-│   ├── components/ui/  # shadcn/ui component library
-│   ├── hooks/          # React hooks
-│   └── lib/            # Shared utilities (db, utils)
-├── prisma/             # Prisma schema & migrations
-├── public/             # Static assets
-├── docs/environment/  # Live environment probes
-├── seed-data/          # Raw benchmark JSON & seed inputs
-├── tests/              # Build/runtime container tests
-├── examples/           # Standalone example apps (e.g. websocket)
-├── .github/            # Issue templates, PR template, CI workflow
+│   ├── app/                 # Next.js 16 App Router — page.tsx + /api/examples
+│   ├── components/playground/  # 6 views, header, footer, sidebar, code editor
+│   └── lib/                 # aether-worker, view-store, theme-provider
+├── examples/                # 11 Aether programs + .md walkthroughs
+├── docs/
+│   ├── spec/                # 17 spec files (language + stdlib)
+│   ├── tutorials/           # 10 tutorials
+│   ├── decisions/           # 10 ADRs
+│   ├── rfcs/                # 5 RFCs (async, VM, modules, borrow-checker, LSP)
+│   └── reference/           # error catalog, glossary, FAQ
+├── .github/                 # Issue/PR templates + CI workflow
 ├── next.config.ts
-├── tsconfig.json
-├── tailwind.config.ts
-├── eslint.config.mjs
-├── package.json
-└── Caddyfile
+├── tsconfig.json            # @aether/* path alias → ./aether/*
+└── package.json
 ```
+
+## Links
+
+- **Live demo:** <LIVE_URL>  <!-- fill in after Vercel deploy -->
+- **GitHub:** https://github.com/AutomatedLabor/nexus
+- **Language spec:** [`docs/spec/00-index.md`](docs/spec/00-index.md)
+- **Tutorials:** [`docs/tutorials/getting-started.md`](docs/tutorials/getting-started.md)
+- **ADRs:** [`docs/decisions/`](docs/decisions/)
+- **RFCs:** [`docs/rfcs/`](docs/rfcs/)
+
+## v1 status (honest)
+
+- ✅ **Tree-walking interpreter** — lexer, parser, semantic checker, evaluator all passing 703 tests.
+- ✅ **Standard library** — 10 modules, ~110 documented functions. (Goal was 25 modules / 300+; got a substantial 10 / 110.)
+- ✅ **Playground** — 6 views, runs Aether in-browser, dark mode, responsive.
+- ✅ **Examples** — 11 programs (fib, fizzbuzz, primes, quicksort, calculator, json_parser, linked_list, matrix_ops, string_utils, todo_cli, game_of_life). (Goal was 30; got 11.)
+- ✅ **Docs** — 51 markdown files, ~111k words across spec / tutorials / ADRs / RFCs / reference / guides. (Goal was ~300k; got ~111k.)
+- 🔜 **v2 (planned):** bytecode VM, async/await, modules, LSP, formatter, linter, package manager — all specced in RFCs, none implemented.
 
 ## License
 
-MIT © ATLAS Contributors — see [`LICENSE`](LICENSE).
+MIT © Project Nexus Contributors — see [`LICENSE`](LICENSE).
 
 ## Contributing
 
-PRs welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) and
-[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) first. Open an issue using one of
-the templates in [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) before
-starting work on anything substantial.
+PRs welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) first.
+Open an issue using one of the templates in
+[`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) before starting work
+on anything substantial.

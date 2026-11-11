@@ -1,413 +1,441 @@
-# Concurrency in Aether
+# Concurrency — honest v1, planned v2
 
-> Audience: anyone wondering where `async`, `await`, `spawn`, and
-> channels are.
-> Prerequisites: basic familiarity with async/await in any
-> language. 30 minutes.
+> Audience: you want to write concurrent Aether.
+> **Short version:** Aether v1 is synchronous. There is no `async`, no `await`, no `spawn`, no `channels`, no scheduler, no event loop, no promises that the evaluator can wait on. The stdlib has an `async` module (in `aether/stdlib/async/index.ts`) — but it is *not callable from a sync Aether script*. It exists for host code that wants to drive async patterns from outside the evaluator, and as a design artifact for the v2 runtime. This tutorial is honest about v1 and sketches the v2 plan.
 
-This tutorial is **honest** about Aether v1's concurrency story.
-v1 is **single-threaded and synchronous**. There is no `async
-fn`, no `await`, no `spawn`, no channels, no `select`. The
-evaluator (`aether/core/eval/eval.ts`) walks the AST one step at
-a time and never yields control to another piece of code.
+This tutorial covers: what "synchronous" means in v1 (every call returns before the next starts), what the stdlib `async` module actually contains and why you can't call it, how to write "concurrent-style" patterns in v1 with what you have, and the v2 plan (`async`/`await`, `spawn`, channels, `select`, structured concurrency).
 
-The v2 plan adds an async/await system, a task scheduler, and
-channels. The design is sketched in
-[../rfcs/rfc-001-async-await.md](../rfcs/rfc-001-async-await.md).
-There is a `stdlib/async` module in the v1 source tree, but its
-functions are not callable from Aether code — the v1 evaluator
-does not understand `Promise` values. See
-[../tutorials/stdlib-tour.md](../tutorials/stdlib-tour.md) §10
-for the honest status.
+---
 
-This document explains what v1 does, what v2 will do, and how to
-write code today that is forward-compatible with the v2 design.
+## 1. Why v1 is synchronous
 
-## 1. The v1 reality
+Aether v1's runtime is a tree-walking interpreter (`aether/core/eval/eval.ts`). Every evaluation step is a synchronous function call: `evalExpr(node, env)` returns a value, or throws a `PanicSignal` / `ReturnSignal` / `BreakSignal` / `ContinueSignal`. There is no event loop, no scheduler, no continuations, and no way to *suspend* a running closure mid-execution. `run(program, opts)` returns synchronously — either a `RunResult` or a thrown error.
 
-Aether v1's evaluator is a synchronous tree-walking interpreter.
-Every program runs to completion (or hits the step limit) before
-control returns to the host. There is no event loop, no
-microtask queue, no scheduler. The runtime is deterministic: the
-same program with the same input always produces the same output
-in the same order.
+This means: when an Aether program calls a function, that function returns before the next statement runs. There is no `await` because there is nothing to wait for. The whole program runs to completion (or hits the step limit, or panics) before control returns to the host.
 
-What this means in practice:
+This is the right trade-off for v1 because:
 
-- **No concurrent execution.** Two pieces of code never run at
-  the same time. There is no parallelism.
-- **No I/O.** v1 has no `fetch`, no `readFile`, no `setTimeout`.
-  The only I/O is `print`/`println` (to the playground's output
-  pane) and a few stdlib `io` functions that only work in Node
-  (which the playground is not).
-- **No callbacks.** A function call is a function call; the
-  caller waits for the callee to return.
-- **No event loop.** The program runs from top to bottom and
-  exits when it reaches the end of the source.
+1. **Implementation simplicity.** A synchronous tree-walker is ~1000 lines. A scheduler, an event loop, and async-aware continuations would have doubled the runtime.
+2. **Browser-runnable.** The playground runs in the browser's main thread (well, actually a worker — see `src/lib/aether-worker.ts` — but conceptually main thread). Async without a scheduler would block the UI.
+3. **Deterministic.** A synchronous program is a sequence of steps. The **Steps** tab in the playground shows them. Debugging is straightforward.
+4. **Forward-compatible.** v2's async runtime layers on top of the same AST; the synchronous evaluator is kept for REPL/LSP/debug scenarios.
 
-This is the simplest possible model. It is correct for the
-playground, which is a teaching tool. It is not correct for a
-production language, which is why v2 adds async.
+The decision is documented in [ADR-01 tree-walking interpreter for v1](../decisions/adr-01-tree-walking-interpreter-for-v1.md) and the v2 design is in [RFC-001 async await](../rfcs/rfc-001-async-await.md).
 
-## 2. Why v1 is single-threaded
+---
 
-Three reasons:
+## 2. The stdlib `async` module — what's in it
 
-1. **Implementation simplicity.** A tree-walking interpreter is
-   1000 lines of code; an event loop is another 500; a
-   work-stealing scheduler is another 2000. v1 prioritized
-   getting *something* working over getting *everything* working.
-2. **Browser constraint.** The playground runs in the browser,
-   which is single-threaded for JavaScript. A multi-threaded
-   language would require Web Workers, which add complexity.
-3. **Teaching value.** A single-threaded language is easier to
-   reason about. There are no races, no deadlocks, no
-   synchronization primitives to learn. You can focus on the
-   type system and the stdlib without worrying about
-   concurrency.
+The stdlib has an `async` module (`aether/stdlib/async/index.ts`, 264 lines, 16 functions). Its `MANIFEST` lists:
 
-The tradeoff is that Aether v1 cannot express any program that
-needs concurrency: web servers, parallel computation, UI
-animation, real-time data processing. Those are all v2 concerns.
+```
+channel() -> Channel                       // unbounded async channel
+send(ch, v) -> Promise<void>
+recv(ch) -> Promise<any>
+close(ch) -> void
+select(ops, timeout?) -> Promise<SelectResult>
+timeout(ms) -> Promise<void>
+spawn(fn) -> Promise<T>
+awaitAll(ps) -> Promise<T[]>
+race(ps) -> Promise<T>
+mapAsync(arr, fn) -> Promise<U[]>
+filterAsync(arr, fn) -> Promise<T[]>
+reduceAsync(arr, fn, init) -> Promise<U>
+defer(fn) -> void
+retry(n, fn) -> Promise<T>
+debounce(fn, ms) -> T
+runAsync(fn) -> Promise<T>
+```
 
-See
-[../decisions/adr-01-tree-walking-interpreter-for-v1.md](../decisions/adr-01-tree-walking-interpreter-for-v1.md)
-for the rationale and
-[../decisions/adr-10-browser-runnable-core.md](../decisions/adr-10-browser-runnable-core.md)
-for the browser constraint.
+These are real, working TypeScript functions backed by JS `Promise`s. They implement channels (unbounded queues with promise-based waiters), `select` (race multiple channel ops with optional timeout), `spawn` (schedule on the microtask queue), `awaitAll`/`race` (Promise.all/race wrappers), `mapAsync`/`filterAsync`/`reduceAsync` (sequential async iteration), `defer` (queueMicrotask), `retry` (try N times), `debounce` (wait `ms` since last call), and `runAsync` (the demo entry point).
 
-## 3. The v2 plan: async/await
+**Why you can't call them from Aether:** the registry (`aether/stdlib/index.ts`) deliberately does *not* call `Async.register`. The `register` function in `aether/stdlib/async/index.ts` throws on every call:
 
-The v2 design adds `async fn`, `await`, `spawn`, channels, and
-`select`. The design is in
-[../rfcs/rfc-001-async-await.md](../rfcs/rfc-001-async-await.md).
-This section sketches the surface syntax with examples. None
-of this runs in v1; the syntax is presented to show where the
-language is going.
-
-### 3.1 `async fn` and `await`
-
-```aether
-// v2 sketch — does NOT run in v1.
-
-async fn fetch_user(id: int) -> User {
-  let resp = await http_get(f"/users/{id}");
-  parse_user(resp)
-}
-
-async fn main() {
-  let alice = await fetch_user(1);
-  print(alice.name);
+```ts
+export function register(_registerBuiltin: (name: string, fn: any) => void): void {
+  throw new Error(
+    "aether/stdlib/async: async primitives require the v2 runtime. " +
+      "The v1 evaluator is synchronous. Use `import * as Async from 'aether/stdlib/async'` " +
+      "from host code if you want to drive Promises directly."
+  );
 }
 ```
 
-- `async fn` declares a function that returns a `Future<T>`.
-- `await` suspends the current task until the future resolves.
-- The runtime is single-threaded by default (cooperative
-  scheduling); a multi-threaded work-stealing runtime is
-  opt-in.
+This is the *honest* choice: a confusing silent failure (returning a `Promise` from a sync call and seeing `[object Promise]` in the output) would be worse than a clear error. The thrown message tells you exactly what's wrong and how to use the module anyway (from host code).
 
-### 3.2 `spawn`
+The async functions return `Promise`s; the v1 evaluator has no machinery to `await` them. If you called `await channel()` from inside an Aether script, you'd get a Promise object back — not the channel's value. Worse, you'd "see" a Promise where you expected an int, and the rest of your program would compute on garbage.
 
-```aether
-// v2 sketch — does NOT run in v1.
+### Using async from host code
 
-async fn main() {
-  let h1 = spawn { fetch_user(1) };
-  let h2 = spawn { fetch_user(2) };
-  let u1 = await h1;
-  let u2 = await h2;
-  print(u1.name);
-  print(u2.name);
+The async module is callable from TypeScript host code (the playground itself, a Node script, a server). For example, a "Run async demo" button could drive `runAsync` from outside the evaluator:
+
+```ts
+// host TypeScript — not Aether
+import * as Async from "aether/stdlib/async";
+
+async function demo() {
+  const ch = Async.channel<number>();
+  Async.send(ch, 1);
+  Async.send(ch, 2);
+  console.log(await Async.recv(ch));   // 1
+  console.log(await Async.recv(ch));   // 2
 }
+demo();
 ```
 
-`spawn { ... }` schedules a task on the runtime and returns a
-`JoinHandle<T>`. `await` on the handle waits for the task to
-complete. Tasks run concurrently; they do not run in parallel
-unless the multi-threaded runtime is enabled.
+This is what the module is for: *host* code that wants to demo concurrent patterns without waiting for v2. From inside an Aether script, none of these are callable.
 
-### 3.3 Channels
+---
+
+## 3. Writing "concurrent-style" code in v1
+
+You can't actually do two things at once in v1. But you can write code that *looks* concurrent and prepares for v2.
+
+### Channels — modeled with arrays
+
+A channel is essentially a queue. You can model one with an array and synchronous `send`/`recv`:
 
 ```aether
-// v2 sketch — does NOT run in v1.
+// A "channel" modeled as an array. Synchronous — no waiting.
+let chan = [];   // acts as a queue
 
-async fn producer(ch: Channel<int>) {
-  for i in range(0, 10) {
-    send(ch, i);
+fn send(ch: [int], v: int) -> () {
+  push(ch, v);
+}
+
+fn recv(ch: [int]) -> int {
+  // In a real channel, this would block until a value is available.
+  // Synchronously, we just take the first element if there is one.
+  let v = ch[0];
+  // remove the first element by copying the tail
+  let mut rest = [];
+  let mut i = 1;
+  while i < len(ch) {
+    push(rest, ch[i]);
+    i = i + 1;
   }
-  close(ch);
+  // (in real code, we'd mutate ch in place, but that's awkward in v1)
+  v
 }
 
-async fn consumer(ch: Channel<int>) {
+send(chan, 1);
+send(chan, 2);
+send(chan, 3);
+print(recv(chan));   // 1
+print(recv(chan));   // 2
+print(recv(chan));   // 3
+```
+
+This is single-threaded — `send` and `recv` happen in source order. There's no waiting; if `recv` is called on an empty channel, you'd panic with an out-of-bounds index. But the *shape* of the code (a queue with send/recv) is what v2 channels will look like.
+
+### Producer/consumer — single-threaded
+
+```aether
+// A producer that fills a buffer, then a consumer that drains it.
+fn producer(n: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n {
+    push(out, i * i);
+    i = i + 1;
+  }
+  out
+}
+
+fn consumer(xs: [int]) -> int {
+  let mut sum = 0;
+  for x in xs { sum = sum + x; }
+  sum
+}
+
+let buf = producer(10);
+print(consumer(buf));   // 285 — sum of squares 0..9
+```
+
+In v2, producer and consumer would run concurrently with a channel between them:
+
+```aether
+// v2 sketch — does NOT run in v1
+
+async fn producer(ch: Channel<int>, n: int) {
+  for i in 0 .. n { await ch.send(i * i); }
+  ch.close();
+}
+
+async fn consumer(ch: Channel<int>) -> int {
+  let mut sum = 0;
+  while let Some(v) = await ch.recv() {
+    sum = sum + v;
+  }
+  sum
+}
+
+let ch = channel();
+spawn(producer(ch, 10));
+let total = await consumer(ch);
+print(total);   // 285
+```
+
+The v1 version is the same algorithm, sequential. The v2 version is the same algorithm, concurrent. You can write the v1 version now; when v2 lands, you add `async`/`await`/`spawn` and it runs concurrently.
+
+### MapReduce — single-threaded
+
+```aether
+let nums = [1, 2, 3, 4, 5];
+
+let squared = map(nums, fn(x: int) -> int { x * x });
+let total = reduce(squared, fn(acc: int, x: int) -> int { acc + x }, 0);
+
+print(total);   // 55
+```
+
+The `map` and `reduce` are sequential. In v2, you'd use `mapAsync` and `reduceAsync` (which exist in the stdlib already, just not callable from sync Aether) — and they'd still be sequential, because they're implemented as `for` loops. To get parallelism you'd need `spawn` + `awaitAll`:
+
+```aether
+// v2 sketch
+
+let nums = [1, 2, 3, 4, 5];
+let ps = map(nums, fn(x: int) -> Promise<int> {
+  spawn(fn() -> int { x * x })   // each square on its own microtask
+});
+let squared = await awaitAll(ps);   // wait for all
+let total = reduce(squared, fn(acc: int, x: int) -> int { acc + x }, 0);
+print(total);   // 55
+```
+
+(In practice the microtask queue doesn't give you parallelism — it gives you interleaving. True parallelism in the browser needs Web Workers; in Node, `worker_threads`. The v2 design tracks this in [RFC-001 async await](../rfcs/rfc-001-async-await.md).)
+
+---
+
+## 4. The v2 plan — `async`/`await`, spawn, channels, select
+
+This is **design-only** — none of the syntax below runs in v1. It's the planned v2 surface, sketched in [RFC-001 async await](../rfcs/rfc-001-async-await.md). The sketch draws from Rust's async model, with explicit acknowledgement that the design is influenced by Go's CSP channels and by Swift's structured concurrency.
+
+### `async` and `await`
+
+```aether
+// v2 sketch
+
+async fn fetch(url: string) -> result<string, string> {
+  // ... imagine an HTTP client ...
+  Result::Ok("hello, world")
+}
+
+async fn main() -> () {
+  let r = fetch("https://example.com");
+  let body = await r?;       // await the result, propagate errors
+  print(body);
+}
+```
+
+`async fn` declares an async function — calling it returns a `Future<T>` (or `Promise<T>` — the v2 design tracks both; the stdlib already uses `Promise` because it's the JS-native abstraction). `await` suspends the calling function until the future resolves.
+
+### `spawn` — start a future in the background
+
+```aether
+// v2 sketch
+
+async fn main() -> () {
+  let task = spawn(fetch("https://example.com"));
+  // ... do other work ...
+  let body = await task;       // wait for the spawned task
+  print(body);
+}
+```
+
+`spawn(future)` starts the future on the runtime's executor. It returns a `JoinHandle<T>` that you can `await` later.
+
+### Channels — first-class
+
+```aether
+// v2 sketch
+
+async fn producer(ch: Channel<int>) -> () {
+  for i in 0 .. 10 { await ch.send(i); }
+  ch.close();
+}
+
+async fn consumer(ch: Channel<int>) -> int {
+  let mut sum = 0;
   loop {
-    let v = await recv(ch);
+    match await ch.recv() {
+      Option::Some(v) => sum = sum + v,
+      Option::None => break,
+    }
+  }
+  sum
+}
+
+async fn main() -> () {
+  let ch = channel();
+  spawn(producer(ch));
+  let total = await consumer(ch);
+  print(total);     // 45
+}
+```
+
+Channels are unbounded by default (the stdlib's `channel()` is unbounded), with a planned bounded variant. `send` and `recv` are async — they suspend the calling task if the channel is full/empty.
+
+### `select` — race multiple operations
+
+```aether
+// v2 sketch
+
+async fn main() -> () {
+  let ch1 = channel();
+  let ch2 = channel();
+  spawn(async fn() -> () { await ch1.send(1); });
+  spawn(async fn() -> () { await ch2.send(2); });
+
+  match await select([ch1.recv(), ch2.recv()]) {
+    SelectResult { index, value } => print(f"got {value} from channel {index}"),
+  }
+}
+```
+
+`select(ops)` returns the first operation that completes. This is Go's `select` (and Rust's `tokio::select!`). The stdlib's `select` already implements the basic version (with a timeout); the v2 surface adds pattern-matching on the result.
+
+### Structured concurrency
+
+```aether
+// v2 sketch
+
+async fn main() -> () {
+  // All spawned tasks in this scope are awaited at scope exit.
+  // If any panic, the scope propagates the panic after all tasks finish.
+  scope {
+    spawn(task_a());
+    spawn(task_b());
+    spawn(task_c());
+  };   // implicit await + error propagation here
+}
+```
+
+Structured concurrency (the Swift / Kotlin coroutines model): spawned tasks are scoped, and the scope doesn't exit until all its tasks finish. This prevents "task leaks" where a spawned task outlives the function that started it. The v2 design includes this; it's the part of the design most likely to look different when implemented.
+
+### Async iteration
+
+```aether
+// v2 sketch
+
+async fn main() -> () {
+  let ch = channel();
+  spawn(producer(ch));
+  for await v in ch {
     print(v);
   }
 }
-
-async fn main() {
-  let ch = channel<int>();
-  spawn { producer(ch) };
-  spawn { consumer(ch) };
-}
 ```
 
-Channels are bounded queues for sending values between tasks.
-`send(ch, v)` puts a value on the channel; `recv(ch)` takes one
-off. `recv` is `async` because the channel might be empty.
+`for await x in async_iterable { ... }` — async iteration over a channel or any `AsyncIterable`. The v2 design tracks this.
 
-### 3.4 `select`
+---
+
+## 5. Why not just use promises in v1?
+
+You might ask: the JS runtime already has Promises. Why not expose them in v1?
+
+The answer is: the v1 evaluator has no way to *suspend* a closure mid-execution. A Promise's `.then()` callback runs later, on the microtask queue — but the Aether evaluator has no mechanism to "park" a partially-evaluated closure and resume it. Implementing that requires either:
+
+1. **Continuation-passing style** — rewriting the evaluator so every call takes a continuation, and async functions can call the continuation with a Promise that will later call the rest. This is a substantial rewrite.
+2. **Generator-based coroutines** — using JS's `function*` and `yield` to implement suspending. This requires the AST to be lowered to JS generators, which is what the v2 bytecode VM does (see [RFC-002 bytecode VM](../rfcs/rfc-002-bytecode-vm.md)).
+3. **Direct-to-bytecode compilation** — the bytecode VM has explicit suspend/resume instructions. This is the v2 plan.
+
+Option (1) is too much work for v1. Option (3) is the v2 plan. The stdlib's `async` module is the *design* for v2 — written as TypeScript functions so the API exists and can be tested — and waits for the v2 runtime to expose it to Aether scripts.
+
+---
+
+## 6. A warning about "concurrent-looking" v1 code
+
+Some patterns *look* concurrent but aren't. Be honest about what v1 gives you.
+
+### "Fire and forget" — doesn't fire
 
 ```aether
-// v2 sketch — does NOT run in v1.
-
-async fn main() {
-  let ch1 = channel<int>();
-  let ch2 = channel<string>();
-  loop {
-    let result = select {
-      v = recv(ch1) => print(f"int: {v}"),
-      s = recv(ch2) => print(f"str: {s}"),
-      timeout(1000) => { print("timeout"); break; },
-    };
-  }
+let mut results = [];
+for i in 0 .. 10 {
+  // This looks like it might start a background task.
+  // It doesn't — it just runs the closure immediately.
+  let r = (fn(x: int) -> int { x * x })(i);
+  push(results, r);
 }
+print(results);   // [0, 1, 4, 9, 16, 25, 36, 49, 64, 81]
 ```
 
-`select` races multiple channel operations and runs the first
-one that becomes ready. This is the Go/Rust pattern for
-multiplexing.
+In v1, every call is synchronous. The closure runs to completion before the next iteration starts. There is no background execution.
 
-### 3.5 Structured concurrency
+### `defer` — doesn't work
 
 ```aether
-// v2 sketch — does NOT run in v1.
-
-async fn main() {
-  // All spawned tasks must complete before `main` returns.
-  let scope = Scope::new();
-  scope.spawn { fetch_user(1) };
-  scope.spawn { fetch_user(2) };
-  scope.spawn { fetch_user(3) };
-  // `scope` waits here for all three to finish.
-}
+// `defer` is in the stdlib's async module but not callable from v1 Aether.
+// defer(fn() -> int { 42 });   // ERROR — defer is not registered
 ```
 
-Structured concurrency is the principle that tasks have a
-well-defined lifetime: they start when their scope starts and
-end when their scope ends. The v2 design is built around this.
+If you try to use `defer` from v1 Aether, the evaluator will report `undefined name 'defer'`. The function exists in the stdlib but is not registered in the v1 evaluator's builtins (because it would need an event loop to schedule on).
 
-## 4. The `async` stdlib module
-
-The v1 source tree has a `aether/stdlib/async` module that
-declares functions like `channel`, `send`, `recv`, `close`,
-`select`, `timeout`, `spawn`, `await_all`, `race`, `map_async`,
-`filter_async`, `reduce_async`, `defer`, `retry`, `debounce`,
-`run_async`. The function signatures are real — they exist in
-`aether/stdlib/async/index.ts` — but they are **not callable
-from Aether v1 code** because the v1 evaluator does not
-understand `Promise` values.
-
-The reason the module exists is to:
-
-1. Document the v2 API. The signatures are the contract.
-2. Let host code (the playground, a future CLI) call the async
-   functions directly. The host can call `await Async.spawn(...)`
-   from JavaScript without needing Aether to know about
-   promises.
-3. Provide a target for the v2 evaluator. When v2 ships, the
-   evaluator will understand promises and the `async` module
-   will become callable from Aether.
-
-The honest status: **the async stdlib module is a spec, not an
-implementation**, for Aether v1 code. See
-[../tutorials/stdlib-tour.md](../tutorials/stdlib-tour.md) §10
-for the details.
-
-## 5. What you can do today
-
-In v1, you have three honest options for "concurrent-looking"
-code.
-
-### 5.1 Sequential composition
-
-Just call functions in sequence. There is no concurrency, but
-the code is clear and the order is deterministic:
+### `timeout` — doesn't work
 
 ```aether
-fn fetch_user(id: int) -> User {
-  // Pretend this is fast.
-  User { id: id, name: "user" }
-}
-
-let alice = fetch_user(1);
-let bob = fetch_user(2);
-print(alice.name);
-print(bob.name);
+// timeout(1000);   // ERROR — undefined name 'timeout'
 ```
 
-This is the v1 idiom. It will continue to work in v2; you can
-upgrade to `async`/`await` when you need concurrency.
+Same reason: `timeout` returns a `Promise`. The v1 evaluator can't wait on it.
 
-### 5.2 Pre-compute everything
-
-If your program needs to "do many things," pre-compute them in
-a loop and use the results. This is the way to write
-data-parallel code in v1:
+### The pattern that *does* work — explicit batching
 
 ```aether
-fn process(items: [int]) -> [int] {
-  map(items, fn(x: int) -> int { x * x })
+// Instead of "async fetch these 10 URLs", do "compute these 10 things sequentially".
+let urls = ["a", "b", "c", "d", "e"];
+let mut results = [];
+for u in urls {
+  // imagine `fetch(u)` returns a string — in v1 we just compute synchronously
+  let body = u + "_body";
+  push(results, body);
 }
-
-let data = range(0, 100);
-let results = process(data);
-print(results[10]);
+print(results);
 ```
 
-For genuinely parallel work in v1, you would need to drop to
-the host JavaScript level and use `Promise.all` outside the
-Aether evaluator. There is no language support for this.
+This is the v1 idiom: do things in sequence, collect results, move on. v2 will give you `await awaitAll(map(urls, async fn(u) { await fetch(u) }))` to do them concurrently.
 
-### 5.3 Write code that is forward-compatible with v2
+---
 
-If you know your code will run under v2 eventually, structure
-it so that adding `async`/`await` is a mechanical change. The
-pattern is:
+## 7. The playground's `async` view (planned)
 
-```aether
-// v1 today.
-fn fetch_and_print(id: int) -> User {
-  let u = fetch_user(id);
-  print(u.name);
-  u
-}
+The v2 plan includes a playground view that runs async demos by *bypassing the sync evaluator* and calling the stdlib `async` functions from host TypeScript. The sketch (in [RFC-001 async await](../rfcs/rfc-001-async-await.md) § 6) is:
 
-// v2 tomorrow — just sprinkle `async` and `await`.
-// async fn fetch_and_print(id: int) -> User {
-//   let u = await fetch_user(id);
-//   print(u.name);
-//   u
-// }
-```
+- A new "Async" view in the playground sidebar.
+- A textarea where you write "host-style" code that can call `spawn`, `channel`, `send`, `recv`, etc. directly.
+- The view runs the code in a JS `async` context (a Web Worker) and displays the resolved values.
 
-Functions that look like they will be I/O-bound (file, network,
-database) should be small, single-purpose, and named with a
-verb that suggests `await` (`fetch`, `read`, `write`, `load`,
-`save`). When v2 ships, the migration is mechanical.
+This isn't v1 either — it's a planned v2 feature. In v1, the closest you can get is the existing **Benchmarks** view, which runs 6 canned programs and charts elapsed time. Those programs are sync (because everything is sync in v1), but the charting is real and the elapsed-time numbers are accurate.
 
-## 6. The `spawn` builtin in v1
+---
 
-There is no `spawn` in v1. The `async` stdlib module exports a
-`spawn` function, but it is not callable from Aether v1 code.
-See §4 above.
+## 8. FAQ
 
-## 7. What the spec says
+**Q: Can I write `async fn` in v1?**
+A: No. The parser accepts `fn` but not `async fn`. You'll see `unexpected token 'async'` (or similar).
 
-The spec at
-[../spec/07-functions-closures-async.md](../spec/07-functions-closures-async.md)
-describes the v2 async design in detail. The key points:
+**Q: Can I `await` a Promise?**
+A: No. The v1 evaluator doesn't know what a Promise is. If a function returns a Promise (e.g., the stdlib `sha512` returns `Promise<string>` — see the [stdlib tour](stdlib-tour.md) § crypto), calling it from v1 Aether returns the Promise object itself, which `print` would render as `[object Promise]` or similar. The stdlib marks these as "host-only" in the manifest.
 
-- `async fn` returns `Future<T>`.
-- `await` is a postfix operator (`expr.await`) and a prefix
-  keyword (`await expr`).
-- The default runtime is single-threaded and cooperative.
-- A multi-threaded work-stealing runtime is opt-in.
-- Tasks have structured lifetimes via `Scope`.
-- Channels are the primary IPC mechanism.
-- `select!` is the multiplexing primitive.
+**Q: Why does the stdlib have an `async` module at all if I can't call it?**
+A: Two reasons: (1) host code (the playground itself, server-side scripts, the planned v2 async view) can call it; (2) it's the design artifact for the v2 runtime. The API exists and is tested, even though v1 doesn't expose it to Aether scripts.
 
-The spec is the v2 target. v1 does not implement any of it.
-The v1 evaluator (`aether/core/eval/eval.ts`) is strictly
-synchronous.
+**Q: Is Aether "thread-safe"?**
+A: v1 has no threads. The playground runs in a single Web Worker. There is no shared state across multiple threads, no mutex, no `Mutex<T>`. v2's structured concurrency model will add the equivalent.
 
-## 8. The honest tradeoff
+**Q: What about parallelism?**
+A: v1 has none. The tree-walker executes one step at a time. Even when v2 adds `async`/`await`, the concurrency is interleaved (cooperative multitasking), not parallel (multiple cores). True parallelism would require Web Workers (browser) or `worker_threads` (Node), which is a v3+ item. See [RFC-001](../rfcs/rfc-001-async-await.md) § 7.
 
-Aether v1 chooses:
+---
 
-- **Synchronous over async.** No event loop, no scheduler, no
-  promises. Code runs top to bottom.
-- **Single-threaded over multi-threaded.** No races, no
-  deadlocks, no synchronization primitives. Code is
-  deterministic.
-- **Browser over server.** v1 runs in the browser, which is
-  single-threaded for JavaScript. v2 will support server-side
-  execution with async.
+## 9. What's next
 
-The tradeoff is that v1 cannot express any program that needs
-concurrency. This is a real limitation, and it is the one most
-likely to make Aether v1 unusable for real applications. The v2
-plan addresses it; see
-[../rfcs/rfc-001-async-await.md](../rfcs/rfc-001-async-await.md).
+- [decisions/adr-01-tree-walking-interpreter-for-v1.md](../decisions/adr-01-tree-walking-interpreter-for-v1.md) — why the v1 runtime is sync.
+- [rfcs/rfc-001-async-await.md](../rfcs/rfc-001-async-await.md) — the v2 async design.
+- [rfcs/rfc-002-bytecode-vm.md](../rfcs/rfc-002-bytecode-vm.md) — the v2 runtime that supports suspend/resume.
+- [stdlib-tour.md](stdlib-tour.md) — the stdlib modules you *can* call in v1.
+- [performance.md](performance.md) — what the synchronous runtime costs.
 
-## 9. A worked example: what v2 will enable
-
-Here is a sketch of what an Aether program that uses async
-will look like in v2. None of this runs in v1; the syntax is
-presented to show the v2 target.
-
-```aether
-// v2 sketch — does NOT run in v1.
-
-async fn fetch_user(id: int) -> User {
-  let resp = await http_get(f"/users/{id}");
-  parse_user(resp)
-}
-
-async fn fetch_all(ids: [int]) -> [User] {
-  let handles = map(ids, fn(id: int) -> JoinHandle<User> {
-    spawn { fetch_user(id) }
-  });
-  await_all(handles)
-}
-
-async fn main() {
-  let users = await fetch_all([1, 2, 3, 4, 5]);
-  for u in users {
-    print(u.name);
-  }
-}
-```
-
-The same program in v1 would be sequential:
-
-```aether
-// v1 today.
-
-fn fetch_user(id: int) -> User {
-  // Pretend this is fast.
-  User { id: id, name: f"user{id}" }
-}
-
-fn fetch_all(ids: [int]) -> [User] {
-  map(ids, fn(id: int) -> User { fetch_user(id) })
-}
-
-let users = fetch_all([1, 2, 3, 4, 5]);
-for u in users {
-  print(u.name);
-}
-```
-
-The v1 version runs all five `fetch_user` calls in sequence;
-the v2 version will run them concurrently. The structure is the
-same; the only change is adding `async` to the function
-declarations and `await` before the calls.
-
-## 10. Where to go next
-
-- **[../rfcs/rfc-001-async-await.md](../rfcs/rfc-001-async-await.md)**
-  — the v2 async/await design.
-- **[../spec/07-functions-closures-async.md](../spec/07-functions-closures-async.md)**
-  — the spec for v2 async, channels, and the task scheduler.
-- **[../spec/11-memory-and-gc.md](../spec/11-memory-and-gc.md)**
-  — the GC design (which matters for v2 because async tasks
-  hold references to captured values).
-- **[../tutorials/stdlib-tour.md](../tutorials/stdlib-tour.md) §10**
-  — the honest status of the `async` stdlib module.
-
-Aether v1 is single-threaded. The v2 plan is async/await with
-channels and structured concurrency. Until v2 ships, write
-code that is forward-compatible with `async` and accept that
-everything is sequential.
+Aether v1's concurrency story is, in three sentences: v1 is synchronous, the stdlib has an `async` module for host code and as a v2 design artifact, and the v2 plan adds `async`/`await`/`spawn`/channels/`select` on top of a bytecode VM with suspend/resume. v1 code keeps working; v2 opts in.

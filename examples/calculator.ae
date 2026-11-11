@@ -1,0 +1,170 @@
+// calculator.ae
+// ==============
+// A prefix-notation arithmetic expression evaluator.
+//
+//   "+ 1 2"     → 3
+//   "* 3 4"     → 12
+//   "- 10 3"    → 7
+//   "/ 20 4"    → 5
+//   "* + 1 2 3" → 9        ( (1 + 2) * 3 )
+//
+// The tokenizer splits the input on spaces. The evaluator reads one token
+// at a time; if it's an operator, it recursively evaluates the next two
+// operands. Errors (unknown token, wrong arity, division by zero) are
+// returned as Result::Err so callers can pattern-match on the outcome.
+//
+// All state (the token list and a position cursor) lives in `mut` locals
+// captured by the inner closures — same trick as the JSON parser example.
+// We wrap single chars from string indexing in `str(...)` so the type
+// checker sees them as strings (indexing returns `char` per sema).
+
+enum Result<T, E> {
+  Ok(T),
+  Err(E),
+}
+
+// Tokenize on whitespace. Walk the string and accumulate non-space chars
+// into `cur`. A space flushes `cur` into `toks`.
+fn tokenize(s: string) -> [string] {
+  let toks = [];
+  let mut cur = "";
+  let mut i = 0;
+  while i < len(s) {
+    let c = str(s[i]);
+    if c == " " || c == "\t" || c == "\n" {
+      if cur != "" {
+        push(toks, cur);
+        cur = "";
+      };
+    } else {
+      cur = cur + c;
+    };
+    i = i + 1;
+  }
+  if cur != "" {
+    push(toks, cur);
+  };
+  toks
+}
+
+// Returns true if c is one of 0..9 — used to recognize a number token.
+fn is_digit(c: string) -> bool {
+  c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+    || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+}
+
+// Parse a token as an integer. Supports a leading '-' for negatives.
+// Returns Result::Ok(n) on success, Result::Err on malformed input.
+fn parse_int_tok(t: string) -> Result<int, string> {
+  let mut start = 0;
+  let mut neg = false;
+  if len(t) > 0 && str(t[0]) == "-" {
+    neg = true;
+    start = 1;
+  };
+  if start >= len(t) {
+    return Result::Err("empty number");
+  };
+  let mut n = 0;
+  let mut i = start;
+  while i < len(t) {
+    let c = str(t[i]);
+    if !is_digit(c) {
+      return Result::Err("not a number: " + t);
+    };
+    let d = if c == "0" { 0 } else {
+      if c == "1" { 1 } else {
+      if c == "2" { 2 } else {
+      if c == "3" { 3 } else {
+      if c == "4" { 4 } else {
+      if c == "5" { 5 } else {
+      if c == "6" { 6 } else {
+      if c == "7" { 7 } else {
+      if c == "8" { 8 } else {
+      9 } } } } } } } } };
+    n = n * 10 + d;
+    i = i + 1;
+  }
+  if neg {
+    return Result::Ok(-n);
+  };
+  Result::Ok(n)
+}
+
+// Evaluate a prefix expression. `toks` and `pos` are captured as mut
+// locals by the inner `step` closure so it can recurse left-to-right.
+fn eval_prefix(s: string) -> Result<int, string> {
+  let toks = tokenize(s);
+  let mut pos = 0;
+
+  fn step() -> Result<int, string> {
+    if pos >= len(toks) {
+      return Result::Err("unexpected end of input");
+    };
+    let t = toks[pos];
+    pos = pos + 1;
+    if t == "+" || t == "-" || t == "*" || t == "/" {
+      // operator: read two operands
+      let a = step();
+      let b = step();
+      match a {
+        Result::Err(e) => { return Result::Err(e); },
+        Result::Ok(av) => {
+          match b {
+            Result::Err(e) => { return Result::Err(e); },
+            Result::Ok(bv) => {
+              if t == "+" { return Result::Ok(av + bv); };
+              if t == "-" { return Result::Ok(av - bv); };
+              if t == "*" { return Result::Ok(av * bv); };
+              if bv == 0 { return Result::Err("division by zero"); };
+              return Result::Ok(av / bv);
+            },
+          }
+        },
+      }
+    };
+    parse_int_tok(t)
+  }
+
+  step()
+}
+
+// Pretty-print helper: shows the input string and the result.
+fn run_one(s: string) {
+  print(f"  {s}");
+  match eval_prefix(s) {
+    Result::Ok(v) => { print(f"    => {v}"); },
+    Result::Err(e) => { print(f"    !! error: {e}"); },
+  };
+}
+
+print("== Prefix-notation calculator ==");
+print("");
+print("Expressions (operator first, operands follow):");
+run_one("+ 1 2");
+run_one("* 3 4");
+run_one("- 10 3");
+run_one("/ 20 4");
+run_one("+ 1 * 2 3");       // 1 + (2*3) = 7
+run_one("* + 1 2 3");       // (1+2) * 3 = 9
+run_one("- * 10 10 + 4 1"); // 100 - 5 = 95
+run_one("/ 100 + 5 5");     // 100 / 10 = 10
+run_one("+ -5 8");          // -5 + 8 = 3
+print("");
+
+print("Error cases:");
+run_one("+ 1");             // missing operand
+run_one("/ 10 0");          // division by zero
+run_one("+ foo 2");         // not a number
+print("");
+
+// Sanity assertions
+match eval_prefix("* + 1 2 3") {
+  Result::Ok(v) => { assert_eq(v, 9); },
+  Result::Err(e) => { panic("expected Ok(9), got Err: " + e); },
+};
+match eval_prefix("/ 10 0") {
+  Result::Err(_) => { print("ok: division-by-zero flagged as Err"); },
+  Result::Ok(v) => { panic("expected Err, got Ok(" + str(v) + ")"); },
+};
+print("All assertions passed.");

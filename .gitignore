@@ -70,3 +70,15 @@ agent-ctx/
 dev.log
 server.log
 *.tsbuildinfo
+
+# Build artifacts (catch nested dirs too, not just root)
+dist/
+build/
+out/
+
+# Local verification scratch
+.verify/
+scratch_*
+verify_*
+dump_*
+debug_*

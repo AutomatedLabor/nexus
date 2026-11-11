@@ -1,558 +1,424 @@
-# Language Basics
+# Language basics
 
-> Audience: someone who finished [getting-started.md](getting-started.md)
-> and wants the full surface tour.
-> Prerequisites: a browser, the playground open, 45 minutes.
+> Audience: you've finished [getting-started.md](getting-started.md), you can run a program, and you want the full syntax tour.
+> Time: ~45 minutes. Every example is runnable.
 
-This tutorial walks the Aether language surface in roughly the order
-a beginner will meet it: bindings, primitive types, arithmetic,
-control flow, functions, closures, strings, arrays, tuples, and
-comments. Each section has runnable examples; paste them into the
-playground and modify them.
+This tutorial is the reference for everyday Aether syntax: bindings, primitives, arithmetic, control flow, functions, closures, strings (with interpolation), arrays, tuples, and comments. We save types-and-generics, error handling, and the stdlib for their own tutorials. The goal is that after this file, you can read any of the example programs in the playground and know what every token does.
 
-The reference for what is described here lives in
-[../spec/04-expressions.md](../spec/04-expressions.md) and
-[../spec/05-statements-and-declarations.md](../spec/05-statements-and-declarations.md).
-For the type system (structs, enums, generics, pattern matching),
-continue to [types-and-generics.md](types-and-generics.md).
+---
 
-## 1. The three binding forms
+## 1. The shape of a program
 
-Aether has three ways to introduce a name: `let`, `let mut`, and
-`const`.
+An Aether program is a single file (v1 — see [ADR-05 no modules in v1](../decisions/adr-05-no-modules-in-v1.md)) consisting of a sequence of top-level *items* and *statements*:
 
 ```aether
-let x: int = 42;            // immutable, annotated
-let mut y: float = 3.14;    // mutable, annotated
-const PI: float = 3.14159;  // compile-time constant
+// top-level items
+fn add(a: int, b: int) -> int { a + b }
+enum Color { Red, Green, Blue, }
+struct Point { x: int, y: int }
+type Age = int;
+
+// top-level statements
+let pi = 3.14159;
+print(add(2, 3));
 ```
 
-### 1.1 `let` — immutable bindings
+Items (`fn`, `enum`, `struct`, `type`) are hoisted — you can use a function or a type before its declaration in the source. Statements (`let`, `let mut`, `const`, expression statements) execute in source order. There is no `main` function; the program is the body. The runtime captures the *value of the last top-level expression* as the program's `value` field; `print` calls accumulate into the `output` array.
 
-`let` introduces a name that cannot be reassigned for the rest of
-its scope. This is the default form; reach for it first.
+### Expression-oriented
+
+Aether is *expression-oriented*: most constructs are expressions. `if`, `match`, and blocks are all expressions. A block `{ stmt; stmt; expr }` evaluates to its trailing expression. This is the Rust/ML influence.
 
 ```aether
-let answer = 6 * 7;
-print(answer);
-// → 42
+let x = if true { 1 } else { 2 };   // x: int = 1
+let y = {
+  let a = 2;
+  let b = 3;
+  a * b
+};                                 // y: int = 6
+print(x);   // 1
+print(y);   // 6
 ```
 
-If you try to reassign a `let`-bound name, the type checker rejects
-it:
+A block with no trailing expression has value `()` (unit). Statements always end with `;` except for the trailing expression of a block, which is *not* followed by `;` — the `;` would make it a statement (with value `()`) instead of an expression.
+
+---
+
+## 2. Comments
+
+Two forms:
 
 ```aether
-let answer = 42;
-answer = 43;
-// → cannot assign to immutable variable 'answer'
+// a single-line comment
+
+/* a multi-line comment
+   that can span lines */
+
+/* nested /* comments */ are allowed */
 ```
 
-This is the most common error new Aether programmers hit. The fix is
-either to declare `let mut` (when you really do want to mutate) or
-to introduce a new `let` (when you want a new value derived from the
-old one):
+Block comments nest — the lexer counts `/*` depth and only ends at the matching `*/`. This is the OCaml/Rust rule.
+
+There's no doc-comment syntax in v1 — `///` is just a sequence of `/` tokens that the parser will reject. The convention is `//` for everything; the v2 LSP will recognize `///` and surface it as hover documentation (see [RFC-005 LSP](../rfcs/rfc-005-lsp.md)).
+
+---
+
+## 3. Bindings: `let`, `let mut`, `const`
+
+Three binding forms, all named, all typed (annotation optional when inferable).
+
+### `let` — immutable binding
 
 ```aether
-let answer = 42;
-let next   = answer + 1;   // new binding, no mutation
-```
-
-### 1.2 `let mut` — mutable bindings
-
-`let mut` introduces a name that can be reassigned. This is the form
-you need for loop counters, accumulators, and any state that
-genuinely changes over time.
-
-```aether
-let mut count = 0;
-count = count + 1;
-count = count + 1;
-print(count);
-// → 2
-```
-
-You can also use compound-assignment operators on `mut` bindings:
-
-```aether
-let mut x = 10;
-x += 5;   // x = 15
-x -= 3;   // x = 12
-x *= 2;   // x = 24
-x /= 4;   // x = 6
-x %= 4;   // x = 2
+let x: int = 42;
+let y = "hi";     // type inferred
+// x = 43;        // ERROR: cannot assign to immutable variable 'x'
 print(x);
-// → 2
 ```
 
-The full set: `+= -= *= /= %= &= |= ^= <<= >>=`. Bitwise compound
-assignments (`&=`, `|=`, `^=`, `<<=`, `>>=`) require `int`
-operands; arithmetic compound assignments work on `int` and `float`.
+The default. Use it for everything that doesn't need to change.
 
-### 1.3 `const` — compile-time constants
-
-`const` declares a value that is known at compile time. In v1, the
-distinction between `const` and `let` is mostly cosmetic — both are
-evaluated at runtime — but `const` signals intent: this value will
-not change, ever, in any version of this program. The linter
-(planned for v2) will eventually prefer `const` for physical
-constants, configuration values, and other compile-time-known data.
+### `let mut` — mutable binding
 
 ```aether
-const MAX_RETRIES: int = 3;
+let mut counter = 0;
+counter = counter + 1;
+counter += 1;     // compound assignment, same thing
+print(counter);   // 2
+```
+
+`let mut` is the only way to get a reassignable binding. Reassignment still type-checks.
+
+### `const` — compile-time constant
+
+```aether
 const PI: float = 3.14159;
-const GREETING: string = "hello";
-
-print(f"PI is roughly {PI}");
+const MAX_USERS: int = 1000;
+print(PI * 2.0);
 ```
 
-A `const` cannot be redeclared in the same scope (this is the same
-rule as `let`).
+In v1, `const` is essentially a `let` of a literal-typed value — the compiler doesn't yet force a constant-expression initializer (see [RFC-002 bytecode VM](../rfcs/rfc-002-bytecode-vm.md) for the v2 plan where `const` participates in compile-time evaluation).
 
-## 2. Primitive types
+### Type annotations
 
-Aether v1 has six primitive types: `int`, `float`, `bool`, `string`,
-`char`, and `unit`.
-
-| Type | Values | Default literal | Notes |
-|------|--------|-----------------|-------|
-| `int` | 64-bit signed integer | `42`, `0xFF`, `0b1010`, `0o17` | wraps on overflow |
-| `float` | IEEE 754 double | `3.14`, `1e10` | saturates on overflow |
-| `bool` | `true` / `false` | `true`, `false` | 1 byte |
-| `string` | UTF-8 string | `"hi"`, `f"x={x}"` | growable |
-| `char` | Unicode scalar value | `'a'`, `'\n'`, `'\u{1F600}'` | 4 bytes |
-| `unit` | `()` | `()` | the only value of the `unit` type |
-
-### 2.1 Integer literals
-
-Integers can be written in decimal, hexadecimal, binary, or octal.
-Underscores between digits are ignored, which is convenient for
-readability:
+Annotations look like `: type` after the binding name:
 
 ```aether
-let dec   = 1_000_000;
-let hex   = 0xFF;
-let bin   = 0b1010;
-let oct   = 0o17;
-
-print(dec);   // → 1000000
-print(hex);   // → 255
-print(bin);   // → 10
-print(oct);   // → 15
+let x: int = 42;
+let y: float = 3.14;
+let z: [int] = [1, 2, 3];
+let w: (int, string) = (1, "a");
+let f: fn(int) -> int = fn(x: int) -> int { x + 1 };
 ```
 
-The `int` type is 64-bit and wraps on overflow (this matches
-JavaScript `Number` for values that fit; very large values lose
-precision because Aether v1 represents `int` as a JavaScript number).
+When the initializer makes the type obvious (`42` for `int`, `"hi"` for `string`), you can omit the annotation. For function types and complex generics, it's idiomatic to write it.
 
-### 2.2 Float literals
+---
 
-Floats are written with a decimal point or an exponent. A decimal
-point with no fractional digits (`1.`) is a lexer error; write
-`1.0`.
+## 4. Primitive types and literals
+
+| Type     | Literal form                  | Notes                                            |
+|----------|-------------------------------|--------------------------------------------------|
+| `int`    | `42`, `-7`, `0xFF`             | 64-bit. Truncates on float assignment.           |
+| `float`  | `3.14`, `-2.0`, `1e10`         | 64-bit IEEE-754.                                 |
+| `bool`   | `true`, `false`               |                                                  |
+| `string` | `"hello"`, `f"x = {x}"`        | UTF-16 internally (JS `string`).                |
+| `char`   | `'a'`, `'\n'`                 | Single code point. Stored as a 1-char string.    |
+| `unit`   | `()`                          | The empty tuple, written `()`.                  |
+
+### Numeric literals
 
 ```aether
-let pi    = 3.14159;
-let avog  = 6.022e23;
-let tenth = 0.1;
+let dec = 42;
+let neg = -7;        // unary minus on `7`
+let hex = 0xFF;      // 255
+let float1 = 3.14;
+let float2 = -2.0;
+let sci = 1e10;      // 10000000000.0
 ```
 
-`int` widens to `float` automatically in mixed arithmetic:
+Aether's `int` and `float` are both JS `number` under the hood (see `aether/core/eval/eval.ts` for the full discussion). The type checker treats them as distinct types; `int` widens to `float` (so `let f: float = 7;` is fine), but `float` does *not* narrow to `int` automatically (`let i: int = 3.14;` is a type error). Use `as int` to explicitly truncate: `let i: int = 3.14 as int;` (gives 3).
+
+### Boolean literals and short-circuit
+
+`true` and `false`. The logical operators `&&` (and), `||` (or), `!` (not) short-circuit. Truth is restricted to `bool` — `if 0 { ... }` is a type error, unlike Python/C.
+
+### Strings — see §9
+
+Aether strings are JS strings — UTF-16, immutable, indexed by code unit. See §9 for the full discussion including interpolation.
+
+### Char
 
 ```aether
-let mixed = 1 + 0.5;
-print(type_of(mixed));
-// → float
+let c: char = 'a';
+let newline: char = '\n';
+print(c);      // a
+print(type_of(c)); // char
 ```
 
-The reverse (narrowing `float` to `int`) is not automatic; you must
-use `as int`:
+A `char` literal is `'` ... `'` containing a single character or an escape (`'\n'`, `'\t'`, `'\\'`, `'\''`). At runtime a `char` is a 1-char `string` — the v1 evaluator doesn't distinguish them; only the type checker does.
+
+### Unit
 
 ```aether
-let f = 3.7;
-let n = f as int;
-print(n);
-// → 3
+let u: () = ();
+print(type_of(u)); // ()
 ```
 
-The `as int` cast truncates toward zero. For other rounding modes,
-use `floor`, `ceil`, or `round` from the `math` stdlib module.
+`()` is the unit value, the empty tuple, the type of "no useful value". A function that doesn't return anything has type `()`. `print` returns `()`. Use it for side-effect-only functions.
 
-### 2.3 Booleans
+---
 
-Booleans have two values: `true` and `false`. They are produced by
-comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`) and
-combined by logical operators (`&&`, `||`, `!`).
+## 5. Arithmetic and operators
+
+### Arithmetic
 
 ```aether
-let t = true;
-let f = false;
-print(t && f);  // → false
-print(t || f);  // → true
-print(!t);      // → false
+print(2 + 3);    // 5
+print(2 - 3);    // -1
+print(2 * 3);    // 6
+print(7 / 2);    // 3   — int division, truncates
+print(7.0 / 2.0); // 3.5
+print(7 % 3);    // 1   — modulo
 ```
 
-`&&` and `||` short-circuit: the right operand is not evaluated if
-the left already determines the result. This matters when the right
-side has a side effect:
+`+`, `-`, `*`, `/`, `%`. `int / int` truncates (it's `Math.trunc` under the hood). `float / float` is real division. `int` operands automatically widen to `float` if the other side is `float`: `7 / 2.0` gives `3.5`, not `3`.
+
+### Comparison
 
 ```aether
-fn side_effect() -> bool { print("called"); true }
-
-let a = false && side_effect();  // side_effect is NOT called
-let b = true  || side_effect();  // side_effect is NOT called
-print("done");
-// → done
+print(2 == 3);   // false
+print(2 != 3);   // true
+print(2 < 3);    // true
+print(2 <= 2);   // true
+print(2 > 3);    // false
+print(2 >= 3);   // false
 ```
 
-### 2.4 Strings
+`==`, `!=`, `<`, `<=`, `>`, `>=`. All return `bool`. They work on any types that *compare* (int, float, string, char, bool); the type checker rejects `2 == "two"` with `cannot compare int with string`.
 
-Strings are UTF-8 and growable. The string stdlib module has ~40
-functions (`split`, `join`, `trim`, `replace`, `replace_all`,
-`starts_with`, `ends_with`, `contains`, `index_of`, `slice`,
-`char_at`, `repeat`, `pad_start`, `pad_end`, `reverse`, `len`,
-`is_empty`, `to_int`, `format`, `to_upper`, `to_lower`, ...). See
-[stdlib-tour.md](stdlib-tour.md) for a tour.
-
-The two literal forms:
+### Logical
 
 ```aether
-let plain = "hello, world";
-let interp = f"hello, {name}!";
+print(true && false); // false
+print(true || false); // true
+print(!true);         // false
 ```
 
-Interpolated strings begin with `f` and can contain any number of
-`{expression}` interpolations:
+Short-circuit: `||` returns the left value if truthy, else the right. `&&` returns the left value if falsy, else the right. Operands must be `bool`.
+
+### Bitwise (int only)
 
 ```aether
-let x = 5;
-let y = 7;
-print(f"{x} + {y} = {x + y}");
-// → 5 + 7 = 12
+print(0xFF & 0x0F); // 15
+print(0xFF | 0xF0); // 255
+print(0xFF ^ 0x0F); // 240
+print(~0);          // -1
+print(1 << 4);      // 16
+print(256 >> 4);    // 16
 ```
 
-The interpolation can contain arbitrary expressions, including
-nested strings:
+`&`, `|`, `^`, `~`, `<<`, `>>` — all require `int` operands. The type checker rejects `1.5 & 0x0F` with `bitwise '&' requires int operands, found float and int`. Under the hood these are JS bitwise ops, which truncate to 32-bit signed integers — so `1 << 32` is `1`, not `0`.
+
+### Assignment and compound assignment
 
 ```aether
-let name = "Alice";
-print(f"greet({name}) = {f"hi, {name}"}");
-// → greet(Alice) = hi, Alice
+let mut x = 1;
+x = x + 1;
+x += 1;
+x -= 1;
+x *= 2;
+x /= 2;
+x %= 2;
+x <<= 1;
+x >>= 1;
+x &= 0xFF;
+x |= 0x10;
+x ^= 0x01;
+print(x);
 ```
 
-### 2.5 Chars
+All compound assignments are sugar: `x += y` is `x = x + y`. They require `x` to be `mut`. They work on `int`, `float`, and (for the bitwise forms) `int` only.
 
-A `char` is a single Unicode scalar value. Char literals use single
-quotes:
+### Ranges
 
 ```aether
-let a = 'a';
-let nl = '\n';
-let tab = '\t';
-let emoji = '\u{1F600}';
+let r = 0 .. 10;     // [0, 10) — exclusive
+let ri = 0 ..= 10;   // [0, 10] — inclusive
+for i in 0 .. 5 { print(i); }   // 0 1 2 3 4
+for i in 0 ..= 5 { print(i); }  // 0 1 2 3 4 5
 ```
 
-The escape sequences are: `\n`, `\r`, `\t`, `\0`, `\\`, `\'`, `\"`,
-`\u{...}`. A multi-code-point grapheme cluster in a `char` literal
-is a lexer error; use a `string` instead.
+`a .. b` is an exclusive range; `a ..= b` is inclusive. Ranges are first-class values (the evaluator represents them as `{ __range, start, end, step }`); the `for x in range` syntax accepts either a range expression or a `range(start, end, step)` call.
 
-The string stdlib exposes `char_code` and `from_char_code` for
-converting between `char` and `int`:
+### Cast
 
 ```aether
-let n = char_code("A", 0);
-print(n);                       // → 65
-print(from_char_code(66));       // → B
+let i: int = 3;
+let f: float = i as float;     // 3.0
+let n: int = 3.99 as int;      // 3 — truncates
+let b: bool = 0 as bool;      // ERROR — bool isn't castable from int
 ```
 
-### 2.6 Unit
+`expr as Type` is an explicit conversion. `int as float` widens; `float as int` truncates. Other casts (e.g. `int as bool`) are rejected by the type checker with `cannot cast int as bool`.
 
-The `unit` type has exactly one value, written `()`. It is the type
-of expressions that have no meaningful value to return: function
-calls like `print`, `println`, `assert`, and the empty block `{}`.
+### `?` postfix (error propagation)
 
 ```aether
-let nothing: () = ();
-print(type_of(nothing));
-// → unit
-```
-
-`unit` is the return type of any function that does not declare a
-return type:
-
-```aether
-fn say_hi() { print("hi"); }
-let r = say_hi();
-print(type_of(r));
-// → unit
-```
-
-## 3. Arithmetic and operators
-
-### 3.1 Arithmetic
-
-The arithmetic operators are `+ - * / %`. They work on `int` and
-`float`; mixing the two widens the result to `float`.
-
-```aether
-print(2 + 3);     // → 5
-print(2.0 + 3);   // → 5
-print(7 / 2);     // → 3.5  (always float division!)
-print(7 % 3);     // → 1   (Python-sign modulo)
-print(-7 % 3);    // → 2   (always non-negative)
-```
-
-Note that `/` is always floating-point division in v1, even on
-`int` operands. For integer (truncating) division, cast the result
-to `int`:
-
-```aether
-let n = (7 / 2) as int;
-print(n);   // → 3
-```
-
-The modulo operator `%` follows Python's sign rule: the result
-always has the same sign as the divisor, so `-7 % 3 == 2`, not
-`-1`. This is the only correct choice for a language that wants
-to be predictable across platforms; see
-[../spec/04-expressions.md](../spec/04-expressions.md) §6 for the
-rationale.
-
-### 3.2 Comparison
-
-`==`, `!=`, `<`, `<=`, `>`, `>=`. They produce `bool`. The
-comparison operators are defined for `int`, `float`, `char`, and
-`string`; comparing incompatible types is a type error:
-
-```aether
-print(1 < 2);          // → true
-print("a" < "b");      // → true
-print(1 == 1.0);       // → true (int widens to float)
-print(1 < "a");         // → cannot compare int with string
-```
-
-### 3.3 Logical
-
-`&&`, `||`, `!`. Operands must be `bool`; the type checker rejects
-non-bool operands:
-
-```aether
-print(true && false);  // → false
-print(!true);          // → false
-print(1 && 2);         // → left of '&&' must be bool, found int
-```
-
-### 3.4 Bitwise
-
-`&`, `|`, `^`, `~`, `<<`, `>>`. Operands must be `int`:
-
-```aether
-print(12 & 10);    // → 8
-print(12 | 10);    // → 14
-print(12 ^ 10);    // → 6
-print(~0);         // → -1
-print(1 << 4);     // → 16
-print(256 >> 2);   // → 64
-```
-
-`<<` and `>>` shift by the given number of bits. Negative shift
-counts are not allowed and will panic at runtime.
-
-### 3.5 Ranges and `as`
-
-The `..` and `..=` operators produce ranges, mostly used in `for`
-loops:
-
-```aether
-for i in range(0, 5) { print(i); }
-// → 0 1 2 3 4
-```
-
-(`range` is a builtin, not a syntax form, in v1; the `..` operator
-is reserved for future use as a range expression.)
-
-The `as` operator performs explicit type conversions:
-
-```aether
-let n = 3.99 as int;          // → 3
-let f = 42 as float;          // → 42.0
-let s = 42 as string;         // → "42"
-let s2 = true as string;      // → "true"
-```
-
-The full list of allowed conversions is in
-[../spec/04-expressions.md](../spec/04-expressions.md) §13. Conversions
-that are not allowed are type errors:
-
-```aether
-let bad = "hello" as int;
-// → cannot cast string as int
-```
-
-## 4. Control flow
-
-Aether has four control-flow constructs: `if`, `while`, `for`, and
-`match`. Three of them (`if`, `match`, and the block) are
-expressions — they produce values.
-
-### 4.1 `if` / `else` — expression form
-
-```aether
-let n = 5;
-let parity = if n % 2 == 0 { "even" } else { "odd" };
-print(parity);
-// → odd
-```
-
-The branches of an `if` are blocks. A block's value is its last
-expression (without a semicolon). The two branches must produce
-compatible types; otherwise the type checker rejects it.
-
-You can chain `else if`:
-
-```aether
-fn classify(n: int) -> string {
-  if n < 0 { "negative" }
-  else if n == 0 { "zero" }
-  else if n < 10 { "small" }
-  else { "large" }
+fn parse_int(s: string) -> result<int, string> {
+  // ... imagine a real implementation ...
+  Result::Ok(42)
 }
 
-print(classify(-5));   // → negative
-print(classify(0));    // → zero
-print(classify(3));    // → small
-print(classify(99));   // → large
+fn double(s: string) -> result<int, string> {
+  let n = parse_int(s)?;     // unwrap Ok, propagate Err
+  Result::Ok(n * 2)
+}
 ```
 
-`if` can also be used as a statement (in which case its value is
-discarded):
+`expr?` unwraps an `Ok`/`Some` value, or propagates the `Err`/`None` by returning from the enclosing function. See [error-handling.md](error-handling.md) for the full pattern.
+
+---
+
+## 6. Control flow
+
+### `if` / `else if` / `else`
 
 ```aether
-let x = 5;
-if x > 3 {
-  print("big");
+let n = 7;
+if n < 0 {
+  print("negative");
+} else if n == 0 {
+  print("zero");
+} else if n < 10 {
+  print("small");
+} else {
+  print("large");
 }
-// → big
 ```
 
-### 4.2 `while` — statement form
+`if cond { ... }` is an expression. The arms must agree on type if you use the result:
+
+```aether
+let s = if n % 2 == 0 { "even" } else { "odd" };
+print(s);
+```
+
+The condition must be `bool`; `if 1 { ... }` is a type error.
+
+### `while`
 
 ```aether
 let mut i = 0;
-let mut sum = 0;
-while i < 10 {
-  sum = sum + i;
+while i < 5 {
+  print(i);
   i = i + 1;
 }
-print(sum);
-// → 45
 ```
 
-`while` is a statement, not an expression. It produces `()`. The
-condition must be `bool`; the type checker rejects non-bool
-conditions:
+`while cond { body }` runs while `cond` is true. `break` exits the loop; `continue` skips to the next iteration. Both are statements (they return `never`).
+
+Using `break` or `continue` outside of a loop is a type error: `'break' outside of a loop` or `'continue' outside of a loop`.
+
+### `for in`
 
 ```aether
-while 1 { ... }
-// → while condition must be bool, found int
-```
-
-`break` exits the loop; `continue` jumps to the next iteration:
-
-```aether
-let mut i = 0;
-let mut evens = 0;
-while i < 10 {
-  i = i + 1;
-  if i % 2 == 1 { continue; }
-  evens = evens + 1;
-}
-print(evens);
-// → 5
-```
-
-`break` and `continue` outside of a loop are errors:
-
-```aether
-break;
-// → 'break' outside of a loop
-```
-
-### 4.3 `for` — over ranges and arrays
-
-```aether
-for i in range(0, 5) {
+for i in range(0, 10) {
   print(i);
 }
-// → 0 1 2 3 4
 
-for x in [10, 20, 30] {
-  print(x);
+let nums = [10, 20, 30];
+for n in nums {
+  print(n);
 }
-// → 10 20 30
-```
 
-`range` is a builtin that produces an array of integers. It takes
-one, two, or three arguments:
+for i in 0 .. 5 {
+  print(i);
+}
 
-- `range(end)` → `0, 1, ..., end - 1`
-- `range(start, end)` → `start, start + 1, ..., end - 1`
-- `range(start, end, step)` → with a step
-
-```aether
-for i in range(10) { print(i); }       // 0..9
-for i in range(2, 6) { print(i); }    // 2..5
-for i in range(0, 10, 2) { print(i); } // 0, 2, 4, 6, 8
-```
-
-`for` also works over arrays:
-
-```aether
-let words = ["alpha", "beta", "gamma"];
-for w in words {
-  print(w);
+for i in 0 ..= 5 {
+  print(i);
 }
 ```
 
-`for` is a statement (returns unit). `break` and `continue` work
-inside it.
+`for x in iterable { body }` iterates over:
+- A `range(start, end, step)` call.
+- A range expression `a .. b` or `a ..= b`.
+- An array `[T]`.
+- A string (iterates over code units, as 1-char strings).
 
-### 4.4 `match` — expression form
+The loop variable is immutable; you can't reassign `i` inside the loop body.
 
-`match` is the most powerful control-flow construct in Aether. It
-performs pattern matching on a scrutinee and produces a value.
+### `break` and `continue`
 
 ```aether
-fn describe(n: int) -> string {
-  match n {
-    0       => "zero",
-    1 | 2   => "small",
-    _       => "many",
+let mut sum = 0;
+for i in 0 .. 100 {
+  if i % 2 == 1 { continue; }   // skip odd
+  if i > 50 { break; }           // stop at 51
+  sum = sum + i;
+}
+print(sum);
+```
+
+Both work inside `while` and `for in`. Outside, they're type errors.
+
+### `match`
+
+```aether
+enum Shape {
+  Circle(float),
+  Square(float),
+  Rect(float, float),
+}
+
+fn area(s: Shape) -> float {
+  match s {
+    Shape::Circle(r)  => 3.14159 * r * r,
+    Shape::Square(s)  => s * s,
+    Shape::Rect(w, h) => w * h,
   }
 }
 
-print(describe(0));    // → zero
-print(describe(2));    // → small
-print(describe(99));   // → many
+print(area(Shape::Circle(2.0))); // 12.56636
 ```
 
-Arms are separated by commas; the trailing comma is optional. The
-left side is a pattern (literal, identifier, `_`, tuple, struct,
-enum variant, or `|`-separated alternation). The right side is an
-expression (or block, which is an expression).
+`match expr { pattern => arm, ... }`. Arms are tried in order; the first matching pattern wins. Patterns can bind variables (the `r` in `Circle(r)`), use wildcards (`_`), nest (see [types-and-generics.md](types-and-generics.md) § on pattern matching).
 
-`match` is exhaustive in v1's linter sense — you must cover all
-cases (with `_` if nothing else matches). v1 does not yet enforce
-exhaustiveness for enums strictly; v2 will (see
-[../spec/03-type-system.md](../spec/03-type-system.md) §6.6).
+A `match` is an expression; arms must agree on type if you use the result.
 
-See [types-and-generics.md](types-and-generics.md) for the full
-pattern-matching section, and
-[error-handling.md](error-handling.md) for `Result`/`Option`
-matching.
+### `return`
 
-## 5. Functions
+```aether
+fn first_even(xs: [int]) -> int {
+  for x in xs {
+    if x % 2 == 0 { return x; }
+  }
+  -1
+}
+```
 
-### 5.1 Declaration
+`return expr;` exits the enclosing function with `expr`. `return;` (no expression) exits with `()`. `return` outside a function is a type error: `'return' outside of a function`.
+
+### Blocks as expressions
+
+```aether
+let x = {
+  let a = compute_a();
+  let b = compute_b();
+  a + b
+};
+```
+
+A block is `{ stmt; stmt; expr }` — its value is the trailing expression. Statements inside the block end with `;`; the trailing expression does *not* end with `;` (a `;` would turn it into a statement and the block's value would be `()`).
+
+---
+
+## 7. Functions
+
+We covered the basics in [getting-started.md](getting-started.md). Here's the full surface.
+
+### Declaration
 
 ```aether
 fn add(a: int, b: int) -> int {
@@ -560,502 +426,359 @@ fn add(a: int, b: int) -> int {
 }
 ```
 
-A function declaration has:
+`fn name(params) -> ret_type { body }`. Parameters are `name: type`, comma-separated. The return type is `-> type`. The body is a block whose trailing expression is the return value. You can write `return` for early exit.
 
-- the `fn` keyword,
-- a name (snake_case by convention),
-- a parameter list `(a: int, b: int)`,
-- an optional return-type annotation `-> int`,
-- a body `{ ... }`.
-
-The body is a block. The last expression (without a semicolon) is
-the return value. You can use `return expr;` to return early from
-anywhere in the body:
+### No-parameter functions
 
 ```aether
-fn first_even(xs: [int]) -> int {
-  for x in xs {
-    if x % 2 == 0 { return x; }
-  }
-  return -1;
+fn greet() -> string {
+  "hello, world"
 }
-
-print(first_even([1, 3, 5, 6, 7]));   // → 6
-print(first_even([1, 3, 5]));        // → -1
 ```
 
-### 5.2 Functions are first-class
+Empty params are `()`. `fn greet() { ... }` (no return type) means return type `()`.
 
-You can store a function in a variable, pass it as an argument, and
-return it from another function:
-
-```aether
-fn add(a: int, b: int) -> int { a + b }
-fn mul(a: int, b: int) -> int { a * b }
-
-let ops = [add, mul];
-print(ops[0](2, 3));    // → 5
-print(ops[1](2, 3));    // → 6
-```
-
-The type of a function is `fn(T1, T2, ...) -> R`:
+### Multiple return statements
 
 ```aether
-fn apply(f: fn(int, int) -> int, a: int, b: int) -> int {
-  f(a, b)
+fn classify(n: int) -> string {
+  if n < 0 { return "negative"; }
+  if n == 0 { return "zero"; }
+  "positive"
 }
-
-print(apply(add, 2, 3));    // → 5
-print(apply(mul, 2, 3));    // → 6
 ```
 
-### 5.3 Generics
+A function with early returns still has a trailing expression for the fall-through case. The type checker verifies all `return expr;` and the trailing expression agree on type.
 
-Functions can be generic over types:
+### Generic functions
 
 ```aether
 fn id<T>(x: T) -> T { x }
-
-print(id<int>(42));       // → 42
-print(id<string>("hi"));  // → hi
-print(id(7));             // → 7  (type inferred)
+fn first<T>(xs: [T], default: T) -> T {
+  if len(xs) == 0 { default } else { xs[0] }
+}
+fn unwrap<T>(o: Option<T>, default: T) -> T {
+  match o {
+    Option::Some(v) => v,
+    Option::None => default,
+  }
+}
 ```
 
-Most of the time you do not need to spell out the type arguments;
-the compiler infers them from the argument types. The explicit form
-with `<int>` (called turbofish in Rust) is rarely needed in v1.
+`<T>` introduces a type parameter. Multiple: `<T, E>`. With constraint: `<T: Ord>` (the constraint is recorded but not enforced in v1 — see [ADR-09](../decisions/adr-09-vitest-for-implementation-tests.md)). The compiler infers `T` at the call site from the argument types: `id(42)` instantiates `T = int`.
 
-### 5.4 Recursion
-
-Functions can call themselves:
-
-```aether
-fn fact(n: int) -> int {
-  if n <= 1 { 1 } else { n * fact(n - 1) }
-}
-
-print(fact(5));
-// → 120
-```
-
-The evaluator has a step limit (1,000,000 by default) that bounds
-how long a program can run. Deep recursion that exceeds this limit
-aborts with `execution step limit exceeded (1000000)`. For very
-deep recursion, see [performance.md](performance.md) for the
-guidance on converting to a `while` loop.
-
-Mutual recursion works:
-
-```aether
-fn is_even(n: int) -> bool {
-  if n == 0 { true } else { is_odd(n - 1) }
-}
-fn is_odd(n: int) -> bool {
-  if n == 0 { false } else { is_even(n - 1) }
-}
-
-print(is_even(10));    // → true
-```
-
-## 6. Closures
-
-A closure is an anonymous function value that captures variables
-from its enclosing scope. The syntax is `fn(params) -> ret { body }`.
+### Closures (anonymous functions)
 
 ```aether
 let add = fn(a: int, b: int) -> int { a + b };
-print(add(2, 3));
-// → 5
+print(add(2, 3)); // 5
+
+let doubled = map([1, 2, 3], fn(x: int) -> int { x * 2 });
+print(doubled); // [2, 4, 6]
 ```
 
-### 6.1 Captures
+`fn(params) -> ret_type { body }` is a closure literal. It's a first-class value of type `fn(params) -> ret_type`. Parameter types are required in v1 (see [ADR-02 nominal types, structural functions](../decisions/adr-02-nominal-types-structural-functions.md) for the design rationale).
 
-Closures can read and write variables from their enclosing scope:
+### Closures capture by reference
 
 ```aether
 let mut counter = 0;
-let inc = fn() -> int {
+let bump = fn() -> int {
   counter = counter + 1;
   counter
 };
-
-print(inc());   // → 1
-print(inc());   // → 2
-print(inc());   // → 3
+print(bump()); // 1
+print(bump()); // 2
+print(bump()); // 3
+print(counter); // 3
 ```
 
-Read captures work too:
+Closures see the *current* value of a captured `mut` binding — including mutations made after the closure was created. This is how you build local state in a language with no mutable struct fields in v1.
+
+### Nested functions
 
 ```aether
-let base = 10;
-let add_base = fn(x: int) -> int { x + base };
-print(add_base(5));    // → 15
-```
-
-### 6.2 Higher-order functions
-
-Closures are the building blocks of higher-order functions like
-`map`, `filter`, and `reduce`:
-
-```aether
-let nums = [1, 2, 3, 4, 5];
-
-let doubled = map(nums, fn(x: int) -> int { x * 2 });
-print(doubled);              // → [2, 4, 6, 8, 10]
-
-let evens = filter(nums, fn(x: int) -> bool { x % 2 == 0 });
-print(evens);                // → [2, 4]
-
-let sum = reduce(nums, fn(a: int, b: int) -> int { a + b }, 0);
-print(sum);                  // → 15
-```
-
-The type of a closure is the same as the type of a named function:
-`fn(T) -> R`. You can pass closures to functions that expect
-function types:
-
-```aether
-fn apply_twice(f: fn(int) -> int, x: int) -> int {
-  f(f(x))
+fn fib_memo(n: int) -> int {
+  let mut cache = [0, 1];
+  fn helper(k: int) -> int {
+    if k < len(cache) {
+      cache[k]
+    } else {
+      let v = helper(k - 1) + helper(k - 2);
+      push(cache, v);
+      v
+    }
+  }
+  helper(n)
 }
 
-let r = apply_twice(fn(n: int) -> int { n + 1 }, 5);
-print(r);
-// → 7
+print(fib_memo(20)); // 6765
 ```
 
-### 6.3 Returning closures
+A nested `fn` is just a closure that captures the enclosing scope. The example is from `examples/fibonacci.ae` — the memoization cache is a `let mut` in the outer function, captured by the inner helper.
 
-A function can return a closure. The returned closure captures
-the function's locals:
+---
 
-```aether
-fn make_adder(n: int) -> fn(int) -> int {
-  fn(x: int) -> int { x + n }
-}
+## 8. Strings and interpolation
 
-let add5 = make_adder(5);
-let add10 = make_adder(10);
+Aether strings are JS strings — UTF-16, immutable. The lexer recognizes:
 
-print(add5(1));    // → 6
-print(add10(1));   // → 11
-```
-
-In v1, closures are heap-allocated (the GC manages them); there is
-no borrow checker to worry about. See
-[ownership.md](ownership.md) for the v1 memory model and the v2
-plan.
-
-## 7. Strings and interpolation
-
-### 7.1 Plain strings
+### Plain string literals
 
 ```aether
 let s = "hello, world";
-print(s);
-print(len(s));      // → 12
+let escaped = "with \"quotes\" and \\ backslash";
+let multiline_supported = "no, single-line only in v1";
 ```
 
-The stdlib `string` module has the full set of operations. The
-most common ones, with examples:
+`"..."` with escape sequences `\"`, `\\`, `\n`, `\t`, `\r`. Multi-line strings are not supported in v1 — use `\n` in a single-line string, or build with concatenation.
+
+### Interpolated string literals (`f"..."`)
 
 ```aether
-let s = "  hello, world  ";
-print(trim(s));                       // → hello, world
-print(to_upper(s));                   // →   HELLO, WORLD
-print(replace(s, "world", "aether"));  // →   hello, aether
-print(starts_with(s, "  he"));        // → true
-print(slice(s, 2, 7));                // → hello
+let name = "aether";
+let n = 42;
+print(f"hello, {name}!");      // hello, aether!
+print(f"n = {n}, n+1 = {n + 1}"); // n = 42, n+1 = 43
+print(f"sum = {1 + 2 + 3}");    // sum = 6
 ```
 
-### 7.2 String concatenation
+`f"..."` is an interpolated string. `{expr}` evaluates `expr` and substitutes its display form. The expression inside the braces is parsed as a full Aether expression; it can include operators, function calls, even other interpolated strings (though nesting is awkward and rare).
 
-Use `+` to concatenate strings:
+The parser re-lexes the inner text of each `{...}` segment as a separate expression; a syntax error inside an interpolation produces `failed to parse interpolation '...': <message>`.
+
+### String operations
 
 ```aether
-let first = "hello";
-let second = "world";
-print(first + ", " + second + "!");
-// → hello, world!
+let s = "hello";
+print(len(s));          // 5
+print(s + " world");    // hello world — + concatenates
+print(s[0]);            // h — index by code unit
+print(s == "hello");    // true
+print(s != "world");    // true
+print(s < "world");     // true — lexicographic
 ```
 
-For joining many strings, prefer the stdlib `join` function over
-repeated `+`:
+`len` (inline builtin) gives the code-unit length. `+` concatenates. `[i]` indexes by code unit (panics if out of bounds). `==`, `!=`, `<`, `<=`, `>`, `>=` compare lexicographically.
+
+For richer string operations — `split`, `join`, `trim`, `replace`, `replaceAll`, `startsWith`, `endsWith`, `contains`, `indexOf`, `slice`, `charAt`, `repeat`, `padStart`, `padEnd`, `reverse`, `toUpper`, `toLower`, `toInt`, `format` — see the [stdlib tour](stdlib-tour.md) § string module.
+
+### char vs string
 
 ```aether
-let parts = ["alpha", "beta", "gamma"];
-print(join(parts, ", "));
-// → alpha, beta, gamma
+let c: char = 'a';
+let s: string = "a";
+print(c == s);  // true at runtime (both are 1-char JS strings)
+print(type_of(c)); // char
+print(type_of(s)); // string
 ```
 
-Repeated `+` in a loop is an anti-pattern — see
-[../guides/anti-patterns.md](../guides/anti-patterns.md).
+`char` and 1-char `string` are different types at compile time but indistinguishable at runtime. The type checker knows the difference; the evaluator doesn't. This is a deliberate v1 simplification — see [ADR-02 nominal types, structural functions](../decisions/adr-02-nominal-types-structural-functions.md).
 
-### 7.3 Interpolated strings
+---
 
-The `f"..."` form interpolates any expression:
-
-```aether
-let name = "Alice";
-let age = 30;
-print(f"{name} is {age} years old");
-// → Alice is 30 years old
-```
-
-The interpolation can contain any expression, including function
-calls:
-
-```aether
-fn fib(n: int) -> int {
-  if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
-}
-
-for i in range(0, 10) {
-  print(f"fib({i}) = {fib(i)}");
-}
-```
-
-For a printf-style format, see the stdlib `format` function in
-[stdlib-tour.md](stdlib-tour.md).
-
-## 8. Arrays
-
-An array is a contiguous, growable list of values. The type is
-`[T]` where `T` is the element type.
-
-```aether
-let nums = [1, 2, 3];
-print(nums[0]);     // → 1
-print(nums[2]);     // → 3
-print(len(nums));   // → 3
-```
-
-### 8.1 Construction
+## 9. Arrays
 
 ```aether
 let empty: [int] = [];
-let three = [1, 2, 3];
-let mixed: [int] = [1, 2, 3, 4, 5];   // all elements same type
+let nums = [1, 2, 3];
+let pairs: [(int, int)] = [(1, 2), (3, 4)];
+
+print(nums[0]);    // 1
+print(nums[2]);    // 3
+print(len(nums));  // 3
+
+let mut xs = [1, 2, 3];
+xs[0] = 99;        // index-assign works on mut arrays
+print(xs);         // [99, 2, 3]
 ```
 
-All elements must have the same type. A heterogeneous list is a
-type error:
+An array is `[T]` — a homogeneous, mutable-by-default-reference (the array object is mutable; whether the *binding* is `mut` controls reassignment of the binding, not mutation of the array). Indexing by `int` returns the element; index-assign works if the binding is `mut` and the value type matches.
 
-```aether
-let bad = [1, "two", true];
-// → elements of array literal must have a common type
-```
-
-(If you really need a heterogeneous list, use an enum or a sum
-type — see [types-and-generics.md](types-and-generics.md).)
-
-### 8.2 Indexing and assignment
-
-```aether
-let mut xs = [10, 20, 30];
-print(xs[1]);      // → 20
-xs[1] = 99;
-print(xs[1]);      // → 99
-```
-
-Out-of-bounds indexing is a runtime panic:
+### Out-of-bounds
 
 ```aether
 let xs = [1, 2, 3];
-print(xs[10]);
-// → array index out of bounds: 10
+print(xs[5]);   // panic: array index out of bounds: 5
 ```
 
-The element type can itself be an array (nested arrays):
+Runtime panics with `array index out of bounds: 5`. The type checker doesn't track array length, so this is a runtime error.
+
+### Building arrays
 
 ```aether
-let grid = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
-print(grid[1][2]);   // → 6
+let mut xs = [];
+for i in 0 .. 10 { push(xs, i * i); }
+print(xs);   // [0, 1, 4, 9, 16, 25, 36, 49, 64, 81]
+print(len(xs)); // 10
 ```
 
-### 8.3 Iteration and higher-order methods
+`push(arr, v)` (inline builtin) appends. `pop(arr)` (inline builtin) drops the last element. Both are non-mutating on the binding (they mutate the array object in place) — see [ownership.md](ownership.md) for the v1 model.
+
+### Higher-order array ops
 
 ```aether
 let nums = [1, 2, 3, 4, 5];
+let doubled = map(nums, fn(x: int) -> int { x * 2 });
+let evens   = filter(nums, fn(x: int) -> bool { x % 2 == 0 });
+let sum     = reduce(nums, fn(acc: int, x: int) -> int { acc + x }, 0);
 
-for x in nums { print(x); }
-
-let squares = map(nums, fn(x: int) -> int { x * x });
-print(squares);          // → [1, 4, 9, 16, 25]
-
-let sum = reduce(nums, fn(a: int, b: int) -> int { a + b }, 0);
-print(sum);              // → 15
-
-let evens = filter(nums, fn(x: int) -> bool { x % 2 == 0 });
-print(evens);            // → [2, 4]
+print(doubled); // [2, 4, 6, 8, 10]
+print(evens);   // [2, 4]
+print(sum);     // 15
 ```
 
-The full list of array builtins: `push` (mutating), `pop`
-(mutating), `len`, `map`, `filter`, `reduce`. The stdlib
-`collections` module adds `slice`, `concat`, `reverse`, `sort`,
-`find`, `find_index`, `every`, `some`, `includes`, `flat`,
-`flat_map`, `zip`, `chunk`, `unique`. See
-[stdlib-tour.md](stdlib-tour.md).
+`map`, `filter`, `reduce` are inline builtins that take a closure. See the [stdlib tour](stdlib-tour.md) for the larger collections module with `find`, `findIndex`, `every`, `some`, `includes`, `indexOf`, `flat`, `flatMap`, `zip`, `chunk`, `unique`, `sort`, `concat`, `reverse`, `slice`.
 
-### 8.4 Array concatenation
+---
+
+## 10. Tuples
 
 ```aether
-let a = [1, 2] + [3, 4];
-print(a);    // → [1, 2, 3, 4]
+let pair: (int, string) = (42, "aether");
+print(pair.0);  // 42
+print(pair.1);  // aether
+
+let triple = (1, 2.0, "three");
+print(triple.2); // three
+
+let nested = ((1, 2), (3, 4));
+print(nested.0.1); // 2
+
+// destructuring in a let
+let (a, b) = pair;
+print(a);  // 42
+print(b);  // aether
 ```
 
-For more than two arrays, use `concat` from the stdlib:
+A tuple is `(T1, T2, ...)`. Field access by `.0`, `.1`, etc. — these are *field accesses on tuple-typed values*, evaluated by the `TupleField` AST node. Indexing `pair[0]` is also supported but the type checker distinguishes: tuple indexing by integer literal works (with a bounds check `tuple index 0 out of bounds (length 2)`), but `pair["0"]` is rejected.
+
+Tuples can be destructured in `let`:
 
 ```aether
-let one = [1];
-let two = [2];
-let three = [3];
-let all = concat(concat(one, two), three);
-print(all);   // → [1, 2, 3]
+let pair = (1, "two");
+let (n, s) = pair;
+print(n); // 1
+print(s); // two
 ```
 
-## 9. Tuples
-
-A tuple is a fixed-size, heterogeneous collection. The type is
-`(T1, T2, ..., Tn)`.
+They can also be destructured in `match`:
 
 ```aether
-let p = (1, 2, 3);
-print(p.0);   // → 1
-print(p.1);   // → 2
-print(p.2);   // → 3
-```
-
-Field access is `.0`, `.1`, `.2`, ... — by position, not name.
-Out-of-bounds access is a type error:
-
-```aether
-let p = (1, 2);
-print(p.5);
-// → tuple field .5 out of bounds (length 2)
-```
-
-Tuples are structural: two tuples with the same element types are
-the same type. They are also immutable — there is no field
-assignment:
-
-```aether
-let mut p = (1, 2);
-p.0 = 99;   // type error
-```
-
-To "update" a tuple, build a new one:
-
-```aether
-let p = (1, 2);
-let q = (p.0 + 1, p.1);
-print(q);   // → (2, 2)
-```
-
-Tuples are most useful for returning multiple values from a
-function:
-
-```aether
-fn div_mod(a: int, b: int) -> (int, int) {
-  (a / b, a % b)
-}
-
-let (q, r) = div_mod(17, 5);
-print(q);   // → 3
-print(r);   // → 2
-```
-
-Tuple patterns in `let` and `match` destructure by position; see
-[types-and-generics.md](types-and-generics.md).
-
-## 10. Comments
-
-Aether has two comment forms:
-
-- `//` to end of line
-- `/* ... */` block, which nests (so `/* a /* b */ c */` is one
-  comment)
-
-```aether
-// This is a line comment.
-
-/* This is a block comment
-   spanning multiple lines. */
-
-let x = 42; /* inline comment */
-
-/* outer /* nested */ outer */
-```
-
-Block comments that are not terminated produce the lexer error
-`unterminated block comment`. Nested block comments are useful for
-commenting out blocks of code that themselves contain block
-comments:
-
-```aether
-/*
-fn old() {
-  /* inner comment */
-  print("disabled");
-}
-*/
-```
-
-There is no doc-comment syntax (`///` or `/**`) in v1; the spec
-plans to introduce them in v2 alongside a doc generator.
-
-## 11. A worked example
-
-Here is a small but complete program that exercises most of what
-this tutorial has covered:
-
-```aether
-// stats.ae — compute simple statistics over an array of ints.
-
-fn mean(xs: [int]) -> float {
-  let total = reduce(xs, fn(a: int, b: int) -> int { a + b }, 0);
-  (total as float) / (len(xs) as float)
-}
-
-fn max_of(xs: [int]) -> int {
-  let mut best = xs[0];
-  for x in xs {
-    if x > best { best = x; }
+fn describe(p: (int, int)) -> string {
+  match p {
+    (0, 0) => "origin",
+    (x, 0) => f"on x-axis at {x}",
+    (0, y) => f"on y-axis at {y}",
+    (x, y) => f"point ({x}, {y})",
   }
-  best
 }
 
-fn summary(xs: [int]) -> string {
-  let m = mean(xs);
-  let h = max_of(xs);
-  f"mean={m}, max={h}, n={len(xs)}"
-}
-
-let data = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3];
-print(summary(data));
-// → mean=3.9, max=9, n=10
+print(describe((0, 0)));  // origin
+print(describe((3, 0)));  // on x-axis at 3
+print(describe((2, 5)));  // point (2, 5)
 ```
 
-Run this in the playground. Then modify it:
+---
 
-1. Add a `min_of` function and include it in `summary`.
-2. Convert `mean` to use a `while` loop instead of `reduce`.
-3. Add a `median` function (sort the array, take the middle
-   element; average the two middle elements if the length is
-   even).
+## 11. Maps (dictionaries)
 
-## 12. Where to go next
+Aether has a `map[K]V` type. In v1, the surface syntax is awkward — you construct maps with the `mapNew` / `mapSet` / `mapGet` stdlib functions rather than a `{k: v, k: v}` literal, because the parser's `{` is reserved for blocks and struct literals:
 
-- **[types-and-generics.md](types-and-generics.md)** — structs,
-  enums, generics, pattern matching, type aliases. The type system
-  tour.
-- **[error-handling.md](error-handling.md)** — `Result`, `Option`,
-  the `?` operator, panic vs. error.
-- **[ownership.md](ownership.md)** — what "no borrow checker" means
-  in v1 and what v2 will add.
-- **[stdlib-tour.md](stdlib-tour.md)** — the ten stdlib modules.
-- **[idiomatic-aether.md](../guides/idiomatic-aether.md)** —
-  20 patterns to internalize.
+```aether
+let mut m = mapNew();
+mapSet(m, "one", 1);
+mapSet(m, "two", 2);
+print(mapGet(m, "one")); // 1
+print(mapHas(m, "two")); // true
+print(mapSize(m));        // 2
 
-You now have enough Aether to write small programs. The rest of the
-tutorials go deeper; the guides give you opinions.
+let keys = mapKeys(m);    // ["one", "two"]
+for k in keys {
+  print(f"{k} -> {mapGet(m, k)}");
+}
+```
+
+The full map / set API is in the [stdlib tour](stdlib-tour.md) § collections module: `mapNew`, `mapSet`, `mapGet`, `mapHas`, `mapDelete`, `mapKeys`, `mapValues`, `mapEntries`, `mapSize`, `setNew`, `setAdd`, `setHas`, `setDelete`, `setSize`, `setToArray`.
+
+Map literal syntax is on the v2 list (see [RFC-003 modules and packages](../rfcs/rfc-003-modules-and-packages.md)).
+
+---
+
+## 12. Putting it together — a small JSON-like value printer
+
+Here's a 40-line program using every construct in this tutorial:
+
+```aether
+// shapes.ae — print a list of shapes, sorted by area, with names.
+
+enum Shape {
+  Circle(float),
+  Square(float),
+  Rect(float, float),
+  Triangle(float, float), // base, height
+}
+
+fn area(s: Shape) -> float {
+  match s {
+    Shape::Circle(r)        => 3.14159 * r * r,
+    Shape::Square(s)        => s * s,
+    Shape::Rect(w, h)       => w * h,
+    Shape::Triangle(b, h)   => 0.5 * b * h,
+  }
+}
+
+fn name(s: Shape) -> string {
+  match s {
+    Shape::Circle(_)    => "circle",
+    Shape::Square(_)    => "square",
+    Shape::Rect(_, _)   => "rectangle",
+    Shape::Triangle(_, _) => "triangle",
+  }
+}
+
+fn describe(s: Shape) -> string {
+  f"{name(s)} (area = {area(s)})"
+}
+
+let shapes = [
+  Shape::Circle(2.0),
+  Shape::Square(3.0),
+  Shape::Rect(3.0, 4.0),
+  Shape::Triangle(2.0, 5.0),
+];
+
+// Print each shape.
+for s in shapes {
+  print(describe(s));
+}
+
+// Compute the total area with reduce.
+let total = reduce(shapes, fn(acc: float, s: Shape) -> float { acc + area(s) }, 0.0);
+print(f"total area = {total}");
+```
+
+Output:
+
+```
+circle (area = 12.56636)
+square (area = 9)
+rectangle (area = 12)
+triangle (area = 5)
+total area = 38.56636
+```
+
+That uses `enum`, `match`, `fn`, closures, `for in`, `reduce`, `f"..."` interpolation, and arithmetic. You can read every line now.
+
+---
+
+## 13. What's next
+
+- [types-and-generics.md](types-and-generics.md) — the type system in depth: tuples, arrays, maps, enums (ADTs), structs, option, result, generics, type inference, numeric widening, type aliases.
+- [error-handling.md](error-handling.md) — `Result<T, E>`, the `?` operator, panic vs. error.
+- [ownership.md](ownership.md) — honest about v1 (GC, immutability) and v2 (borrow checker).
+- [stdlib-tour.md](stdlib-tour.md) — the 200+ stdlib functions.
+- [reference/error-catalog.md](../reference/error-catalog.md) — every error message, decoded.
+- [reference/glossary.md](../reference/glossary.md) — terms, defined.
+
+If you want a longer worked example, the `examples/fibonacci.ae` file in the playground's Examples view shows three implementations of `fib` (recursive, iterative, memoized) using nested closures and array caching — a good test of "did this tutorial land?".

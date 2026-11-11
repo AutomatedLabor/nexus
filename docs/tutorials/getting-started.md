@@ -1,472 +1,507 @@
-# Getting Started with Aether
+# Getting started with Aether
 
-> Audience: someone who has never written Aether before.
-> Prerequisites: a modern browser. That's it.
-> Time to read: 25 minutes. Time to finish the exercises: an afternoon.
+> Audience: someone who just opened the playground and wants to write their first program.
+> Time: ~25 minutes. Every example here is runnable — paste it into the playground and hit **Run** (or `Ctrl/Cmd + Enter`).
 
-This tutorial walks you through installing nothing, opening the
-Aether playground, writing your first program, understanding the
-compile pipeline, and reading the diagnostics the language produces.
-Every code block in this file is runnable — paste it into the
-playground, hit **Run**, and watch it produce the printed output.
+This tutorial walks you from zero to "I can write a small Aether program that compiles, runs, and prints something useful." You will learn how to use the playground, write your first program, declare variables, define functions, and read the four-stage compile pipeline when it complains.
 
-Aether is a statically-typed, expression-oriented language with
-first-class algebraic data types, pattern matching, generics, and a
-small, curated standard library. The v1 implementation is a
-tree-walking interpreter that runs in the browser, so there is no
-`apt-get install`, no `brew install`, no `cargo install`. You open
-the playground and you are programming.
+---
 
-For the language reference, see
-[../spec/01-overview.md](../spec/01-overview.md). For an opinionated
-tour of what "good" Aether looks like, see
-[../guides/idiomatic-aether.md](../guides/idiomatic-aether.md).
+## 1. What Aether is, in one paragraph
 
-## 1. Install nothing
+Aether is a statically-typed, expression-oriented language with influences from Rust, ML, and TypeScript. The v1 implementation is a tree-walking interpreter that runs in the browser — there is no install step, no compiler binary, no toolchain. You open the playground, write code, and press **Run**. Programs are single files. The type checker runs on every keystroke; runtime errors are surfaced inline. v1 ships ~200 stdlib functions across 10 modules (string, math, collections, io, datetime, regex, encoding, crypto, text, async — though `async` is host-only in v1, see the [concurrency tutorial](concurrency.md)).
 
-Aether v1 is a single web page. The compiler, the type checker, and
-the evaluator are all bundled into a single JavaScript module that
-loads in your browser. There is no command-line tool to install, no
-language server to configure, no toolchain to manage.
+If you want the full language tour, the [language-basics tutorial](language-basics.md) follows this one. For types and generics, see [types-and-generics.md](types-and-generics.md). For the v1 vs v2 plan (modules, async, bytecode VM, borrow checker, LSP), see the [decisions](../decisions/) and [RFCs](../rfcs/) directories.
 
-This is deliberate. The first version of Aether is designed to be
-**try-able** in under five seconds. If you have to install anything,
-most people who would otherwise try the language will not. The price
-of that decision is that v1 cannot write files, talk to the network,
-or be embedded in a backend service. Those capabilities are planned
-for v2 (see [../rfcs/rfc-003-modules-and-packages.md](../rfcs/rfc-003-modules-and-packages.md)).
-
-If you *want* a command-line tool today, the closest thing is to
-clone the repo and run the test suite with `bun test` — the test
-runner exercises the same compiler pipeline that the playground uses.
-See [../tutorials/tooling.md](../tutorials/tooling.md) for the
-current state of the tooling and what is planned for v2.
+---
 
 ## 2. The playground
 
-Open the Aether playground. You should see three panes:
+The playground lives at the project root route (`/`) and is a single Next.js page. The left sidebar picks a *view*:
 
-1. **Editor** (left) — a monospace text area where you type Aether
-   source. The editor does not yet do syntax highlighting or
-   autocomplete (see [../rfcs/rfc-005-lsp.md](../rfcs/rfc-005-lsp.md));
-   it is a plain textarea for v1.
-2. **Output** (top right) — the captured stdout of your program,
-   printed line by line as the evaluator runs.
-3. **Inspector** (bottom right) — tabs for **Tokens**, **AST**,
-   **Type errors**, and **Steps**. Each tab shows what that stage of
-   the pipeline produced. The Inspector is the single most useful
-   feature of the playground for learning the language: it makes the
-   compiler pipeline visible instead of hiding it behind a single
-   "compile" button.
+- **Playground** — the editor + output panel. This is where you spend 90% of your time.
+- **Examples** — bundled `.ae` programs (fibonacci, fizzbuzz, primes, json parser, linked list). Click one to load it.
+- **Stdlib** — searchable index of the 200+ stdlib functions, grouped by module.
+- **Benchmarks** — runs six canned programs (`fib(20)`, `fib(25)`, sum 1..500K, string concat 5K, array build 10K, factorial(100)) and charts the elapsed milliseconds and step counts. Useful for getting a feel for the tree-walker's speed.
+- **Explorer** — every example file in the repo, including the `.md` "readme" pairs.
+- **About** — version, links.
 
-Type this into the editor and hit **Run** (or `Ctrl+Enter` /
-`Cmd+Enter`):
+The playground view has a toolbar (`Run | Clear | Format | Load Example | Share`), an editor on the left, and an output panel on the right with tabs: **Output**, **AST**, **Tokens**, **Errors**, and **Stats**.
+
+### Running your first program
+
+The playground opens with a default program. It's already runnable. Click **Run** (or press `Ctrl + Enter` / `Cmd + Enter` on macOS). You should see something like:
+
+```
+55
+2
+12.56636
+12.0
+hello, world!
+fib(10) = 55
+```
+
+That's `fib(10)`, a counter, two shape areas, and two string interpolations. If you don't see that output, check the **Errors** tab — your playground may have been left in a broken state from a previous session.
+
+### Keyboard shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl/Cmd + Enter` | Run the current program |
+| `Ctrl/Cmd + S` | Share (encodes the code in the URL hash) |
+| `Ctrl/Cmd + K` | Clear the editor (depends on browser) |
+
+There's no in-editor auto-format in v1 — `Format` in the toolbar pretty-prints the **AST** panel, not the source. A real Aether formatter is a v2 deliverable (see [RFC-005 LSP](../rfcs/rfc-005-lsp.md)).
+
+---
+
+## 3. Your first program — `hello, aether`
+
+Type (or paste) the following into the editor and press **Run**:
 
 ```aether
-println("Hello, Aether!");
+let name: string = "aether";
+print(f"hello, {name}!");
 ```
 
-The Output pane should show:
+You should see `hello, aether!` in the Output tab.
 
-```
-Hello, Aether!
-```
+Let's unpack that, because even a two-line program uses three Aether features:
 
-Congratulations. You have written your first Aether program. The rest
-of this tutorial unpacks what just happened.
+- `let name: string = "aether";` declares an *immutable* binding called `name` of type `string` and initializes it with a string literal. The type annotation `: string` is optional (the compiler infers it from `"aether"`), but it's idiomatic on top-level bindings for readability.
+- `print(...)` is an *inline builtin*. Aether has ~17 inline builtins (`print`, `println`, `range`, `len`, `type_of`, `assert`, `assert_eq`, `panic`, `str`, `int`, `float`, `min`, `max`, `abs`, `sqrt`, `push`, `pop`, `map`, `filter`, `reduce`) that are always in scope, plus the 200+ stdlib functions. See the [stdlib tour](stdlib-tour.md).
+- `f"hello, {name}!"` is a *string interpolation* literal. The `f` prefix marks an interpolated string; `{name}` evaluates `name` and substitutes its display form. You can interpolate arbitrary expressions: `f"fib(10) = {fib(10)}"`, `f"sum = {1 + 2 + 3}"`.
 
-## 3. Hello, world — annotated
+### A slightly bigger program
 
 ```aether
-println("Hello, Aether!");
+fn square(x: int) -> int {
+  x * x
+}
+
+fn sum_of_squares(n: int) -> int {
+  let mut acc = 0;
+  let mut i = 1;
+  while i <= n {
+    acc = acc + square(i);
+    i = i + 1;
+  }
+  acc
+}
+
+print(sum_of_squares(5));   // 1 + 4 + 9 + 16 + 25 = 55
 ```
 
-This is a single expression statement. `println` is a built-in
-function in the inline-eval environment (see
-[../spec/12-stdlib.md](../spec/12-stdlib.md) for the full stdlib
-catalog). It takes one argument, prints it, and returns unit (`()`).
+Three things to notice:
 
-The string `"Hello, Aether!"` is a *plain* string literal. Aether
-also has interpolated strings, which begin with `f`:
+1. **Function bodies are expressions.** `square`'s body is just `x * x` — no `return`. The last expression in a block is the block's value. (You can write `return x * x;` if you prefer; both work.)
+2. **`let mut`** declares a mutable binding. Plain `let` is immutable — you can't reassign it later. We use `mut` for `acc` and `i` because the loop updates them.
+3. **`while`** is a statement; the loop body uses `=` (assignment) to update `acc` and `i`. You can't write `acc += square(i);` ... wait, you can — `+=` is a compound assignment that works on mutable bindings of numeric type. The example above uses `acc = acc + square(i);` to make the assignment explicit; either form works.
+
+Run it. You should see `55`.
+
+---
+
+## 4. Variables — `let`, `const`, `let mut`
+
+Aether has three binding forms. They look similar but have very different semantics.
+
+### `let` — immutable binding
 
 ```aether
-let name = "world";
-println(f"Hello, {name}!");
+let x: int = 42;
+let y = "hi";     // type inferred: string
+// x = 43;        // ERROR: cannot assign to immutable variable 'x'
+print(x);
 ```
 
-The `{name}` is an interpolation; the inner source is parsed as an
-expression, evaluated, and rendered into the string. You can
-interpolate any expression that has a printable form:
+A plain `let` is the default. Use it for everything that doesn't need to change. The type annotation `: int` is optional when the initializer makes the type obvious; the compiler will infer it.
+
+### `let mut` — mutable binding
 
 ```aether
-let x = 5;
-let y = 7;
-println(f"{x} + {y} = {x + y}");
-// → 5 + 7 = 12
+let mut counter = 0;
+counter = counter + 1;
+counter = counter + 1;
+print(counter);   // 2
 ```
 
-The semicolon at the end of the statement is required for top-level
-expression statements. Inside a block, a final expression *without* a
-semicolon is the block's value (see
-[../tutorials/language-basics.md](../tutorials/language-basics.md)).
+`let mut` declares a binding you can later reassign with `=`. Reassignment still has to type-check: `counter = "hi"` would fail because `counter` is `int`.
 
-## 4. Your first variables
-
-Aether has three binding forms: `let`, `let mut`, and `const`.
+### `const` — compile-time constant
 
 ```aether
-let x: int = 42;           // immutable, type annotated
-let mut y: float = 3.14;   // mutable, type annotated
-const PI: float = 3.14159; // compile-time constant
+const PI: float = 3.14159;
+const GREETING: string = "hello";
+print(PI * 2.0);    // 6.28318
 ```
 
-`let` introduces an immutable binding. You cannot reassign it
-later; the type checker rejects `x = 99` with the message
-`cannot assign to immutable variable 'x'` (see
-[../reference/error-catalog.md](../reference/error-catalog.md)).
+`const` declares a value that the compiler treats as a literal-like constant. In v1 the semantic difference between `const` and `let` of a literal type is mostly cosmetic — the type checker accepts both the same way, and the evaluator substitutes the value at the binding's use sites. The distinction matters more for readability ("this is a magic number I named") than for code generation. (The v2 plan is for `const` to require a constant-expression initializer and to participate in compile-time evaluation; see [RFC-002 bytecode VM](../rfcs/rfc-002-bytecode-vm.md).)
 
-`let mut` introduces a mutable binding. You can reassign it, and you
-can use compound-assignment operators like `+=`, `-=`, `*=`, `/=`,
-`%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`.
-
-`const` declares a constant. In v1, the difference between `const`
-and `let` is mostly cosmetic — both are evaluated at runtime — but
-`const` signals intent and is the form the linter will eventually
-prefer for compile-time-known values (see
-[../decisions/adr-08-stdlib-as-typescript-functions.md](../decisions/adr-08-stdlib-as-typescript-functions.md)).
-
-Type annotations are optional in most places. The compiler does
-bidirectional type inference (see
-[../spec/03-type-system.md](../spec/03-type-system.md)) and will
-fill in the type from the initializer when it can:
+### Type inference on bindings
 
 ```aether
-let z = 42;        // inferred int
-let pi = 3.14;     // inferred float
-let s = "hi";      // inferred string
-let b = true;      // inferred bool
-let u = ();        // inferred unit
+let a = 42;        // int
+let b = 3.14;      // float
+let c = "x";       // string
+let d = true;      // bool
+let e = [1, 2, 3]; // [int]
+let f = (1, "a");  // (int, string)
+print(type_of(a)); // "int"
+print(type_of(b)); // "float"
 ```
 
-Integer literals default to `int` and float literals default to
-`float`. There is no `i32` vs `i64` distinction at the surface in v1
-— the language has one `int` (64-bit) and one `float` (IEEE double).
-See [../spec/03-type-system.md](../spec/03-type-system.md) §1.1 for
-the rationale.
+`type_of` is an inline builtin that returns the type name of a value as a string — handy when you're not sure what the compiler inferred. Use it liberally while you're learning.
 
-## 5. Your first function
+---
+
+## 5. Functions — the workhorse
+
+Aether functions are declared with `fn`. They take typed parameters and return a typed value. The body is a block, and the last expression in the block is the return value.
+
+### Basic functions
 
 ```aether
 fn add(a: int, b: int) -> int {
   a + b
 }
 
-print(add(2, 3));
-// → 5
-```
-
-A function declaration has:
-
-- a name (`add`),
-- a parameter list `(a: int, b: int)`,
-- an optional return type annotation `-> int`,
-- a body `{ ... }`.
-
-The body is a block. The **last expression** in the block (without
-a trailing semicolon) is the function's return value. You do not
-need to write `return` for the common case. If you do write
-`return`, it must be `return EXPR;` — bare `return;` returns unit.
-
-Functions are first-class values. You can pass them as arguments,
-store them in variables, and return them from other functions:
-
-```aether
-fn apply(f: fn(int) -> int, x: int) -> int { f(x) }
-fn inc(n: int) -> int { n + 1 }
-
-print(apply(inc, 41));
-// → 42
-```
-
-You can also write anonymous function literals (closures) with the
-`fn` keyword:
-
-```aether
-let nums = [1, 2, 3];
-let doubled = map(nums, fn(x: int) -> int { x * 2 });
-print(doubled[0]); print(doubled[1]); print(doubled[2]);
-// → 2
-// → 4
-// → 6
-```
-
-`map`, `filter`, `reduce`, `push`, `pop` are inline built-ins
-provided by the evaluator (see
-[../tutorials/stdlib-tour.md](../tutorials/stdlib-tour.md) for the
-complete tour).
-
-## 6. Running via the playground UI
-
-The playground has three controls:
-
-- **Run** (`Ctrl+Enter` / `Cmd+Enter`) — compiles and runs the
-  current source.
-- **Format** — disabled in v1 (planned for v2; see
-  [../rfcs/rfc-005-lsp.md](../rfcs/rfc-005-lsp.md)).
-- **Share** — produces a URL that encodes the current source as a
-  query parameter, so you can bookmark or send a program to a
-  colleague.
-
-The playground is a single route (`/`). There is no project view, no
-multi-file editing, no terminal. This is intentional for v1; the
-plan for v2 is a package manager and a multi-file module system
-(see
-[../rfcs/rfc-003-modules-and-packages.md](../rfcs/rfc-003-modules-and-packages.md)
-and
-[../decisions/adr-07-single-playground-route.md](../decisions/adr-07-single-playground-route.md)).
-
-After you press **Run**, the Inspector populates. The four tabs
-correspond to the four stages of the compiler pipeline:
-
-| Tab | Stage | Source |
-|-----|-------|--------|
-| Tokens | lexer | `aether/core/lexer/lexer.ts` |
-| AST | parser | `aether/core/parser/parser.ts` |
-| Type errors | sema | `aether/core/sema/sema.ts` |
-| Steps | eval | `aether/core/eval/eval.ts` |
-
-The **Steps** tab shows how many evaluator steps the program took.
-The v1 evaluator has a step limit (default 1,000,000 steps) and
-aborts with `execution step limit exceeded (1000000)` if the
-program runs longer than that. This is the single most important
-performance constraint to understand about v1; see
-[../tutorials/performance.md](../tutorials/performance.md).
-
-## 7. The compile pipeline
-
-When you hit **Run**, the playground calls `compileAndRun(source)`,
-which is the public entry point of `aether/core/index.ts`. That
-function runs four stages:
-
-1. **Lex** — the lexer turns the source string into a list of tokens
-   plus a list of lexer errors. Each token carries its source
-   location (file, line, column, byte offset). The lexer is
-   error-recovering: a bad character does not stop lexing.
-2. **Parse** — the parser turns the token list into an AST plus a
-   list of parse errors. The parser is also error-recovering: it
-   skips to the next `;` or `}` and continues, so a single source
-   file may produce multiple parse errors.
-3. **Check** — the semantic analyzer (sema) walks the AST, resolves
-   names, and infers types. Type errors are accumulated, not
-   aborting: you see all type errors at once.
-4. **Run** — the evaluator walks the AST and executes it. Runtime
-   errors (panics) are caught and reported in `runtime.error`.
-
-The pipeline is non-fatal at every stage: a lexer error does not
-stop parsing, a parse error does not stop type-checking, and a type
-error does not stop evaluation. This is a deliberate design choice
-for a teaching language — you should see *all* your errors at once,
-not one at a time. The tradeoff is that a program with type errors
-may still produce output, which can be confusing. See
-[../decisions/adr-01-tree-walking-interpreter-for-v1.md](../decisions/adr-01-tree-walking-interpreter-for-v1.md)
-for the rationale.
-
-The shape of the result is:
-
-```ts
-{
-  tokens: Token[];
-  parseErrors: ParseError[];
-  ast: Program;
-  typeErrors: TypeError[];
-  runtime: { output: string[]; value: Value; error: { message: string } | null; steps: number } | null;
-  ok: boolean;
-  errors: Array<{ stage: "lex" | "parse" | "type" | "runtime"; message: string }>;
+fn greet(name: string) -> string {
+  f"hello, {name}"
 }
+
+print(add(2, 3));        // 5
+print(greet("aether")); // hello, aether
 ```
 
-`ok` is `true` iff every error list is empty. The playground uses
-`ok` to color the Run button green or red.
+### Early return
 
-## 8. Reading errors
+The trailing-expression rule covers 95% of functions. For the other 5%, use `return`:
 
-Aether errors are designed to be read by humans. Every error has:
+```aether
+fn first_even(xs: [int]) -> int {
+  for x in xs {
+    if x % 2 == 0 {
+      return x;
+    }
+  }
+  -1
+}
 
-- a **stage** (`lex`, `parse`, `type`, `runtime`),
-- a **message** (a single line of plain English),
-- a **location** (file, line, column).
+print(first_even([1, 3, 5, 8, 9])); // 8
+print(first_even([1, 3, 5]));        // -1
+```
 
-Here is a real example. Type this into the playground:
+`return expr;` exits the function with `expr`. `return;` (no expression) exits with `()`. A function whose body falls off the end without a trailing expression returns `()`.
+
+### Generic functions
+
+```aether
+fn id<T>(x: T) -> T { x }
+
+fn first<T>(xs: [T], default: T) -> T {
+  if len(xs) == 0 { default } else { xs[0] }
+}
+
+print(id(42));              // 42
+print(id("hello"));         // hello
+print(first([1, 2, 3], 0)); // 1
+print(first([], 0));        // 0
+```
+
+`<T>` after the function name introduces a type parameter. The compiler infers `T` at each call site — `id(42)` instantiates `T = int`, `id("hello")` instantiates `T = string`. You don't need to write the type argument explicitly (you can: `id<int>(42)` works too).
+
+### Closures
+
+A `fn` declaration is just sugar for a `let` of a closure:
+
+```aether
+let add = fn(a: int, b: int) -> int { a + b };
+print(add(2, 3)); // 5
+```
+
+Closures capture their enclosing scope by reference, so a `let mut` counter captured by a closure is shared:
+
+```aether
+let mut counter = 0;
+let bump = fn() -> int {
+  counter = counter + 1;
+  counter
+};
+print(bump()); // 1
+print(bump()); // 2
+print(bump()); // 3
+print(counter); // 3
+```
+
+The closure body uses `counter = counter + 1` — an assignment to the *captured* mutable binding. The compiler knows `counter` is `mut` because it was declared `let mut counter`. Closures are how you build local state in a language with no `class` and no mutable struct fields (yet — see [ownership.md](ownership.md) for the v1/v2 story).
+
+### Higher-order functions
+
+Functions are first-class values. The `map`, `filter`, and `reduce` inline builtins take closures:
+
+```aether
+let nums = [1, 2, 3, 4, 5];
+let doubled = map(nums, fn(x: int) -> int { x * 2 });
+let evens   = filter(nums, fn(x: int) -> bool { x % 2 == 0 });
+let sum     = reduce(nums, fn(acc: int, x: int) -> int { acc + x }, 0);
+
+print(doubled); // [2, 4, 6, 8, 10]
+print(evens);   // [2, 4]
+print(sum);     // 15
+```
+
+Note that the lambda has to declare its parameter and return types explicitly: `fn(x: int) -> int { ... }`. v1 does not infer lambda parameter types from the higher-order function's signature. (The v2 plan, [RFC-005 LSP](../rfcs/rfc-005-lsp.md), includes bidirectional inference that would close this gap.)
+
+---
+
+## 6. The compile pipeline
+
+When you press **Run**, the playground calls `compile(source)`, which runs four stages and returns a single result object. Understanding the pipeline makes the error messages legible.
+
+```
+source → lex → parse → check → run
+```
+
+### Stage 1: lex
+
+The lexer turns the source string into a flat list of *tokens* (keywords, identifiers, literals, operators, punctuation, with positions). It also emits *lexer errors* for things it can't recover from: unterminated strings, bad number literals, unknown characters. You can see the tokens by switching to the **Tokens** tab in the playground.
+
+A lexer error example — try this:
+
+```aether
+let s = "unterminated;
+```
+
+You'll see the message `unterminated string literal` in the Errors tab. The token stream stops at the bad literal, but the lexer keeps going (recovery) so the parser can still try to make sense of the rest.
+
+### Stage 2: parse
+
+The parser takes the token stream and builds an *abstract syntax tree* (AST) — a tree of `IntLit`, `Binary`, `FnDecl`, `Match`, … nodes. The full node vocabulary is ~80 kinds (see `aether/core/ast/ast.ts`). The parser accumulates errors like `expected ';'`, `expected 'in'`, `unexpected token`; it tries to recover at statement boundaries so a single typo doesn't kill the rest of the parse.
+
+A parser error example:
+
+```aether
+let x = 42
+let y = 43;
+```
+
+You'll see `expected ';', found 'let' at <aether>:2:1` — the parser expected a semicolon after `42` and found `let` instead. The fix is to add the missing semicolon.
+
+The AST is visible in the **AST** tab as a tree-like view; switching there is often the fastest way to understand what the parser actually saw (vs. what you thought you wrote).
+
+### Stage 3: type-check (sema)
+
+The semantic analyzer (`sema`) walks the AST and assigns types to every expression. It also accumulates *type errors* — but unlike the parser, sema doesn't block the runtime. If your program has type errors, the runtime still runs (this is "lenient playground semantics"; see [ADR-09 vitest for implementation tests](../decisions/adr-09-vitest-for-implementation-tests.md)). The reasoning: in a teaching playground, it's often instructive to see *what* a slightly-typed-wrong program does at runtime.
+
+A type error example:
 
 ```aether
 let x: int = "hello";
 ```
 
-The Type errors tab will show:
+You'll see `expected int, found string`. The fix is to either change the annotation to `string` or change the initializer to an integer.
 
-```
-expected int, found string at <aether>:1:14
-```
+### Stage 4: run
 
-The location format is `file:line:column`. The file name is
-`<aether>` (the default for playground source). The line and column
-are 1-based, so `1:14` means line 1, column 14 — the start of the
-`"hello"` literal.
+The tree-walking evaluator walks the AST, executing statements and evaluating expressions. It captures `print`/`println` output, accumulates a step counter (default limit 1,000,000 steps), and catches runtime errors (`panic`, division by zero, out-of-bounds index, missing struct field, no match arm matched, etc.) into a `runtime.error` field that surfaces in the Errors tab.
 
-The error messages are stable across versions; the catalog at
-[../reference/error-catalog.md](../reference/error-catalog.md) lists
-every message the lexer, parser, sema, and evaluator can produce,
-with a bad → good example for each.
-
-Here are the four most common kinds of error you will meet in your
-first hour with the language.
-
-### 8.1 Lexer errors
+A runtime error example:
 
 ```aether
-let x = "hello;
+let xs = [1, 2, 3];
+print(xs[5]);
 ```
 
-```
-unterminated string literal
+You'll see `array index out of bounds: 5` in the Errors tab. The Output tab will show nothing — the panic aborted the program before any `print` ran. (Well, in this case there's no `print` before the panic, but in general, output emitted before a panic is still visible.)
+
+### The `CompileResult` shape
+
+The full result object returned by `compile(source)` is:
+
+```ts
+{
+  tokens: Token[],       // from lex
+  parseErrors: ParseError[],
+  ast: Program,          // always present, even on parse errors
+  typeErrors: TypeError[],
+  runtime: RunResult | null,   // null if parsing hard-failed
+  ok: boolean,           // true iff no errors at all
+  errors: Array<{ stage: "lex" | "parse" | "type" | "runtime"; message: string }>,
+}
 ```
 
-The lexer hit the end of the file while still inside a string. Add
-the closing `"`.
+`runtime` is `{ value, output, error?, steps }`. `value` is the last top-level expression's value; `output` is the array of strings captured by `print`/`println`; `error` is the first runtime error (or absent); `steps` is the step count.
 
-### 8.2 Parse errors
+---
+
+## 7. Reading errors
+
+Aether tries to make errors legible. Here is the anatomy of an error message:
+
+```
+[aether]:type:7:5: expected int, found string
+```
+
+That's:
+
+- `[aether]:type` — the stage that emitted it (here, type checker).
+- `7:5` — line 7, column 5 (1-based) of the source.
+- `expected int, found string` — what the checker expected and what it found.
+
+The Errors tab in the playground shows the same information, color-coded: lex errors in one color, parse errors in another, type errors in a third, runtime errors in a fourth. The position links to the editor — clicking an error scrolls the editor to the offending line (depending on playground version).
+
+### Three real error scenarios
+
+**Scenario A: missing semicolon.**
+
+```aether
+let x = 42
+print(x)
+```
+
+Errors:
+
+```
+expected ';', found 'print' at <aether>:2:1
+```
+
+The fix is obvious: add `;` after `42`. The parser recovers at the statement boundary, so the second line parses fine — but you'll also see `expected ';', found '<eof>'` at the end of the file because the parser expects every statement to terminate.
+
+**Scenario B: wrong argument type.**
 
 ```aether
 fn add(a: int, b: int) -> int { a + b }
-let r = add(1, 2)
+print(add(2, "three"));
 ```
 
+Errors:
+
 ```
-expected ';', found '<eof>' at <aether>:2:21
+argument 2: expected int, found string
 ```
 
-The parser reached end-of-file while looking for a `;` to terminate
-the `let r = add(1, 2)` statement. Add the semicolon.
+The message tells you which argument (2nd) and what was expected vs. what was passed.
 
-### 8.3 Type errors
+**Scenario C: no match arm matched (runtime).**
 
 ```aether
-let x = 1 + "two";
-```
+enum Color { Red, Green, Blue, }
 
-```
-operator '+' not defined for int and string at <aether>:1:13
-```
-
-The semantic analyzer could not find a `+` overload for `int + string`.
-Either cast the string to int (`1 + (int("two") ?? 0)`) or convert
-the int to a string (`(1 as string) + "two"`).
-
-### 8.4 Runtime errors
-
-```aether
-let a = [1, 2, 3];
-print(a[5]);
-```
-
-```
-array index out of bounds: 5
-```
-
-The evaluator ran the program, hit the index access, and panicked.
-Runtime errors are reported in the Output pane (not the Type errors
-tab) because they happen at execution time, not at compile time.
-
-For the full catalog, see
-[../reference/error-catalog.md](../reference/error-catalog.md).
-
-## 9. A bigger example
-
-Here is a small but complete program that exercises most of what
-this tutorial has covered. Paste it into the playground and run it.
-
-```aether
-// fib.ae — compute Fibonacci numbers, demonstrate recursion + match.
-
-enum Option<T> { Some(T), None, }
-
-fn fib(n: int) -> int {
-  if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
-}
-
-fn lookup(xs: [int], i: int) -> Option<int> {
-  if i < 0 { Option::None }
-  else if i >= len(xs) { Option::None }
-  else { Option::Some(xs[i]) }
-}
-
-fn show(o: Option<int>) -> int {
-  match o {
-    Option::Some(v) => v,
-    Option::None   => -1,
+fn name(c: Color) -> string {
+  match c {
+    Color::Red => "red",
   }
 }
 
-print(f"fib(10) = {fib(10)}");
-print(f"xs[2]   = {show(lookup([10, 20, 30], 2))}");
-print(f"xs[99]  = {show(lookup([10, 20, 30], 99))}");
+print(name(Color::Green));
+```
 
-let mut acc = 0;
-let mut i = 0;
-while i < 5 {
-  acc = acc + fib(i);
-  i = i + 1;
+The type checker doesn't enforce match exhaustiveness in v1, so this passes type-check. At runtime:
+
+```
+no match arm matched
+```
+
+The fix is to add arms for `Green` and `Blue`, or a wildcard `_ => "unknown"` arm. See [error-handling.md](error-handling.md) for the full pattern.
+
+---
+
+## 8. A complete first program
+
+Let's put it all together with a runnable program that exercises bindings, functions, generics, enums, pattern matching, and string interpolation — the same constructs the default playground program uses, but written from scratch so you know what every line does.
+
+```aether
+// temperature.ae — convert between Celsius and Fahrenheit with an enum
+// to mark the unit, and a small dispatch function.
+
+enum Temp {
+  C(float),
+  F(float),
 }
-print(f"sum of fib(0..5) = {acc}");
+
+fn to_c(t: Temp) -> float {
+  match t {
+    Temp::C(c) => c,
+    Temp::F(f) => (f - 32.0) * 5.0 / 9.0,
+  }
+}
+
+fn to_f(t: Temp) -> float {
+  match t {
+    Temp::C(c) => c * 9.0 / 5.0 + 32.0,
+    Temp::F(f) => f,
+  }
+}
+
+fn describe(t: Temp) -> string {
+  let c = to_c(t);
+  let f = to_f(t);
+  f"{c} C = {f} F"
+}
+
+print(describe(Temp::C(0.0)));   // 0 C = 32 F
+print(describe(Temp::F(212.0))); // 100 C = 212 F
+print(describe(Temp::C(23.0)));  // 23 C = 73.4 F
 ```
 
-Expected output:
+Paste that in, run it, and you should see three lines of output. Try adding a `Kelvin` variant — the type checker will tell you that `to_c` doesn't handle it... actually wait, it *won't* (v1 doesn't enforce exhaustiveness), so the runtime will. That's a feature of the v1 type checker — see [ADR-09](../decisions/adr-09-vitest-for-implementation-tests.md) for the discussion.
 
+---
+
+## 9. Common gotchas in the first hour
+
+### Missing semicolons
+
+Every statement ends with `;`. The parser is strict about this. The error message tells you the *line and column* where it expected the semicolon, and what token it found instead.
+
+### `print` takes a single expression
+
+`print` is one argument. To print two things, use `print(f"{x} {y}")` or call `print` twice. `print(1, 2)` is a type error: `expected 1 arguments, found 2`.
+
+### Lambda parameter types are required
+
+`fn(x) -> int { x * 2 }` will fail with `expected type, found ')'` because the parser requires a type annotation on every lambda parameter. Write `fn(x: int) -> int { x * 2 }` instead. (This is a v1 simplification; v2 may infer them. See [RFC-005 LSP](../rfcs/rfc-005-lsp.md).)
+
+### `int` truncates on float assignment
+
+```aether
+let x: int = 7 / 2;       // 3 — int division
+let y: float = 7.0 / 2.0; // 3.5 — float division
+let z: int = 3.5;         // ERROR — int and float are different types
 ```
-fib(10) = 55
-xs[2]   = 30
-xs[99]  = -1
-sum of fib(0..5) = 7
-```
 
-Notice:
+You can explicitly convert with `as`: `let z: int = 3.5 as int;` (this truncates). `int` widens to `float` automatically in the other direction: `let f: float = 7;` is fine (7 widens to 7.0). See [types-and-generics.md](types-and-generics.md) § on numeric widening.
 
-- `enum Option<T> { Some(T), None, }` declares a generic sum type
-  with two variants. The trailing comma after `None` is permitted.
-- `match` over `Option` is exhaustive because we cover both `Some`
-  and `None`.
-- `if` is an expression: `if n < 2 { n } else { ... }` returns a
-  value.
-- `while` is a statement (returns unit) but uses `mut` bindings for
-  the loop counter and accumulator.
-- The `f"..."` string interpolates any expression that has a
-  printable form.
+### `match` doesn't enforce exhaustiveness
 
-This is most of the surface of Aether. The next tutorial,
-[language-basics.md](language-basics.md), goes deeper into each of
-these constructs with worked examples.
+You can write a `match` that doesn't cover all variants. The compiler won't complain, but the runtime will panic with `no match arm matched` if execution reaches an uncovered case. This is documented as a v1 limitation; see [ADR-09](../decisions/adr-09-vitest-for-implementation-tests.md).
 
-## 10. Where to go next
+### Closures capture by reference
 
-- **[language-basics.md](language-basics.md)** — variables, control
-  flow, functions, closures, strings, arrays. The 6,000-word tour
-  of the language surface.
-- **[types-and-generics.md](types-and-generics.md)** — structs,
-  enums, generics, pattern matching, type aliases. The 6,000-word
-  tour of the type system.
-- **[error-handling.md](error-handling.md)** — `Result`, `Option`,
-  the `?` operator, panic vs. error, propagation patterns.
-- **[ownership.md](ownership.md)** — what v1 has (immutability, GC,
-  no borrow checker) and what v2 will have (affine types, borrow
-  check, lifetimes).
-- **[stdlib-tour.md](stdlib-tour.md)** — a tour of the ten stdlib
-  modules with one runnable example each.
-- **[testing.md](testing.md)** — `assert`, `assert_eq`, and how to
-  write test functions that run in the playground.
-- **[idiomatic-aether.md](../guides/idiomatic-aether.md)** — 20
-  idiomatic patterns to internalize.
-- **[faq.md](../reference/faq.md)** — 50+ common questions answered.
+A closure sees the *current* value of a captured `mut` binding, including mutations made after the closure was created. See the `bump()` example in §5.
 
-Welcome to Aether. Be patient with the v1 limits; the v2 plan is
-[../rfcs/](../rfcs/) and the design decisions that got us here are
-in [../decisions/](../decisions/).
+### The step limit is 1,000,000
+
+A program that runs forever (infinite loop, deep recursion) is killed at 1,000,000 evaluation steps and the runtime reports `execution step limit exceeded (1000000)`. `fib(30)` (~2.7M calls) hits this. `fib(20)` (~13.5K calls) is fine. See [performance.md](performance.md) for the full story.
+
+---
+
+## 10. What to read next
+
+- [language-basics.md](language-basics.md) — the full tour of syntax: every operator, every control-flow construct, every literal.
+- [types-and-generics.md](types-and-generics.md) — tuples, arrays, maps, enums (ADTs), structs, option/result, generics, type inference, numeric widening.
+- [error-handling.md](error-handling.md) — `Result<T, E>`, the `?` operator, panic vs. error, propagation patterns.
+- [ownership.md](ownership.md) — *honest* version: v1 has GC and immutability-by-default, not borrow checking. The v2 plan is there too.
+- [concurrency.md](concurrency.md) — *honest* version: v1 is synchronous. The v2 async/await design is there.
+- [stdlib-tour.md](stdlib-tour.md) — the 200+ stdlib functions, organized by module.
+- [testing.md](testing.md) — `assert`, `assert_eq`, the planned test runner.
+- [tooling.md](tooling.md) — the playground, planned REPL/LSP/formatter/linter/pkg.
+- [performance.md](performance.md) — the tree-walker's speed, the step limit, what to do about `fib(30)`.
+- [reference/error-catalog.md](../reference/error-catalog.md) — every error message the implementation can produce, with a cause and a fix for each.
+- [reference/glossary.md](../reference/glossary.md) — 150+ terms you'll meet in the docs.
+- [reference/faq.md](../reference/faq.md) — 50+ real Q&A.
+
+When you're ready to write something larger, the Examples view in the playground has five working programs from 30 to 350 lines each. The `fibonacci.ae` example in particular shows three implementations of the same function (recursive, iterative, memoized) and is a good benchmark for "can I read idiomatic Aether?".
+
+Welcome to Aether. Press Run.
