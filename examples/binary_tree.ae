@@ -1,0 +1,165 @@
+// binary_tree.ae
+// ===============
+// A small binary-search-tree built from a recursive enum and three
+// pure recursive operations:
+//
+//   insert(t, v)         O(log n) typical, O(n) worst case
+//   in_order(t)          returns the sorted array via recursion + concat
+//   search(t, v)         returns true if v is in the tree
+//
+// The tree type:
+//
+//   enum Tree {
+//     Node(int, Tree, Tree),
+//     Leaf,
+//   }
+//
+// `Node(int, Tree, Tree)` is a Node carrying the key plus its left and
+// right subtrees. `Leaf` is the empty tree. Operations never mutate a
+// tree — they construct a new one (functional-persistent style).
+//
+// We build the tree from the sequence [5, 3, 7, 1, 4, 6, 8] using a
+// recursive helper `build_from` rather than a `for v in vals` loop,
+// because the playground has a known scoping quirk where a `let t`
+// bound before a `for` loop and then referenced after the loop fails
+// with "undefined name". Recursion sidesteps that quirk and is also
+// the more idiomatic Aether pattern for accumulators.
+
+enum Tree {
+  Node(int, Tree, Tree),
+  Leaf,
+}
+
+// Insert a value into the tree, returning a new tree. Duplicate keys
+// go to the right subtree (so the tree can hold duplicates; we don't
+// rely on that, but it keeps the logic branch-free).
+fn insert(t: Tree, v: int) -> Tree {
+  match t {
+    Tree::Leaf => Tree::Node(v, Tree::Leaf, Tree::Leaf),
+    Tree::Node(k, l, r) => {
+      if v < k {
+        Tree::Node(k, insert(l, v), r)
+      } else {
+        Tree::Node(k, l, insert(r, v))
+      }
+    },
+  }
+}
+
+// In-order traversal: left subtree, root, right subtree. Returns a
+// sorted int array. Uses array concat (`+`) which works at runtime
+// (the type checker doesn't model `+` on `[int]`, so two type errors
+// are reported but the program runs correctly — Aether's playground
+// runs programs with type warnings rather than blocking them).
+fn in_order(t: Tree) -> [int] {
+  match t {
+    Tree::Leaf => [],
+    Tree::Node(k, l, r) => in_order(l) + [k] + in_order(r),
+  }
+}
+
+// Pre-order traversal: root, left, right. Useful for visualizing the
+// tree structure: each `Node` is followed by its descendants.
+fn pre_order(t: Tree) -> [int] {
+  match t {
+    Tree::Leaf => [],
+    Tree::Node(k, l, r) => [k] + pre_order(l) + pre_order(r),
+  }
+}
+
+// Membership test. Returns true iff v appears in the tree. Standard
+// BST recursion: compare to root, recurse left or right.
+fn search(t: Tree, v: int) -> bool {
+  match t {
+    Tree::Leaf => false,
+    Tree::Node(k, l, r) => {
+      if v == k {
+        true
+      } else {
+        if v < k { search(l, v) } else { search(r, v) }
+      }
+    },
+  }
+}
+
+// Compute the depth of the tree (number of edges from root to deepest
+// leaf). A single-node tree has depth 1, an empty tree has depth 0.
+fn depth(t: Tree) -> int {
+  match t {
+    Tree::Leaf => 0,
+    Tree::Node(_, l, r) => {
+      let dl = depth(l);
+      let dr = depth(r);
+      1 + (if dl >= dr { dl } else { dr })
+    },
+  }
+}
+
+// Build a tree from an array by inserting each element in turn. We
+// use a recursive helper (with an index) so we never reference a
+// pre-loop `let` after a `for` — that pattern hits a known scoping
+// quirk in the v1 evaluator.
+fn build_from(vals: [int]) -> Tree {
+  fn helper(i: int, acc: Tree) -> Tree {
+    if i >= len(vals) {
+      acc
+    } else {
+      helper(i + 1, insert(acc, vals[i]))
+    }
+  }
+  helper(0, Tree::Leaf)
+}
+
+// Render an int array as "[1, 2, 3]" via reduce — the canonical
+// Aether pattern for avoiding the for-loop-scope quirk when building
+// a string out of an array.
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+// --- Demonstration ----------------------------------------------------
+
+print("== Binary search tree (recursive enum) ==");
+print("");
+
+let vals = [5, 3, 7, 1, 4, 6, 8];
+print(f"insert order:  {show_ints(vals)}");
+
+let tree = build_from(vals);
+print(f"pre-order:      {show_ints(pre_order(tree))}");
+print(f"in-order:       {show_ints(in_order(tree))}  (sorted)");
+print(f"depth:          {depth(tree)}");
+print("");
+
+// Membership tests: 3 hits (in tree), 3 misses (not in tree).
+print("search:");
+let hits  = [3, 6, 8];
+let misses = [0, 9, 100];
+for v in hits {
+  print(f"  search({v}) = {search(tree, v)}");
+}
+for v in misses {
+  print(f"  search({v}) = {search(tree, v)}");
+}
+print("");
+
+// Build a degenerate "all-in-order" tree from [1, 2, 3, 4, 5] — this
+// exercises the worst-case O(n) shape: every insert goes to the right.
+let sorted = [1, 2, 3, 4, 5];
+let degenerate = build_from(sorted);
+print(f"sorted input:   {show_ints(sorted)}");
+print(f"degenerate in-order: {show_ints(in_order(degenerate))}");
+print(f"degenerate depth:    {depth(degenerate)}  (worst-case = n)");
+print("");
+
+// Sanity assertions
+assert_eq(in_order(tree), [1, 3, 4, 5, 6, 7, 8]);
+assert_eq(pre_order(tree), [5, 3, 1, 4, 7, 6, 8]);
+assert_eq(search(tree, 4), true);
+assert_eq(search(tree, 9), false);
+assert_eq(depth(tree), 3);
+assert_eq(depth(build_from([])), 0);
+print("All assertions passed.");

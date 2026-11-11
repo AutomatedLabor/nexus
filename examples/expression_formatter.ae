@@ -1,0 +1,124 @@
+// expression_formatter.ae
+// =========================
+// A pretty-printer for a tiny arithmetic-expression AST. The AST is
+// a recursive enum with four constructors:
+//
+//   enum Expr {
+//     Num(int),
+//     Add(Expr, Expr),
+//     Mul(Expr, Expr),
+//     Neg(Expr),
+//   }
+//
+// `fmt(e)` walks the tree and returns a fully-parenthesized infix
+// string. For example:
+//
+//   Mul(Add(Num(1), Num(2)), Num(3))   ->  "(1 + 2) * 3"
+//   Add(Num(1), Mul(Num(2), Num(3)))   ->  "1 + (2 * 3)"
+//   Neg(Add(Num(1), Num(2)))           ->  "-(1 + 2)"
+//
+// The implementation is pure recursion + pattern matching + string
+// concat — no for-loops, no mutable state, no arrays. This is the
+// most idiomatic Aether pattern for working with recursive enums:
+// every function is a single `match` whose arms recurse into the
+// sub-expressions.
+
+enum Expr {
+  Num(int),
+  Add(Expr, Expr),
+  Mul(Expr, Expr),
+  Neg(Expr),
+}
+
+// Pretty-print an expression with full parenthesization. The top
+// level never gets outer parens (so `Mul(...)` prints as `... * ...`
+// rather than `(... * ...)`) — we use a helper that takes a `top`
+// flag so the outermost call knows to skip its enclosing parens.
+fn fmt(e: Expr) -> string {
+  fn go(e: Expr, top: bool) -> string {
+    match e {
+      Expr::Num(n) => str(n),
+      Expr::Neg(inner) => "-" + go(inner, false),
+      Expr::Add(a, b) => {
+        let s = go(a, false) + " + " + go(b, false);
+        if top { s } else { "(" + s + ")" }
+      },
+      Expr::Mul(a, b) => {
+        let s = go(a, false) + " * " + go(b, false);
+        if top { s } else { "(" + s + ")" }
+      },
+    }
+  }
+  go(e, true)
+}
+
+// Evaluate the expression to an integer. Pure recursion, mirrors
+// the structure of `fmt`. Used for cross-checking the pretty-printed
+// result against the expected numeric value.
+fn eval_expr(e: Expr) -> int {
+  match e {
+    Expr::Num(n) => n,
+    Expr::Neg(inner) => -eval_expr(inner),
+    Expr::Add(a, b) => eval_expr(a) + eval_expr(b),
+    Expr::Mul(a, b) => eval_expr(a) * eval_expr(b),
+  }
+}
+
+// A handful of expressions used as worked examples below. We build
+// each one by hand from the enum constructors.
+let ex1 = Expr::Mul(Expr::Add(Expr::Num(1), Expr::Num(2)), Expr::Num(3));           // (1+2)*3 = 9
+let ex2 = Expr::Add(Expr::Num(1), Expr::Mul(Expr::Num(2), Expr::Num(3)));           // 1+(2*3) = 7
+let ex3 = Expr::Neg(Expr::Add(Expr::Num(1), Expr::Num(2)));                   // -(1+2) = -3
+let ex4 = Expr::Add(Expr::Neg(Expr::Num(5)), Expr::Num(8));                   // -5+8 = 3
+let ex5 = Expr::Mul(Expr::Add(Expr::Num(10), Expr::Num(1)), Expr::Add(Expr::Num(2), Expr::Num(3)));  // 11*5 = 55
+let ex6 = Expr::Add(Expr::Num(7), Expr::Neg(Expr::Mul(Expr::Num(2), Expr::Num(4))));      // 7 + -(2*4) = -1
+let ex7 = Expr::Mul(Expr::Num(2), Expr::Mul(Expr::Num(3), Expr::Mul(Expr::Num(4), Expr::Num(5)))); // 2*(3*(4*5)) = 120
+
+// --- Demonstration ----------------------------------------------------
+
+print("== Expression formatter (recursive enum + pattern match) ==");
+print("");
+
+let exs = [
+  ("Mul(Add(Num(1),Num(2)),Num(3))",   ex1),
+  ("Add(Num(1),Mul(Num(2),Num(3)))",   ex2),
+  ("Neg(Add(Num(1),Num(2)))",          ex3),
+  ("Add(Neg(Num(5)),Num(8))",          ex4),
+  ("Mul(Add(Num(10),Num(1)),Add(Num(2),Num(3)))", ex5),
+  ("Add(Num(7),Neg(Mul(Num(2),Num(4))))",        ex6),
+  ("Mul(Num(2),Mul(Num(3),Mul(Num(4),Num(5))))",  ex7),
+];
+for pair in exs {
+  let label = pair.0;
+  let e = pair.1;
+  print(f"  {label}");
+  print(f"    formatted: {fmt(e)}");
+  print(f"    value:     {eval_expr(e)}");
+}
+print("");
+
+// Sanity assertions: pretty-print + eval roundtrips.
+assert_eq(fmt(ex1), "(1 + 2) * 3");
+assert_eq(fmt(ex2), "1 + (2 * 3)");
+assert_eq(fmt(ex3), "-(1 + 2)");
+assert_eq(fmt(ex4), "-5 + 8");
+assert_eq(fmt(ex5), "(10 + 1) * (2 + 3)");
+assert_eq(fmt(ex6), "7 + -(2 * 4)");
+assert_eq(fmt(ex7), "2 * (3 * (4 * 5))");
+assert_eq(eval_expr(ex1), 9);
+assert_eq(eval_expr(ex2), 7);
+assert_eq(eval_expr(ex3), -3);
+assert_eq(eval_expr(ex4), 3);
+assert_eq(eval_expr(ex5), 55);
+assert_eq(eval_expr(ex6), -1);
+assert_eq(eval_expr(ex7), 120);
+
+// A small stress test: deeply-nested left-leaning addition.
+// 1 + (2 + (3 + (4 + 5)))
+let nested = Expr::Add(Expr::Num(1), Expr::Add(Expr::Num(2), Expr::Add(Expr::Num(3), Expr::Add(Expr::Num(4), Expr::Num(5)))));
+print(f"deep nested add: {fmt(nested)}  =  {eval_expr(nested)}");
+assert_eq(eval_expr(nested), 15);
+assert_eq(fmt(nested), "1 + (2 + (3 + (4 + 5)))");
+print("");
+
+print("All assertions passed.");

@@ -1,0 +1,123 @@
+// number_guessing.ae
+// ====================
+// A "guess the number" simulation. The computer picks a hardcoded
+// target (42), and we play the role of the guesser by walking
+// through a fixed list of guesses [50, 25, 37, 43, 41, 42]. For each
+// guess we print the guess and a hint ("too high", "too low", or
+// "correct!"). The session ends as soon as a guess matches the target.
+//
+// This is a tiny demonstration of:
+//
+//   - a `for v in arr` loop with a `print` inside the loop body
+//     (printing inside the loop is fine — the known v1 scoping quirk
+//     is only about referencing a `let X` bound BEFORE the loop,
+//     AFTER the loop ends; nothing here does that),
+//   - early loop termination with the `break` keyword,
+//   - string interpolation for the per-guess report line,
+//   - a small `report_guess` helper that returns a hint string.
+//
+// We also run a second pass: a *binary-search* over the [1, 100]
+// range that computes the optimal guesses from scratch (no hard-
+// coded list) and prints the trace. This shows the same logic from
+// the "computer's" side. A textbook binary search of a 100-element
+// range needs at most ceil(log2(100)) ≈ 7 probes; the trace below
+// for target 42 happens to take exactly 7 (because int division
+// rounds the midpoint down, which shrinks the upper range slightly
+// slower than the lower one).
+
+fn report_guess(target: int, guess: int) -> string {
+  if guess == target {
+    "correct!"
+  } else {
+    if guess < target { "too low" } else { "too high" }
+  }
+}
+
+// Run one simulated guessing session over a fixed list of guesses.
+// Returns the number of guesses made (including the winning one).
+fn play_session(target: int, guesses: [int]) -> int {
+  let mut count = 0;
+  for g in guesses {
+    count = count + 1;
+    let hint = report_guess(target, g);
+    print(f"  guess #{count}: {g}  ->  {hint}");
+    if g == target {
+      print(f"  solved in {count} guesses.");
+      break;
+    }
+  }
+  count
+}
+
+// Optimal binary search for the target in [lo, hi]. Prints each probe
+// and returns the number of probes. A textbook iterative binary
+// search: track `lo` and `hi`, probe the midpoint, narrow the range.
+// The midpoint is rounded DOWN via `int((low + high) / 2)` — Aether's
+// `/` is float division, so we explicitly truncate to int (the inline
+// `int(x)` builtin).
+fn binary_search(target: int, lo: int, hi: int) -> int {
+  let mut probes = 0;
+  let mut low = lo;
+  let mut high = hi;
+  let mut done = false;
+  while !done && low <= high {
+    let mid = int((low + high) / 2);
+    probes = probes + 1;
+    let hint = report_guess(target, mid);
+    print(f"  probe #{probes}: [{low}, {high}]  mid={mid}  ->  {hint}");
+    if mid == target {
+      print(f"  solved in {probes} probes.");
+      done = true;
+    } else {
+      if mid < target {
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+  }
+  probes
+}
+
+// --- Demonstration ----------------------------------------------------
+
+print("== Number guessing: hardcoded session ==");
+print("");
+
+let target = 42;
+print(f"target = {target}");
+print("");
+
+let guesses = [50, 25, 37, 43, 41, 42];
+print("simulated guesses:");
+let n = play_session(target, guesses);
+print(f"session returned: {n}");
+print("");
+
+// Sanity: the simulated session used 6 guesses (the length of the
+// hardcoded list, since the last one is correct).
+assert_eq(n, 6);
+
+print("== Number guessing: optimal binary search ==");
+print("");
+print(f"target = {target}, range = [1, 100]");
+print("optimal binary search trace:");
+let p = binary_search(target, 1, 100);
+print(f"binary_search returned: {p}");
+print("");
+
+// With integer (round-down) midpoint, target=42 in [1, 100] takes
+// 7 probes: 50, 25, 37, 43, 40, 41, 42 — the textbook sequence.
+assert_eq(p, 7);
+
+// Try a few more targets to confirm the algorithm is correct.
+print("extra trials:");
+let targets = [1, 100, 50, 75, 13, 42, 64, 99];
+for t in targets {
+  print(f"  target = {t}:");
+  let probes = binary_search(t, 1, 100);
+  print(f"    -> {probes} probes");
+}
+print("");
+
+print("All assertions passed.");

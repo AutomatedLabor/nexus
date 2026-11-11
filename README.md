@@ -47,7 +47,7 @@ anything.
 
 **Standard library (v1, done)**
 - 10 modules — math, collections, string, text, regex, io, datetime, encoding, crypto, async
-- ~110 documented functions with type signatures and descriptions
+- 212 documented functions with type signatures and descriptions
 - Browser-safe: io/crypto branch on `typeof process` and throw in-browser
 
 **Playground (v1, done)**
@@ -108,10 +108,10 @@ nexus/
 │   │   ├── types/
 │   │   ├── sema/
 │   │   └── eval/
-│   ├── stdlib/              # 10 modules, ~110 functions
+│   ├── stdlib/              # 10 modules, 212 functions
 │   │   ├── math/  collections/  string/  text/  regex/
 │   │   ├── io/  datetime/  encoding/  crypto/  async/
-│   │   └── index.ts         # registerAll + STDLIB_MANIFEST
+│   │   └── index.ts         # registerAll + STDLIB_MANIFEST (212 fns)
 │   ├── vm/                  # (planned) bytecode VM — RFC-002
 │   └── tools/               # (planned) LSP, formatter, linter, CLI
 ├── src/
@@ -133,7 +133,7 @@ nexus/
 
 ## Links
 
-- **Live demo:** <LIVE_URL>  <!-- fill in after Vercel deploy -->
+- **Live demo:** https://nexus-aip-roj-builder.vercel.app
 - **GitHub:** https://github.com/AutomatedLabor/nexus
 - **Language spec:** [`docs/spec/00-index.md`](docs/spec/00-index.md)
 - **Tutorials:** [`docs/tutorials/getting-started.md`](docs/tutorials/getting-started.md)
@@ -143,7 +143,7 @@ nexus/
 ## v1 status (honest)
 
 - ✅ **Tree-walking interpreter** — lexer, parser, semantic checker, evaluator all passing 703 tests.
-- ✅ **Standard library** — 10 modules, ~110 documented functions. (Goal was 25 modules / 300+; got a substantial 10 / 110.)
+- ✅ **Standard library** — 10 modules, 212 documented functions. (Goal was 25 modules / 300+; got a substantial 10 / 212.)
 - ✅ **Playground** — 6 views, runs Aether in-browser, dark mode, responsive.
 - ✅ **Examples** — 11 programs (fib, fizzbuzz, primes, quicksort, calculator, json_parser, linked_list, matrix_ops, string_utils, todo_cli, game_of_life). (Goal was 30; got 11.)
 - ✅ **Docs** — 51 markdown files, ~111k words across spec / tutorials / ADRs / RFCs / reference / guides. (Goal was ~300k; got ~111k.)
