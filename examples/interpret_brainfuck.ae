@@ -1,0 +1,209 @@
+// interpret_brainfuck.ae
+// =======================
+// A small interpreter for the Brainfuck esoteric language.
+//
+// Brainfuck has 8 commands operating on an infinite tape of bytes and
+// a single pointer:
+//
+//   +  increment the current cell
+//   -  decrement the current cell
+//   >  move the pointer right
+//   <  move the pointer left
+//   .  output the current cell as an ASCII character
+//   ,  input a byte (not supported here — we run pre-baked programs)
+//   [  if the current cell is 0, jump forward to the matching ]
+//   ]  if the current cell is not 0, jump back to the matching [
+//
+// Implementation notes (what works in the v1 Aether playground)
+// --------------------------------------------------------------
+//   - **Array element mutation works**: `tape[ptr] = tape[ptr] + 1`
+//     is supported by the evaluator, so we can keep the tape as a
+//     growable int array and mutate cells in place. We verified this
+//     up front with a tiny test snippet (`let mut t = [0,0,0]; t[0]=5`).
+//   - **`pop` and `push` work** — we use a stack of `[`-positions to
+//     precompute the bracket-matching table before running.
+//   - **No `char(n)` builtin**, so we keep a string of the 95 printable
+//     ASCII characters starting at code 32 and index into it for
+//     output. Special cases for `\n` (10), `\t` (9), `\r` (13).
+//   - **The for-loop-scope quirk** doesn't bite us here because every
+//     mutable binding is updated *inside* a while loop, never across
+//     a `for` boundary.
+//
+// The program we run is the canonical Brainfuck "Hello World!" — the
+// 110-character Wikipedia classic. It uses every command except `,`
+// (no input) and tests the interpreter's bracket-matching, tape
+// growth, and ASCII output paths.
+
+// The 95 printable ASCII characters starting at code 32. Index `n-32`
+// in this string gives the char for code `n` in [32, 126].
+let ASCII_PRINTABLE =
+  " !\"#$%&'()*+,-./" +
+  "0123456789:;<=>?" +
+  "@" +
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
+  "[\\]^_`" +
+  "abcdefghijklmnopqrstuvwxyz" +
+  "{|}~";
+
+// Convert an int (interpreted as an ASCII code) to a 1-char string.
+// Supports the three common whitespace codes plus all printable
+// ASCII (32..126). Anything else falls back to "?".
+fn chr_of(n: int) -> string {
+  if n == 10 { return "\n"; };
+  if n == 9  { return "\t"; };
+  if n == 13 { return "\r"; };
+  if n >= 32 && n < 32 + len(ASCII_PRINTABLE) {
+    return str(ASCII_PRINTABLE[n - 32]);
+  };
+  "?"
+}
+
+// Precompute the bracket-matching jump tables for a BF program.
+// `jump_fwd[i]` is the position of the `]` matching a `[` at position
+// `i` (and -1 if `i` is not a `[`). `jump_bwd[i]` is the symmetric
+// mapping for `]`. We use a stack of open-bracket positions: when we
+// see `]`, we pop the most recent `[` and record the pair.
+fn precompute_brackets(prog: string) -> ([int], [int]) {
+  let n = len(prog);
+  let mut jump_fwd = [];
+  let mut jump_bwd = [];
+  let mut k = 0;
+  while k < n {
+    push(jump_fwd, -1);
+    push(jump_bwd, -1);
+    k = k + 1;
+  }
+  let mut stack = [];
+  let mut i = 0;
+  while i < n {
+    let c = str(prog[i]);
+    if c == "[" {
+      push(stack, i);
+    };
+    if c == "]" {
+      if len(stack) > 0 {
+        let open_pos = pop(stack);
+        jump_fwd[open_pos] = i;
+        jump_bwd[i] = open_pos;
+      };
+    };
+    i = i + 1;
+  }
+  (jump_fwd, jump_bwd)
+}
+
+// Run a Brainfuck program and return its output as a string. The
+// tape starts with 64 zero cells and grows by one cell at a time
+// whenever the pointer would run off the right end (BF programs that
+// stay within 64 cells never trigger growth; longer programs extend
+// the tape as needed). The pointer never moves below 0 — `<` at the
+// left edge is a no-op.
+fn run_bf(prog: string) -> string {
+  let n = len(prog);
+  let pair = precompute_brackets(prog);
+  let jump_fwd = pair.0;
+  let jump_bwd = pair.1;
+
+  // Initialize the tape to 64 zeros.
+  let mut tape = [];
+  let mut z = 0;
+  while z < 64 {
+    push(tape, 0);
+    z = z + 1;
+  }
+
+  let mut ptr = 0;
+  let mut pc = 0;
+  let mut out = "";
+
+  while pc < n {
+    let c = str(prog[pc]);
+    if c == "+" {
+      tape[ptr] = tape[ptr] + 1;
+    };
+    if c == "-" {
+      tape[ptr] = tape[ptr] - 1;
+    };
+    if c == ">" {
+      ptr = ptr + 1;
+      if ptr >= len(tape) {
+        push(tape, 0);
+      };
+    };
+    if c == "<" {
+      if ptr > 0 {
+        ptr = ptr - 1;
+      };
+    };
+    if c == "." {
+      out = out + chr_of(tape[ptr]);
+    };
+    if c == "[" {
+      if tape[ptr] == 0 {
+        pc = jump_fwd[pc];
+      };
+    };
+    if c == "]" {
+      if tape[ptr] != 0 {
+        pc = jump_bwd[pc];
+      };
+    };
+    pc = pc + 1;
+  }
+
+  out
+}
+
+// --- Demonstration ----------------------------------------------------
+
+print("== Brainfuck interpreter in Aether ==");
+print("");
+
+// The canonical Brainfuck "Hello World!" — Wikipedia, 110 chars.
+let hello = "++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++.";
+print(f"program: {hello}");
+print(f"length: {len(hello)} chars");
+print("");
+print("running...");
+let result = run_bf(hello);
+print("output:");
+print(result);
+print("");
+print(f"(output length: {len(result)} bytes)");
+print("");
+
+// A few tiny test programs — each one is a one-shot check that a
+// single BF feature works as expected.
+
+// '+' x 33 then '.' prints '!' (ASCII 33).  Built via concat so we
+// can name what we're testing without typing 33 pluses inline.
+fn times(s: string, n: int) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < n {
+    out = out + s;
+    i = i + 1;
+  }
+  out
+}
+
+print("tiny tests:");
+print(f"  33 +'s + '.'      ->  \"{run_bf(times("+", 33) + ".")}\"");  // '!'
+print(f"  65 +'s + '.'      ->  \"{run_bf(times("+", 65) + ".")}\"");  // 'A'
+print(f"  72 +'s + '.'      ->  \"{run_bf(times("+", 72) + ".")}\"");  // 'H'
+// 'Hi' = 72 then 105.  Move right to a fresh 0 cell, add 105, print.
+print(f"  H + > + 105 +'s   ->  \"{run_bf(times("+", 72) + ".>" + times("+", 105) + ".")}\"");  // 'Hi'
+
+// A short loop test: 8 * 9 = 72 = 'H'.  The loop runs cell0 from 8 down
+// to 0, adding 9 to cell1 each time, then we move right and print.
+let loop_prog = "++++++++[>+++++++++<-]>.";
+print(f"  8 * 9 loop        ->  \"{run_bf(loop_prog)}\"");  // 'H'
+print("");
+
+// Sanity assertions
+assert_eq(result, "Hello World!\n");
+assert_eq(run_bf(times("+", 33) + "."), "!");
+assert_eq(run_bf(times("+", 72) + "."), "H");
+assert_eq(run_bf(loop_prog), "H");
+
+print("All assertions passed.");
