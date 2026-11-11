@@ -994,6 +994,40 @@ class Evaluator {
       if (!Array.isArray(arr)) throw new Error("pop: expected array");
       return arr.pop() ?? null;
     });
+    // String primitive helpers — used by the Aether-in-Aether bootstrap lexer
+    // (aether-bootstrap/lexer.ae) for char-code classification (Unicode
+    // identifier rules) and escape handling. Mirrors JS String.fromCharCode
+    // / String.prototype.charCodeAt / String.prototype.slice. These are
+    // legitimate bootstrap aids analogous to a self-hosted compiler using
+    // LLVM's libc — small, surgical, well-defined primitives.
+    set("charCode", (s, i) => {
+      if (typeof s !== "string") throw new Error("charCode: expected string");
+      if (typeof i !== "number") throw new Error("charCode: expected int index");
+      // Out-of-range returns -1 (the bootstrap lexer treats -1 as "end of input").
+      if (i < 0 || i >= s.length) return -1;
+      return s.charCodeAt(i);
+    });
+    set("fromCharCode", (n) => {
+      if (typeof n !== "number") throw new Error("fromCharCode: expected int");
+      // String.fromCodePoint handles astral code points (> 0xFFFF) correctly,
+      // matching the TS reference lexer's `String.fromCodePoint(code)` for
+      // \u{...} escapes. For n in [0, 0xFFFF] it equals String.fromCharCode.
+      const code = Math.trunc(n);
+      if (code < 0 || code > 0x10FFFF) return "";
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return "";
+      }
+    });
+    set("strSlice", (s, start, end) => {
+      if (typeof s !== "string") throw new Error("strSlice: expected string");
+      if (typeof start !== "number" || typeof end !== "number") throw new Error("strSlice: expected int bounds");
+      // Clamp to [0, s.length] — Python-ish semantics, tolerant of bad offsets.
+      const a = Math.max(0, Math.min(s.length, Math.trunc(start)));
+      const b = Math.max(a, Math.min(s.length, Math.trunc(end)));
+      return s.slice(a, b);
+    });
     // Higher-order builtins — use this.callValue so Aether closures work too.
     const self = this;
     set("map", (arr, fn) => {

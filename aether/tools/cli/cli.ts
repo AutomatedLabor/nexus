@@ -206,13 +206,23 @@ export function cmdTest(dir: string): number {
   let fail = 0;
   for (const t of tests) {
     const source = fs.readFileSync(t, "utf8");
-    const result = compile(source);
-    if (result.runtime?.error) {
+    // Multi-file tests (containing `import { ... } from "..."`) route through
+    // the module loader (runModule) so imports get resolved. Single-file
+    // tests use compile() directly.
+    const isMultiFile = /^[ \t]*import[ \t]*(\{[^}]*\}[ \t]*from[ \t]*)?"[^"]+"[ \t]*;?[ \t]*$/m.test(source);
+    let error: string | undefined;
+    let hadError = false;
+    if (isMultiFile) {
+      const r = runModule(t);
+      if (r.error) { error = r.error; hadError = true; }
+    } else {
+      const result = compile(source);
+      if (result.runtime?.error) { error = result.runtime.error.message; hadError = true; }
+      else if (result.errors.length > 0 && result.runtime === null) { error = result.errors[0]?.message ?? "unknown error"; hadError = true; }
+    }
+    if (hadError) {
       fail++;
-      out(`FAIL ${t}: ${result.runtime.error.message}\n`);
-    } else if (result.errors.length > 0 && result.runtime === null) {
-      fail++;
-      out(`FAIL ${t}: ${result.errors[0]?.message ?? "unknown error"}\n`);
+      out(`FAIL ${t}: ${error}\n`);
     } else {
       pass++;
       out(`PASS ${t}\n`);

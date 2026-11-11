@@ -1,0 +1,540 @@
+// =============================================================================
+// TESTS — aether-bootstrap/ast.ae
+// =============================================================================
+// 60+ assert_eq tests covering every node kind, equality, locOf, walk.
+// Concatenated onto ast.ae (above this section) so the test file is
+// self-contained for `compileAndRun`.
+// =============================================================================
+
+print("== aether-bootstrap/ast.test.ae: running 60+ asserts ==");
+
+// -----------------------------------------------------------------------------
+// Helper constructors (shorter than spelling out zeroSrc() each time)
+// -----------------------------------------------------------------------------
+let L: SrcLoc = zeroSrc();
+
+// -----------------------------------------------------------------------------
+// Type printing — 11 tests
+// -----------------------------------------------------------------------------
+assert_eq(printType(Type::NamedType("Foo", L)), "Foo");
+assert_eq(printType(Type::PrimitiveType("int", L)), "int");
+assert_eq(printType(Type::PrimitiveType("string", L)), "string");
+assert_eq(printType(Type::UnitType(L)), "()");
+assert_eq(printType(Type::GenericType("List", [Type::PrimitiveType("int", L)], L)), "List<int>");
+assert_eq(
+  printType(Type::FuncType([Type::PrimitiveType("int", L), Type::PrimitiveType("int", L)], Type::PrimitiveType("int", L), L)),
+  "fn(int, int) -> int",
+);
+assert_eq(
+  printType(Type::TupleType([Type::PrimitiveType("int", L), Type::PrimitiveType("string", L)], L)),
+  "(int, string)",
+);
+assert_eq(printType(Type::TupleType([Type::PrimitiveType("int", L)], L)), "(int,)");
+assert_eq(printType(Type::ArrayType(Type::PrimitiveType("int", L), L)), "[int]");
+assert_eq(
+  printType(Type::MapType(Type::PrimitiveType("string", L), Type::PrimitiveType("int", L), L)),
+  "map[string] int",
+);
+assert_eq(printType(Type::OptionType(Type::PrimitiveType("int", L), L)), "option<int>");
+assert_eq(
+  printType(Type::ResultType(Type::PrimitiveType("int", L), Type::PrimitiveType("string", L), L)),
+  "result<int, string>",
+);
+
+// -----------------------------------------------------------------------------
+// Pattern printing — 11 tests
+// -----------------------------------------------------------------------------
+assert_eq(printPattern(Pattern::WildcardPat(L)), "_");
+assert_eq(printPattern(Pattern::BindPat("x", false, Option::None, L)), "x");
+assert_eq(printPattern(Pattern::BindPat("y", true, Option::None, L)), "mut y");
+assert_eq(
+  printPattern(Pattern::BindPat("x", false, Option::Some(Type::PrimitiveType("int", L)), L)),
+  "x: int",
+);
+assert_eq(printPattern(Pattern::LitPat(Expr::IntLit(42, L), L)), "42");
+assert_eq(
+  printPattern(Pattern::TuplePat([Pattern::BindPat("a", false, Option::None, L), Pattern::BindPat("b", false, Option::None, L)], L)),
+  "(a, b)",
+);
+assert_eq(
+  printPattern(Pattern::ArrayPat([Pattern::BindPat("a", false, Option::None, L), Pattern::BindPat("b", false, Option::None, L)], Option::None, L)),
+  "[a, b]",
+);
+assert_eq(
+  printPattern(Pattern::StructPat("Foo", [
+    StructPatField { name: "x", pattern: Pattern::BindPat("a", false, Option::None, L), loc: L },
+    StructPatField { name: "y", pattern: Pattern::BindPat("b", false, Option::None, L), loc: L },
+  ], false, L)),
+  "Foo { x: a, y: b }",
+);
+assert_eq(
+  printPattern(Pattern::EnumPat("Option", "Some", [Pattern::BindPat("v", false, Option::None, L)], L)),
+  "Option::Some(v)",
+);
+assert_eq(
+  printPattern(Pattern::OrPat([Pattern::BindPat("a", false, Option::None, L), Pattern::BindPat("b", false, Option::None, L)], L)),
+  "a | b",
+);
+assert_eq(printPattern(Pattern::RestPat(L)), "..");
+
+// -----------------------------------------------------------------------------
+// Expr printing — 38 tests
+// -----------------------------------------------------------------------------
+assert_eq(printExpr(Expr::IntLit(42, L)), "42");
+assert_eq(printExpr(Expr::IntLit(-7, L)), "-7");
+assert_eq(printExpr(Expr::FloatLit(3.14, L)), "3.14");
+assert_eq(printExpr(Expr::BoolLit(true, L)), "true");
+assert_eq(printExpr(Expr::BoolLit(false, L)), "false");
+assert_eq(printExpr(Expr::CharLit("a", L)), "'a'");
+assert_eq(printExpr(Expr::CharLit("\n", L)), "'\\n'");
+assert_eq(printExpr(Expr::UnitLit(L)), "()");
+assert_eq(printExpr(Expr::Ident("x", L)), "x");
+
+// Plain string literal: a single text segment.
+assert_eq(
+  printExpr(Expr::StringLit([StringSegment { kind: "text", value: "hello", expr: Option::None }], L)),
+  "\"hello\"",
+);
+// Interpolated string: text + interp with the inner expr present.
+assert_eq(
+  printExpr(Expr::StringLit([
+    StringSegment { kind: "text", value: "Hello, ", expr: Option::None },
+    StringSegment { kind: "interp", value: "name", expr: Option::Some(Expr::Ident("name", L)) },
+  ], L)),
+  "f\"Hello, {name}\"",
+);
+// String with escapes: `"a\nb"` should re-print with the backslash-n preserved.
+assert_eq(
+  printExpr(Expr::StringLit([StringSegment { kind: "text", value: "a\nb", expr: Option::None }], L)),
+  "\"a\\nb\"",
+);
+
+// Arithmetic / unary / assignment
+assert_eq(printExpr(Expr::Binary("+", Expr::IntLit(1, L), Expr::IntLit(2, L), L)), "1 + 2");
+assert_eq(printExpr(Expr::Binary("*", Expr::Ident("a", L), Expr::Ident("b", L), L)), "a * b");
+assert_eq(printExpr(Expr::Unary("-", Expr::Ident("x", L), L)), "-x");
+assert_eq(printExpr(Expr::Unary("!", Expr::Ident("flag", L), L)), "!flag");
+assert_eq(printExpr(Expr::Assign(Expr::Ident("x", L), Expr::IntLit(5, L), L)), "x = 5");
+assert_eq(printExpr(Expr::CompoundAssign("+", Expr::Ident("x", L), Expr::IntLit(1, L), L)), "x += 1");
+
+// Calls
+assert_eq(
+  printExpr(Expr::Call(Expr::Ident("f", L), [Expr::IntLit(1, L), Expr::IntLit(2, L)], [], L)),
+  "f(1, 2)",
+);
+assert_eq(
+  printExpr(Expr::Call(Expr::Ident("id", L), [Expr::IntLit(42, L)], [Type::PrimitiveType("int", L)], L)),
+  "id<int>(42)",
+);
+assert_eq(printExpr(Expr::Index(Expr::Ident("arr", L), Expr::IntLit(0, L), L)), "arr[0]");
+assert_eq(printExpr(Expr::Field(Expr::Ident("p", L), "x", L)), "p.x");
+assert_eq(
+  printExpr(Expr::MethodCall(Expr::Ident("arr", L), "push", [Expr::IntLit(1, L)], L)),
+  "arr.push(1)",
+);
+assert_eq(printExpr(Expr::TupleField(Expr::Ident("t", L), 0, L)), "t.0");
+
+// Collection literals
+assert_eq(
+  printExpr(Expr::TupleExpr([Expr::IntLit(1, L), Expr::IntLit(2, L)], L)),
+  "(1, 2)",
+);
+assert_eq(printExpr(Expr::TupleExpr([Expr::IntLit(1, L)], L)), "(1,)");
+assert_eq(
+  printExpr(Expr::ArrayExpr([Expr::IntLit(1, L), Expr::IntLit(2, L), Expr::IntLit(3, L)], L)),
+  "[1, 2, 3]",
+);
+assert_eq(
+  printExpr(Expr::MapExpr([
+    MapEntry { key: Expr::IntLit(1, L), value: Expr::IntLit(2, L), loc: L },
+    MapEntry { key: Expr::IntLit(3, L), value: Expr::IntLit(4, L), loc: L },
+  ], L)),
+  "{1: 2, 3: 4}",
+);
+assert_eq(
+  printExpr(Expr::StructExpr("Point", [
+    StructExprField { name: "x", value: Expr::IntLit(1, L), loc: L },
+    StructExprField { name: "y", value: Expr::IntLit(2, L), loc: L },
+  ], Option::None, L)),
+  "Point { x: 1, y: 2 }",
+);
+assert_eq(
+  printExpr(Expr::EnumVariant("Option", "Some", [Expr::IntLit(42, L)], L)),
+  "Option::Some(42)",
+);
+assert_eq(printExpr(Expr::EnumVariant("Option", "None", [], L)), "Option::None");
+
+// Lambda, If, Match
+assert_eq(
+  printExpr(Expr::Lambda(
+    [Param { name: "x", annType: Option::Some(Type::PrimitiveType("int", L)), loc: L }],
+    Option::Some(Type::PrimitiveType("int", L)),
+    Expr::Ident("x", L),
+    L,
+  )),
+  "fn(x: int) -> int x",
+);
+assert_eq(
+  printExpr(Expr::Lambda(
+    [Param { name: "x", annType: Option::None, loc: L }],
+    Option::None,
+    Expr::Ident("x", L),
+    L,
+  )),
+  "fn(x) x",
+);
+assert_eq(
+  printExpr(Expr::If(
+    Expr::Ident("c", L),
+    Expr::Block([], Option::Some(Expr::Ident("a", L)), L),
+    Option::Some(Expr::Block([], Option::Some(Expr::Ident("b", L)), L)),
+    L,
+  )),
+  "if c { a } else { b }",
+);
+assert_eq(
+  printExpr(Expr::If(
+    Expr::Ident("c", L),
+    Expr::Block([], Option::Some(Expr::Ident("a", L)), L),
+    Option::None,
+    L,
+  )),
+  "if c { a }",
+);
+assert_eq(
+  printExpr(Expr::Match(Expr::Ident("x", L), [
+    MatchArm {
+      pattern: Pattern::EnumPat("Option", "Some", [Pattern::BindPat("v", false, Option::None, L)], L),
+      guard: Option::None,
+      body: Expr::Ident("v", L),
+      loc: L,
+    },
+    MatchArm {
+      pattern: Pattern::EnumPat("Option", "None", [], L),
+      guard: Option::None,
+      body: Expr::IntLit(0, L),
+      loc: L,
+    },
+  ], L)),
+  "match x { Option::Some(v) => v, Option::None => 0 }",
+);
+
+// Block, Paren, Cast, Range, As, ErrorProp, Spread, Return
+assert_eq(
+  printExpr(Expr::Block(
+    [Stmt::Let("x", Option::None, Expr::IntLit(1, L), L)],
+    Option::Some(Expr::Ident("x", L)),
+    L,
+  )),
+  "{\n  let x = 1;\n  x\n}",
+);
+assert_eq(
+  printExpr(Expr::Block([], Option::Some(Expr::IntLit(1, L)), L)),
+  "{ 1 }",
+);
+assert_eq(printExpr(Expr::Paren(Expr::Binary("+", Expr::IntLit(1, L), Expr::IntLit(2, L), L), L)), "(1 + 2)");
+assert_eq(
+  printExpr(Expr::Cast(Expr::Ident("x", L), Type::PrimitiveType("int", L), L)),
+  "x as int",
+);
+assert_eq(
+  printExpr(Expr::As(Expr::Ident("x", L), Type::PrimitiveType("int", L), L)),
+  "x as int",
+);
+assert_eq(
+  printExpr(Expr::Range(Expr::IntLit(0, L), Expr::IntLit(10, L), false, L)),
+  "0..10",
+);
+assert_eq(
+  printExpr(Expr::Range(Expr::IntLit(0, L), Expr::IntLit(10, L), true, L)),
+  "0..=10",
+);
+assert_eq(printExpr(Expr::ErrorProp(Expr::Ident("expr", L), L)), "expr?");
+assert_eq(printExpr(Expr::SelfExpr(L)), "self");
+assert_eq(printExpr(Expr::Spread(Expr::Ident("arr", L), L)), "...arr");
+assert_eq(printExpr(Expr::Return(Option::Some(Expr::Ident("x", L)), L)), "return x");
+assert_eq(printExpr(Expr::Return(Option::None, L)), "return");
+
+// -----------------------------------------------------------------------------
+// Stmt printing — 17 tests
+// -----------------------------------------------------------------------------
+assert_eq(
+  printStmt(Stmt::Let("x", Option::Some(Type::PrimitiveType("int", L)), Expr::IntLit(42, L), L), 0),
+  "let x: int = 42;",
+);
+assert_eq(
+  printStmt(Stmt::MutLet("y", Option::None, Expr::FloatLit(3.14, L), L), 0),
+  "let mut y = 3.14;",
+);
+assert_eq(
+  printStmt(Stmt::Const("PI", Option::Some(Type::PrimitiveType("float", L)), Expr::FloatLit(3.14159, L), L), 0),
+  "const PI: float = 3.14159;",
+);
+assert_eq(
+  printStmt(Stmt::ExprStmt(Expr::Call(Expr::Ident("f", L), [Expr::IntLit(1, L)], [], L), L), 0),
+  "f(1);",
+);
+assert_eq(
+  printStmt(Stmt::FnDecl(
+    "add",
+    [],
+    [
+      Param { name: "a", annType: Option::Some(Type::PrimitiveType("int", L)), loc: L },
+      Param { name: "b", annType: Option::Some(Type::PrimitiveType("int", L)), loc: L },
+    ],
+    Option::Some(Type::PrimitiveType("int", L)),
+    Expr::Block([], Option::Some(Expr::Binary("+", Expr::Ident("a", L), Expr::Ident("b", L), L)), L),
+    false,
+    L,
+  ), 0),
+  "fn add(a: int, b: int) -> int { a + b }",
+);
+assert_eq(
+  printStmt(Stmt::FnDecl(
+    "id",
+    [TypeParam { name: "T", constraint: Option::None, loc: L }],
+    [Param { name: "x", annType: Option::Some(Type::NamedType("T", L)), loc: L }],
+    Option::Some(Type::NamedType("T", L)),
+    Expr::Block([], Option::Some(Expr::Ident("x", L)), L),
+    false,
+    L,
+  ), 0),
+  "fn id<T>(x: T) -> T { x }",
+);
+assert_eq(
+  printStmt(Stmt::EnumDecl(
+    "Option",
+    [TypeParam { name: "T", constraint: Option::None, loc: L }],
+    [
+      EnumVariantDecl { name: "Some", kind: "tuple", types: [Type::NamedType("T", L)], fields: [], loc: L },
+      EnumVariantDecl { name: "None", kind: "unit", types: [], fields: [], loc: L },
+    ],
+    L,
+  ), 0),
+  "enum Option<T> { Some(T), None }",
+);
+assert_eq(
+  printStmt(Stmt::StructDecl(
+    "Point",
+    [],
+    [
+      StructField { name: "x", annType: Type::PrimitiveType("int", L), loc: L },
+      StructField { name: "y", annType: Type::PrimitiveType("int", L), loc: L },
+    ],
+    L,
+  ), 0),
+  "struct Point { x: int, y: int }",
+);
+assert_eq(
+  printStmt(Stmt::TypeAlias("IntList", [], Type::ArrayType(Type::PrimitiveType("int", L), L), L), 0),
+  "type IntList = [int];",
+);
+assert_eq(
+  printStmt(Stmt::ReturnStmt(Option::Some(Expr::IntLit(5, L)), L), 0),
+  "return 5;",
+);
+assert_eq(printStmt(Stmt::ReturnStmt(Option::None, L), 0), "return;");
+assert_eq(printStmt(Stmt::Break(L), 0), "break;");
+assert_eq(printStmt(Stmt::Continue(L), 0), "continue;");
+assert_eq(
+  printStmt(Stmt::While(
+    Expr::Binary("<", Expr::Ident("i", L), Expr::Ident("n", L), L),
+    Expr::Block([], Option::Some(Expr::Assign(Expr::Ident("i", L), Expr::Binary("+", Expr::Ident("i", L), Expr::IntLit(1, L), L), L)), L),
+    L,
+  ), 0),
+  "while i < n { i = i + 1 }",
+);
+assert_eq(
+  printStmt(Stmt::ForIn(
+    "i",
+    Expr::Call(Expr::Ident("range", L), [Expr::IntLit(0, L), Expr::IntLit(10, L)], [], L),
+    Expr::Block([], Option::Some(Expr::Call(Expr::Ident("print", L), [Expr::Ident("i", L)], [], L)), L),
+    L,
+  ), 0),
+  "for i in range(0, 10) { print(i) }",
+);
+assert_eq(
+  printStmt(Stmt::Import("foo.ae", ["bar"], L), 0),
+  "import \"foo.ae\" { bar };",
+);
+assert_eq(
+  printStmt(Stmt::Print(Expr::Ident("x", L), L), 0),
+  "print(x);",
+);
+assert_eq(
+  printStmt(Stmt::AssignStmt(Expr::Ident("x", L), Expr::IntLit(5, L), L), 0),
+  "x = 5;",
+);
+assert_eq(
+  printStmt(Stmt::BlockStmt([
+    Stmt::AssignStmt(Expr::Ident("x", L), Expr::IntLit(1, L), L),
+    Stmt::AssignStmt(Expr::Ident("y", L), Expr::IntLit(2, L), L),
+  ], L), 0),
+  "{\n  x = 1;\n  y = 2;\n}",
+);
+
+// -----------------------------------------------------------------------------
+// Program printing — 2 tests
+// -----------------------------------------------------------------------------
+assert_eq(
+  printProgram(Program {
+    body: [Stmt::Let("x", Option::Some(Type::PrimitiveType("int", L)), Expr::IntLit(42, L), L)],
+    loc: L,
+  }),
+  "let x: int = 42;",
+);
+assert_eq(
+  printProgram(Program {
+    body: [
+      Stmt::Let("x", Option::None, Expr::IntLit(1, L), L),
+      Stmt::Let("y", Option::None, Expr::IntLit(2, L), L),
+    ],
+    loc: L,
+  }),
+  "let x = 1;\nlet y = 2;",
+);
+
+// -----------------------------------------------------------------------------
+// Equality — 10 tests
+// -----------------------------------------------------------------------------
+assert_eq(exprEqual(Expr::IntLit(1, L), Expr::IntLit(1, L)), true);
+assert_eq(exprEqual(Expr::IntLit(1, L), Expr::IntLit(2, L)), false);
+assert_eq(
+  exprEqual(
+    Expr::Binary("+", Expr::IntLit(1, L), Expr::IntLit(2, L), L),
+    Expr::Binary("+", Expr::IntLit(1, L), Expr::IntLit(2, L), L),
+  ),
+  true,
+);
+assert_eq(
+  exprEqual(
+    Expr::Binary("+", Expr::IntLit(1, L), Expr::IntLit(2, L), L),
+    Expr::Binary("-", Expr::IntLit(1, L), Expr::IntLit(2, L), L),
+  ),
+  false,
+);
+assert_eq(exprEqual(Expr::Ident("x", L), Expr::Ident("x", L)), true);
+assert_eq(exprEqual(Expr::Ident("x", L), Expr::Ident("y", L)), false);
+assert_eq(
+  typeEqual(
+    Type::FuncType([Type::PrimitiveType("int", L)], Type::PrimitiveType("int", L), L),
+    Type::FuncType([Type::PrimitiveType("int", L)], Type::PrimitiveType("int", L), L),
+  ),
+  true,
+);
+assert_eq(
+  typeEqual(
+    Type::FuncType([Type::PrimitiveType("int", L)], Type::PrimitiveType("int", L), L),
+    Type::FuncType([Type::PrimitiveType("string", L)], Type::PrimitiveType("int", L), L),
+  ),
+  false,
+);
+assert_eq(
+  patternEqual(Pattern::BindPat("x", false, Option::None, L), Pattern::BindPat("x", false, Option::None, L)),
+  true,
+);
+assert_eq(
+  stmtEqual(
+    Stmt::Let("x", Option::None, Expr::IntLit(1, L), L),
+    Stmt::Let("x", Option::None, Expr::IntLit(1, L), L),
+  ),
+  true,
+);
+assert_eq(
+  stmtEqual(
+    Stmt::Let("x", Option::None, Expr::IntLit(1, L), L),
+    Stmt::Let("y", Option::None, Expr::IntLit(1, L), L),
+  ),
+  false,
+);
+
+// -----------------------------------------------------------------------------
+// locOf — 6 tests
+// -----------------------------------------------------------------------------
+let loc42: SrcLoc = SrcLoc { file: "f.ae", start: mkLoc(2, 3, 10), end: mkLoc(2, 5, 12) };
+assert_eq(locOfExpr(Expr::IntLit(42, loc42)), loc42);
+assert_eq(locOfExpr(Expr::Ident("x", loc42)), loc42);
+assert_eq(locOfExpr(Expr::Binary("+", Expr::IntLit(1, L), Expr::IntLit(2, L), loc42)), loc42);
+assert_eq(locOfStmt(Stmt::Let("x", Option::None, Expr::IntLit(1, L), loc42)), loc42);
+assert_eq(locOfType(Type::NamedType("Foo", loc42)), loc42);
+assert_eq(locOfPattern(Pattern::BindPat("x", false, Option::None, loc42)), loc42);
+
+// -----------------------------------------------------------------------------
+// walkExpr — 3 tests (count enter/leave via captured mutable state)
+// -----------------------------------------------------------------------------
+// Aether closures capture `mut` variables from the enclosing scope, so we
+// use a `mut count` outside the closure and bump it inside.
+let mut enterCount = 0;
+let mut leaveCount = 0;
+walkExpr(
+  Expr::Binary("+", Expr::IntLit(1, L), Expr::IntLit(2, L), L),
+  fn(_e: Expr) { enterCount = enterCount + 1; },
+  fn(_e: Expr) { leaveCount = leaveCount + 1; },
+);
+assert_eq(enterCount, 3);  // Binary + IntLit(1) + IntLit(2)
+assert_eq(leaveCount, 3);
+
+let mut identNames = "";
+// Helper that mutates the captured `identNames` from the enclosing scope.
+// Aether closures capture the enclosing environment, so we can mutate the
+// outer `mut` variable through this helper. We use this indirection
+// because the match-arm body is parsed by parseBraceExpr, which doesn't
+// support the `ident = value` form that `parseBlock` (used for fn bodies)
+// does — so we move the mutation into a top-level helper.
+let bumpIdent = fn(name: string) { identNames = identNames + name + ","; };
+walkExpr(
+  Expr::Binary("+",
+    Expr::Binary("*", Expr::Ident("a", L), Expr::Ident("b", L), L),
+    Expr::Ident("c", L),
+    L,
+  ),
+  fn(e: Expr) {
+    match e {
+      Expr::Ident(name, _) => bumpIdent(name),
+      _ => (),
+    }
+  },
+  fn(_e: Expr) { },
+);
+assert_eq(identNames, "a,b,c,");
+
+// -----------------------------------------------------------------------------
+// Sample: construct Binary("+", IntLit(1), IntLit(2)) and print → "1 + 2"
+// -----------------------------------------------------------------------------
+let sample = Expr::Binary("+", Expr::IntLit(1, L), Expr::IntLit(2, L), L);
+assert_eq(printExpr(sample), "1 + 2");
+print(f"sample AST printed: {printExpr(sample)}");
+
+// -----------------------------------------------------------------------------
+// A non-trivial nested program — print, then re-evaluate printProgram on a
+// larger Program to ensure deeply-nested printers compose.
+// -----------------------------------------------------------------------------
+let bigProgram = Program {
+  body: [
+    Stmt::FnDecl(
+      "fib",
+      [],
+      [Param { name: "n", annType: Option::Some(Type::PrimitiveType("int", L)), loc: L }],
+      Option::Some(Type::PrimitiveType("int", L)),
+      Expr::Block([], Option::Some(Expr::If(
+        Expr::Binary("<", Expr::Ident("n", L), Expr::IntLit(2, L), L),
+        Expr::Block([], Option::Some(Expr::Ident("n", L)), L),
+        Option::Some(Expr::Block([], Option::Some(Expr::Binary("+",
+          Expr::Call(Expr::Ident("fib", L), [Expr::Binary("-", Expr::Ident("n", L), Expr::IntLit(1, L), L)], [], L),
+          Expr::Call(Expr::Ident("fib", L), [Expr::Binary("-", Expr::Ident("n", L), Expr::IntLit(2, L), L)], [], L),
+          L)), L)),
+        L)), L),
+      false,
+      L,
+    ),
+    Stmt::ExprStmt(Expr::Call(Expr::Ident("print", L), [Expr::Call(Expr::Ident("fib", L), [Expr::IntLit(10, L)], [], L)], [], L), L),
+  ],
+  loc: L,
+};
+let bigStr = printProgram(bigProgram);
+assert_eq(
+  bigStr,
+  "fn fib(n: int) -> int { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\nprint(fib(10));",
+);
+
+print("== all asserts passed ==");

@@ -192,6 +192,13 @@ export class Checker {
     // checker registers the 3-arg form; calls with fewer args may produce
     // a type error, but the evaluator still runs (lenient mode).
     reg("range", fn([T_INT, T_INT, T_INT], { kind: "Named", name: "Range", args: [] }));
+
+    // String primitive helpers — used by the Aether-in-Aether bootstrap lexer
+    // (aether-bootstrap/lexer.ae). These mirror the inline evaluator builtins
+    // of the same name (see aether/core/eval/eval.ts `installInlineBuiltins`).
+    reg("charCode", fn([T_STRING, T_INT], T_INT));
+    reg("fromCharCode", fn([T_INT], T_STRING));
+    reg("strSlice", fn([T_STRING, T_INT, T_INT], T_STRING));
   }
 
   registerStruct(d: StructDecl): void {

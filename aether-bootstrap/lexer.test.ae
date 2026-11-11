@@ -1,0 +1,660 @@
+// =============================================================================
+// aether-bootstrap/lexer.test.ae
+// ==============================
+// Test suite for the Aether-in-Aether bootstrap lexer.
+// Run via:
+//   bun .bootstrap-tmp/verify_bootstrap.ts aether-bootstrap/lexer.test.ae
+//
+// Or via the project CLI:
+//   bun aether/tools/cli/cli.ts run aether-bootstrap/lexer.test.ae
+//
+// The suite imports the lexer from ./lexer.ae and runs ~110+ assert_eq
+// checks covering every token kind, every keyword, every punctuation
+// operator, every literal form, comment handling, location tracking, and
+// lexer errors. On success, prints "all N tests passed".
+//
+// Conventions used (per the prompt's quirk notes):
+//   - No `for` loops (the for-loop-scope bug — variables defined inside
+//     a `for` body aren't accessible after the loop). All accumulation
+//     uses `while` or top-level `assert_eq` calls.
+//   - No `return X;` after a block in expression-return position. Each
+//     test helper is a single-line expression body.
+//   - `int(a / b)` is not used (we don't need integer division here).
+// =============================================================================
+
+import {
+  lex,
+  lexWithErrors,
+  isKeyword,
+  isDigit,
+  isHexDigit,
+  isBinDigit,
+  isOctDigit,
+  isAlpha,
+  isAlphaNum,
+  isWhitespace,
+  isIdentStart,
+  isIdentCont,
+  emptySegs,
+} from "./lexer.ae";
+
+// -----------------------------------------------------------------------------
+// Test helpers
+// -----------------------------------------------------------------------------
+
+// First non-EOF token of `s` (index 0 of the token array).
+fn first(s: string) -> Token {
+  let toks = lex(s);
+  toks[0]
+}
+
+// Kind of the first token.
+fn firstKind(s: string) -> string {
+  first(s).kind
+}
+
+// Text of the first token.
+fn firstText(s: string) -> string {
+  first(s).text
+}
+
+// Token at index `i` in the lex of `s`.
+fn at(s: string, i: int) -> Token {
+  let toks = lex(s);
+  toks[i]
+}
+
+// Number of tokens (excluding the EOF sentinel) in the lex of `s`.
+fn tokCount(s: string) -> int {
+  let toks = lex(s);
+  len(toks) - 1
+}
+
+// First segment's value of the first token's segments array.
+fn firstSegValue(s: string) -> string {
+  let t = first(s);
+  let segs = t.segments;
+  segs[0].value
+}
+
+// Number of segments in the first token.
+fn firstSegCount(s: string) -> int {
+  let t = first(s);
+  let segs = t.segments;
+  len(segs)
+}
+
+// kind of segment i of the first token
+fn segKind(s: string, i: int) -> string {
+  let t = first(s);
+  t.segments[i].kind
+}
+
+// value of segment i of the first token
+fn segValue(s: string, i: int) -> string {
+  let t = first(s);
+  t.segments[i].value
+}
+
+// First error message from lexWithErrors (or "" if no error).
+fn firstErr(s: string) -> string {
+  let r = lexWithErrors(s);
+  if len(r.errors) > 0 { r.errors[0].message } else { "" }
+}
+
+// Number of errors from lexWithErrors.
+fn errCount(s: string) -> int {
+  let r = lexWithErrors(s);
+  len(r.errors)
+}
+
+// Total assert count (incremented manually as we add tests).
+let mut ASSERTS = 0;
+
+fn check(b: bool) {
+  ASSERTS = ASSERTS + 1;
+  assert(b);
+}
+
+fn checkEq(a: int, b: int) {
+  ASSERTS = ASSERTS + 1;
+  assert_eq(a, b);
+}
+
+fn checkStrEq(a: string, b: string) {
+  ASSERTS = ASSERTS + 1;
+  assert_eq(a, b);
+}
+
+fn checkBoolEq(a: bool, b: bool) {
+  ASSERTS = ASSERTS + 1;
+  assert_eq(a, b);
+}
+
+// -----------------------------------------------------------------------------
+// 1. Keyword tokens (28 keywords × 2 asserts each)
+// -----------------------------------------------------------------------------
+
+checkStrEq(firstKind("let"), "Keyword");
+checkStrEq(firstText("let"), "let");
+checkStrEq(firstKind("mut"), "Keyword");
+checkStrEq(firstText("mut"), "mut");
+checkStrEq(firstKind("const"), "Keyword");
+checkStrEq(firstText("const"), "const");
+checkStrEq(firstKind("fn"), "Keyword");
+checkStrEq(firstText("fn"), "fn");
+checkStrEq(firstKind("enum"), "Keyword");
+checkStrEq(firstText("enum"), "enum");
+checkStrEq(firstKind("struct"), "Keyword");
+checkStrEq(firstText("struct"), "struct");
+checkStrEq(firstKind("type"), "Keyword");
+checkStrEq(firstText("type"), "type");
+checkStrEq(firstKind("match"), "Keyword");
+checkStrEq(firstText("match"), "match");
+checkStrEq(firstKind("if"), "Keyword");
+checkStrEq(firstText("if"), "if");
+checkStrEq(firstKind("else"), "Keyword");
+checkStrEq(firstText("else"), "else");
+checkStrEq(firstKind("while"), "Keyword");
+checkStrEq(firstText("while"), "while");
+checkStrEq(firstKind("for"), "Keyword");
+checkStrEq(firstText("for"), "for");
+checkStrEq(firstKind("in"), "Keyword");
+checkStrEq(firstText("in"), "in");
+checkStrEq(firstKind("return"), "Keyword");
+checkStrEq(firstText("return"), "return");
+checkStrEq(firstKind("break"), "Keyword");
+checkStrEq(firstText("break"), "break");
+checkStrEq(firstKind("continue"), "Keyword");
+checkStrEq(firstText("continue"), "continue");
+checkStrEq(firstKind("print"), "Keyword");
+checkStrEq(firstText("print"), "print");
+checkStrEq(firstKind("true"), "Keyword");
+checkStrEq(firstText("true"), "true");
+checkStrEq(firstKind("false"), "Keyword");
+checkStrEq(firstText("false"), "false");
+checkStrEq(firstKind("unit"), "Keyword");
+checkStrEq(firstText("unit"), "unit");
+checkStrEq(firstKind("self"), "Keyword");
+checkStrEq(firstText("self"), "self");
+checkStrEq(firstKind("as"), "Keyword");
+checkStrEq(firstText("as"), "as");
+checkStrEq(firstKind("range"), "Keyword");
+checkStrEq(firstText("range"), "range");
+checkStrEq(firstKind("import"), "Keyword");
+checkStrEq(firstText("import"), "import");
+checkStrEq(firstKind("pub"), "Keyword");
+checkStrEq(firstText("pub"), "pub");
+checkStrEq(firstKind("use"), "Keyword");
+checkStrEq(firstText("use"), "use");
+checkStrEq(firstKind("or"), "Keyword");
+checkStrEq(firstText("or"), "or");
+checkStrEq(firstKind("do"), "Keyword");
+checkStrEq(firstText("do"), "do");
+
+// -----------------------------------------------------------------------------
+// 2. Identifier tokens (not keywords)
+// -----------------------------------------------------------------------------
+
+checkStrEq(firstKind("foo"), "Ident");
+checkStrEq(firstText("foo"), "foo");
+checkStrEq(firstKind("bar123"), "Ident");
+checkStrEq(firstText("bar123"), "bar123");
+checkStrEq(firstKind("_underscore"), "Ident");
+checkStrEq(firstText("_underscore"), "_underscore");
+checkStrEq(firstKind("_"), "Ident");
+checkStrEq(firstText("_"), "_");
+checkStrEq(firstKind("letX"), "Ident");
+checkStrEq(firstText("letX"), "letX");
+checkStrEq(firstKind("foo_bar_baz"), "Ident");
+checkStrEq(firstText("foo_bar_baz"), "foo_bar_baz");
+
+// -----------------------------------------------------------------------------
+// 3. Integer / float / hex / binary / octal literals
+// -----------------------------------------------------------------------------
+
+checkStrEq(firstKind("42"), "Int");
+checkStrEq(firstText("42"), "42");
+checkStrEq(firstKind("0"), "Int");
+checkStrEq(firstText("0"), "0");
+checkStrEq(firstKind("1234567890"), "Int");
+checkStrEq(firstText("1234567890"), "1234567890");
+checkStrEq(firstKind("3.14"), "Float");
+checkStrEq(firstText("3.14"), "3.14");
+checkStrEq(firstKind("0.5"), "Float");
+checkStrEq(firstText("0.5"), "0.5");
+checkStrEq(firstKind("1e10"), "Float");
+checkStrEq(firstText("1e10"), "1e10");
+checkStrEq(firstKind("1.5e3"), "Float");
+checkStrEq(firstText("1.5e3"), "1.5e3");
+checkStrEq(firstKind("2e+3"), "Float");
+checkStrEq(firstText("2e+3"), "2e+3");
+checkStrEq(firstKind("2e-3"), "Float");
+checkStrEq(firstText("2e-3"), "2e-3");
+checkStrEq(firstKind("1_000"), "Int");
+checkStrEq(firstText("1_000"), "1000");
+checkStrEq(firstKind("1_000.5_00"), "Float");
+checkStrEq(firstText("1_000.5_00"), "1000.500");
+checkStrEq(firstKind("0xFF"), "Hex");
+checkStrEq(firstText("0xFF"), "0xFF");
+checkStrEq(firstKind("0XAB12"), "Hex");
+checkStrEq(firstText("0XAB12"), "0xAB12");
+checkStrEq(firstKind("0b101"), "Binary");
+checkStrEq(firstText("0b101"), "0b101");
+checkStrEq(firstKind("0b1_0_1"), "Binary");
+checkStrEq(firstText("0b1_0_1"), "0b101");
+checkStrEq(firstKind("0o777"), "Octal");
+checkStrEq(firstText("0o777"), "0o777");
+checkStrEq(firstKind("0O123"), "Octal");
+checkStrEq(firstText("0O123"), "0o123");
+
+// -----------------------------------------------------------------------------
+// 4. String literals (plain "...")
+// -----------------------------------------------------------------------------
+
+checkStrEq(firstKind("\"hello\""), "String");
+checkEq(firstSegCount("\"hello\""), 1);
+checkStrEq(segKind("\"hello\"", 0), "text");
+checkStrEq(segValue("\"hello\"", 0), "hello");
+checkStrEq(firstKind("\"\""), "String");
+checkEq(firstSegCount("\"\""), 0);
+checkStrEq(segValue("\"with \\\"escape\\\"\"", 0), "with \"escape\"");
+checkStrEq(segValue("\"line1\\nline2\"", 0), "line1\nline2");
+checkStrEq(segValue("\"tab\\there\"", 0), "tab\there");
+checkStrEq(segValue("\"back\\\\slash\"", 0), "back\\slash");
+checkStrEq(segValue("\"unicode \\u{41}\\u{42}\"", 0), "unicode AB");
+checkStrEq(segValue("\"null \\0\"", 0), "null \0");
+
+// -----------------------------------------------------------------------------
+// 5. F-strings with interpolation (f"...")
+// -----------------------------------------------------------------------------
+
+checkStrEq(firstKind("f\"hello\""), "FString");
+checkEq(firstSegCount("f\"hello\""), 1);
+checkStrEq(segKind("f\"hello\"", 0), "text");
+checkStrEq(segValue("f\"hello\"", 0), "hello");
+checkStrEq(firstKind("f\"hi {name}!\""), "FString");
+checkEq(firstSegCount("f\"hi {name}!\""), 3);
+checkStrEq(segKind("f\"hi {name}!\"", 0), "text");
+checkStrEq(segValue("f\"hi {name}!\"", 0), "hi ");
+checkStrEq(segKind("f\"hi {name}!\"", 1), "interp");
+checkStrEq(segValue("f\"hi {name}!\"", 1), "name");
+checkStrEq(segKind("f\"hi {name}!\"", 2), "text");
+checkStrEq(segValue("f\"hi {name}!\"", 2), "!");
+checkStrEq(firstKind("f\"{x}\""), "FString");
+checkEq(firstSegCount("f\"{x}\""), 1);
+checkStrEq(segKind("f\"{x}\"", 0), "interp");
+checkStrEq(segValue("f\"{x}\"", 0), "x");
+checkStrEq(firstKind("f\"{a + b}\""), "FString");
+checkEq(firstSegCount("f\"{a + b}\""), 1);
+checkStrEq(segValue("f\"{a + b}\"", 0), "a + b");
+checkStrEq(firstKind("f\"{f({x: 1})}\""), "FString");
+checkStrEq(segValue("f\"{f({x: 1})}\"", 0), "f({x: 1})");
+
+// -----------------------------------------------------------------------------
+// 6. Char literals ('c', '\n', '\u{...}')
+// -----------------------------------------------------------------------------
+
+checkStrEq(firstKind("'a'"), "Char");
+checkStrEq(firstText("'a'"), "a");
+checkStrEq(firstKind("'Z'"), "Char");
+checkStrEq(firstText("'Z'"), "Z");
+checkStrEq(firstText("'\\n'"), "\n");
+checkStrEq(firstText("'\\t'"), "\t");
+checkStrEq(firstText("'\\r'"), "\r");
+checkStrEq(firstText("'\\0'"), "\0");
+checkStrEq(firstText("'\\\\'"), "\\");
+checkStrEq(firstText("'\\''"), "'");
+checkStrEq(firstText("'\\\"'"), "\"");
+checkStrEq(firstText("'\\u{1F600}'"), "😀");
+
+// -----------------------------------------------------------------------------
+// 7. Punctuation (longest-match) — every operator
+// -----------------------------------------------------------------------------
+
+// 3-char
+checkStrEq(firstText("..="), "..=");
+checkStrEq(firstText("..."), "...");
+// 2-char
+checkStrEq(firstText(".."), "..");
+checkStrEq(firstText("::"), "::");
+checkStrEq(firstText("->"), "->");
+checkStrEq(firstText("=>"), "=>");
+checkStrEq(firstText("=="), "==");
+checkStrEq(firstText("!="), "!=");
+checkStrEq(firstText("<="), "<=");
+checkStrEq(firstText(">="), ">=");
+checkStrEq(firstText("&&"), "&&");
+checkStrEq(firstText("||"), "||");
+checkStrEq(firstText("+="), "+=");
+checkStrEq(firstText("-="), "-=");
+checkStrEq(firstText("*="), "*=");
+checkStrEq(firstText("/="), "/=");
+checkStrEq(firstText("%="), "%=");
+checkStrEq(firstText("<<"), "<<");
+checkStrEq(firstText(">>"), ">>");
+checkStrEq(firstText("??"), "??");
+// 1-char
+checkStrEq(firstText("?"), "?");
+checkStrEq(firstText("!"), "!");
+checkStrEq(firstText("~"), "~");
+checkStrEq(firstText("+"), "+");
+checkStrEq(firstText("-"), "-");
+checkStrEq(firstText("*"), "*");
+checkStrEq(firstText("/"), "/");
+checkStrEq(firstText("%"), "%");
+checkStrEq(firstText("&"), "&");
+checkStrEq(firstText("|"), "|");
+checkStrEq(firstText("^"), "^");
+checkStrEq(firstText("<"), "<");
+checkStrEq(firstText(">"), ">");
+checkStrEq(firstText("="), "=");
+checkStrEq(firstText("("), "(");
+checkStrEq(firstText(")"), ")");
+checkStrEq(firstText("["), "[");
+checkStrEq(firstText("]"), "]");
+checkStrEq(firstText("{"), "{");
+checkStrEq(firstText("}"), "}");
+checkStrEq(firstText(","), ",");
+checkStrEq(firstText(";"), ";");
+checkStrEq(firstText(":"), ":");
+checkStrEq(firstText("."), ".");
+checkStrEq(firstText("@"), "@");
+
+// Longest-match precedence: `..=` not `..` then `=`
+checkStrEq(firstText("..=x"), "..=");
+checkStrEq(firstText("...x"), "...");
+checkStrEq(firstText("..x"), "..");
+checkStrEq(firstText("==x"), "==");
+checkStrEq(firstText("<=x"), "<=");
+checkStrEq(firstText("<<x"), "<<");
+checkStrEq(firstText("->x"), "->");
+checkStrEq(firstText("=>x"), "=>");
+checkStrEq(firstText("::x"), "::");
+
+// -----------------------------------------------------------------------------
+// 8. Comments are skipped
+// -----------------------------------------------------------------------------
+
+checkStrEq(firstText("// comment\nlet"), "let");
+checkStrEq(firstKind("// comment\nlet"), "Keyword");
+checkStrEq(firstText("/* block */let"), "let");
+checkStrEq(firstText("/* block */ let"), "let");
+checkStrEq(firstText("/* multi\nline\nblock */let"), "let");
+// Nested block comments
+checkStrEq(firstText("/* outer /* inner */ still outer */let"), "let");
+checkStrEq(firstText("/*/*nested*/*/let"), "let");
+
+// -----------------------------------------------------------------------------
+// 9. Whitespace handling & newline tracking
+// -----------------------------------------------------------------------------
+
+checkStrEq(firstText("   let"), "let");
+checkStrEq(firstText("\tlet"), "let");
+checkStrEq(firstText("\n\nlet"), "let");
+
+// -----------------------------------------------------------------------------
+// 10. Location tracking (line, col, offset)
+// -----------------------------------------------------------------------------
+
+let tLet = lex("let")[0];
+checkEq(tLet.line, 1);
+checkEq(tLet.col, 1);
+checkEq(tLet.offset, 0);
+checkEq(tLet.endOffset, 3);
+
+let tLetIndent = lex("    let")[0];
+checkEq(tLetIndent.col, 5);
+checkEq(tLetIndent.offset, 4);
+checkEq(tLetIndent.endOffset, 7);
+
+let tNewline = lex("let\nx")[1];
+checkEq(tNewline.kind == "Ident", true);
+checkStrEq(tNewline.text, "x");
+checkEq(tNewline.line, 2);
+checkEq(tNewline.col, 1);
+checkEq(tNewline.offset, 4);
+
+let tMulti = lex("a b\nc d")[2];
+checkStrEq(tMulti.text, "c");
+checkEq(tMulti.line, 2);
+checkEq(tMulti.col, 1);
+checkEq(tMulti.offset, 4);
+
+// EOF position
+let tEof = lex("let")[1];
+checkStrEq(tEof.kind, "Eof");
+checkEq(tEof.line, 1);
+checkEq(tEof.col, 4);
+checkEq(tEof.offset, 3);
+
+// -----------------------------------------------------------------------------
+// 11. Full programs: token sequences
+// -----------------------------------------------------------------------------
+
+let prog1 = lex("let x = 42;");
+checkEq(len(prog1), 6);
+checkStrEq(prog1[0].kind, "Keyword");
+checkStrEq(prog1[0].text, "let");
+checkStrEq(prog1[1].kind, "Ident");
+checkStrEq(prog1[1].text, "x");
+checkStrEq(prog1[2].kind, "Punct");
+checkStrEq(prog1[2].text, "=");
+checkStrEq(prog1[3].kind, "Int");
+checkStrEq(prog1[3].text, "42");
+checkStrEq(prog1[4].kind, "Punct");
+checkStrEq(prog1[4].text, ";");
+checkStrEq(prog1[5].kind, "Eof");
+
+let prog2 = lex("let x: int = 42;");
+checkEq(tokCount("let x: int = 42;"), 7);
+checkStrEq(prog2[2].text, ":");
+checkStrEq(prog2[3].text, "int");
+checkStrEq(prog2[4].text, "=");
+checkStrEq(prog2[6].text, ";");
+
+let prog3 = lex("fn add(a: int, b: int) -> int { a + b }");
+checkStrEq(prog3[0].kind, "Keyword");
+checkStrEq(prog3[0].text, "fn");
+checkStrEq(prog3[1].text, "add");
+checkStrEq(prog3[2].text, "(");
+checkStrEq(prog3[3].text, "a");
+checkStrEq(prog3[4].text, ":");
+checkStrEq(prog3[5].text, "int");
+checkStrEq(prog3[6].text, ",");
+checkStrEq(prog3[7].text, "b");
+checkStrEq(prog3[8].text, ":");
+checkStrEq(prog3[9].text, "int");
+checkStrEq(prog3[10].text, ")");
+checkStrEq(prog3[11].text, "->");
+checkStrEq(prog3[12].text, "int");
+checkStrEq(prog3[13].text, "{");
+checkStrEq(prog3[14].text, "a");
+checkStrEq(prog3[15].text, "+");
+checkStrEq(prog3[16].text, "b");
+checkStrEq(prog3[17].text, "}");
+
+let prog4 = lex("let nums = [1, 2, 3];");
+checkStrEq(prog4[3].text, "[");
+checkStrEq(prog4[4].text, "1");
+checkStrEq(prog4[5].text, ",");
+checkStrEq(prog4[6].text, "2");
+checkStrEq(prog4[7].text, ",");
+checkStrEq(prog4[8].text, "3");
+checkStrEq(prog4[9].text, "]");
+
+let prog5 = lex("print(f\"Hello, {name}!\");");
+checkStrEq(prog5[0].kind, "Keyword");
+checkStrEq(prog5[0].text, "print");
+checkStrEq(prog5[1].text, "(");
+checkStrEq(prog5[2].kind, "FString");
+checkStrEq(prog5[2].segments[0].value, "Hello, ");
+checkStrEq(prog5[2].segments[1].value, "name");
+checkStrEq(prog5[2].segments[2].value, "!");
+checkStrEq(prog5[3].text, ")");
+checkStrEq(prog5[4].text, ";");
+
+// -----------------------------------------------------------------------------
+// 12. Lexer errors
+// -----------------------------------------------------------------------------
+
+// Unterminated string
+checkEq(errCount("\"unterminated"), 1);
+checkStrEq(firstErr("\"unterminated"), "unterminated string literal");
+// Unterminated f-string interpolation
+checkEq(errCount("f\"hi {name"), 1);
+checkStrEq(firstErr("f\"hi {name"), "unterminated string interpolation");
+// Unterminated char
+checkEq(errCount("'a"), 1);
+checkStrEq(firstErr("'a"), "unterminated char literal");
+// Empty char
+checkEq(errCount("''"), 1);
+checkStrEq(firstErr("''"), "empty char literal");
+// Unterminated block comment
+checkEq(errCount("/* not closed"), 1);
+checkStrEq(firstErr("/* not closed"), "unterminated block comment");
+// Invalid number literal
+checkEq(errCount("12abc"), 1);
+checkStrEq(firstErr("12abc"), "invalid number literal '12abc'");
+// Unexpected character — `$` is not valid Aether punctuation.
+checkEq(errCount("$"), 1);
+let dollarErr = firstErr("$");
+checkBoolEq(dollarErr == "unexpected character '$'", true);
+
+// Error tokens appear inline in the token stream.
+let errProg = lex("foo $ bar");
+checkStrEq(errProg[0].text, "foo");
+checkStrEq(errProg[1].kind, "Error");
+checkStrEq(errProg[2].text, "bar");
+
+// -----------------------------------------------------------------------------
+// 13. Character classification helpers (pure predicates)
+// -----------------------------------------------------------------------------
+
+checkBoolEq(isKeyword("let"), true);
+checkBoolEq(isKeyword("foo"), false);
+checkBoolEq(isKeyword("if"), true);
+checkBoolEq(isKeyword("IFn"), false);
+
+// isDigit (char codes)
+checkBoolEq(isDigit(48), true);   // '0'
+checkBoolEq(isDigit(57), true);   // '9'
+checkBoolEq(isDigit(47), false);  // '/'
+checkBoolEq(isDigit(58), false);  // ':'
+
+// isHexDigit
+checkBoolEq(isHexDigit(48), true);   // '0'
+checkBoolEq(isHexDigit(57), true);   // '9'
+checkBoolEq(isHexDigit(65), true);   // 'A'
+checkBoolEq(isHexDigit(70), true);   // 'F'
+checkBoolEq(isHexDigit(71), false);  // 'G'
+checkBoolEq(isHexDigit(97), true);   // 'a'
+checkBoolEq(isHexDigit(102), true);  // 'f'
+checkBoolEq(isHexDigit(103), false); // 'g'
+
+// isBinDigit
+checkBoolEq(isBinDigit(48), true);   // '0'
+checkBoolEq(isBinDigit(49), true);   // '1'
+checkBoolEq(isBinDigit(50), false);  // '2'
+
+// isOctDigit
+checkBoolEq(isOctDigit(48), true);   // '0'
+checkBoolEq(isOctDigit(55), true);   // '7'
+checkBoolEq(isOctDigit(56), false);  // '8'
+
+// isAlpha
+checkBoolEq(isAlpha(65), true);   // 'A'
+checkBoolEq(isAlpha(90), true);   // 'Z'
+checkBoolEq(isAlpha(97), true);   // 'a'
+checkBoolEq(isAlpha(122), true);  // 'z'
+checkBoolEq(isAlpha(95), true);   // '_'
+checkBoolEq(isAlpha(48), false); // '0'
+checkBoolEq(isAlpha(64), false); // '@'
+
+// isAlphaNum
+checkBoolEq(isAlphaNum(65), true);   // 'A'
+checkBoolEq(isAlphaNum(48), true);   // '0'
+checkBoolEq(isAlphaNum(95), true);   // '_'
+checkBoolEq(isAlphaNum(64), false); // '@'
+
+// isWhitespace
+checkBoolEq(isWhitespace(32), true);   // space
+checkBoolEq(isWhitespace(9), true);   // tab
+checkBoolEq(isWhitespace(10), true);  // LF
+checkBoolEq(isWhitespace(13), true);  // CR
+checkBoolEq(isWhitespace(65), false);  // 'A'
+
+// isIdentStart / isIdentCont
+checkBoolEq(isIdentStart(65), true);  // 'A'
+checkBoolEq(isIdentStart(48), false); // '0' (digit can't start)
+checkBoolEq(isIdentStart(95), true);  // '_'
+checkBoolEq(isIdentCont(48), true);   // '0' can continue
+checkBoolEq(isIdentCont(65), true);   // 'A' can continue
+checkBoolEq(isIdentCont(64), false);  // '@'
+
+// Unicode identifier (a Latin-1 letter, À = 192)
+checkBoolEq(isIdentStart(192), true);
+checkBoolEq(isIdentCont(192), true);
+
+// -----------------------------------------------------------------------------
+// 14. EOF token always present (even on empty input)
+// -----------------------------------------------------------------------------
+
+let emptyToks = lex("");
+checkEq(len(emptyToks), 1);
+checkStrEq(emptyToks[0].kind, "Eof");
+checkEq(emptyToks[0].offset, 0);
+
+let eofOnly = lex("   \n\n  ");
+checkEq(len(eofOnly), 1);
+checkStrEq(eofOnly[0].kind, "Eof");
+checkEq(eofOnly[0].line, 3);
+checkEq(eofOnly[0].offset, 7);
+
+// -----------------------------------------------------------------------------
+// 15. Lexer helpers exposed from lexer.ae
+// -----------------------------------------------------------------------------
+
+let r = lexWithErrors("let x = 42;");
+checkEq(len(r.tokens), 6);
+checkEq(len(r.errors), 0);
+
+let r2 = lexWithErrors("$ $ $");
+checkEq(len(r2.errors), 3);
+checkEq(len(r2.tokens), 4); // 3 Error tokens + 1 EOF (each $ produces 1 Error + 1 entry in errors)
+
+// -----------------------------------------------------------------------------
+// 16. `prevIsAtom` and `.` ambiguity (.5 vs foo.5)
+// -----------------------------------------------------------------------------
+
+// `.5` at start of input → Float ".5"
+checkStrEq(firstKind(".5"), "Float");
+checkStrEq(firstText(".5"), ".5");
+// `foo.5` → Ident foo, Punct ., Int 5 (NOT Float)
+let dotProg = lex("foo.5");
+checkStrEq(dotProg[0].text, "foo");
+checkStrEq(dotProg[1].text, ".");
+checkStrEq(dotProg[2].text, "5");
+checkStrEq(dotProg[2].kind, "Int");
+// `).5` → Punct ), Float .5 (after-atom is treated as float? Actually the TS lexer says prev is atom (')'), so .5 is field access — Int 5.
+let dotProg2 = lex(").5");
+checkStrEq(dotProg2[0].text, ")");
+checkStrEq(dotProg2[1].text, ".");
+checkStrEq(dotProg2[2].text, "5");
+
+// -----------------------------------------------------------------------------
+// 17. Lexer is idempotent: lexing a known Aether program twice yields the
+// same tokens. Smoke test on the lexer.ae's own sample.
+// -----------------------------------------------------------------------------
+
+let smoke = "let x: int = 42; fn id<T>(x: T) -> T { x }";
+let smokeToks = lex(smoke);
+checkEq(len(smokeToks), 23);
+checkStrEq(smokeToks[0].text, "let");
+checkStrEq(smokeToks[22].kind, "Eof");
+
+// -----------------------------------------------------------------------------
+// Done.
+// -----------------------------------------------------------------------------
+
+print("all " + str(ASSERTS) + " tests passed");

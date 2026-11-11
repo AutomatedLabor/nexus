@@ -1,0 +1,1544 @@
+// =====================================================================
+// aether-bootstrap/parser.test.ae — Unit tests for the Aether parser
+// =====================================================================
+// 100+ test cases that drive the parser via mock token streams (built
+// with the `toks` helper exported from parser.ae). Each test parses a
+// small Aether snippet, checks the AST shape, the number of top-level
+// statements, and (for clean parses) the number of errors.
+//
+// Since the Aether bootstrap doesn't support imports via the simple
+// `bun /tmp/verify_bootstrap.ts file.ae` runner (that path uses
+// `compileAndRun`, not the module-system `runModule`), this file is
+// concatenated with parser.ae at test time:
+//
+//   cat parser.ae parser.test.ae > /tmp/combined.ae
+//   bun /tmp/verify_bootstrap.ts /tmp/combined.ae
+//
+// All test functions are called from a single `runAllTests()` driver
+// at the bottom of the file. Tests use `assert_eq(actual, expected)` and
+// `assert(condition)`; any failure throws and halts the run.
+// =====================================================================
+
+// --- Test driver ---
+// Tracks pass/fail counts. We avoid the for-loop-scope bug by mutating
+// struct fields through a passed struct reference (the `Stats` struct
+// is mutated inside `check()` via reference semantics).
+struct Stats { passed: int, failed: int }
+
+fn check(st: Stats, cond: int, msg: string) -> int {
+  if cond == 1 {
+    st.passed = st.passed + 1;
+  } else {
+    st.failed = st.failed + 1;
+    print("FAIL: " + msg);
+  };
+  0
+}
+
+fn checkEq(st: Stats, actual: int, expected: int, msg: string) -> int {
+  if actual == expected {
+    st.passed = st.passed + 1;
+  } else {
+    st.failed = st.failed + 1;
+    print("FAIL: " + msg + " (expected " + str(expected) + ", got " + str(actual) + ")");
+  };
+  0
+}
+
+fn checkEqStr(st: Stats, actual: string, expected: string, msg: string) -> int {
+  if actual == expected {
+    st.passed = st.passed + 1;
+  } else {
+    st.failed = st.failed + 1;
+    print("FAIL: " + msg + " (expected '" + expected + "', got '" + actual + "')");
+  };
+  0
+}
+
+// Convenience: parse a flat (kind, text) list and return the ParseResult
+fn P(parts: [string]) -> ParseResult { parse(toks(parts)) }
+
+// Convenience: parse and return error count
+fn P_err(parts: [string]) -> int { len(P(parts).errors) }
+
+// Convenience: parse and return statement count
+fn P_n(parts: [string]) -> int { P(parts).program.ival }
+
+// Convenience: parse and return stmt 0 kind
+fn P_k0(parts: [string]) -> string { P(parts).program.items[0].kind }
+
+// Convenience: parse and return stmt 0 name (for let/fn/enum/struct)
+fn P_n0(parts: [string]) -> string { P(parts).program.items[0].name }
+
+// =====================================================================
+// Tests: literals & atoms
+// =====================================================================
+
+fn test_int_literal(st: Stats) -> int {
+  // `42;`
+  let r = P(["Int", "42", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "int-literal: no errors");
+  checkEq(st, r.program.ival, 1, "int-literal: 1 stmt");
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "ExprStmt", "int-literal: stmt kind");
+  let e = s.items[0];
+  checkEqStr(st, e.kind, "IntLit", "int-literal: expr kind");
+  checkEq(st, e.ival, 42, "int-literal: value");
+  0
+}
+
+fn test_float_literal(st: Stats) -> int {
+  // `3.14;`
+  let r = P(["Float", "3.14", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "float-literal: no errors");
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "FloatLit", "float-literal: expr kind");
+  0
+}
+
+fn test_bool_literal_true(st: Stats) -> int {
+  let r = P(["Keyword", "true", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "bool-true: no errors");
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "BoolLit", "bool-true: kind");
+  checkEq(st, e.ival, 1, "bool-true: value");
+  0
+}
+
+fn test_bool_literal_false(st: Stats) -> int {
+  let r = P(["Keyword", "false", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "bool-false: no errors");
+  let e = r.program.items[0].items[0];
+  checkEq(st, e.ival, 0, "bool-false: value");
+  0
+}
+
+fn test_string_literal(st: Stats) -> int {
+  let r = P(["String", "hello", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "string-literal: no errors");
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "StringLit", "string-literal: kind");
+  checkEqStr(st, e.text, "hello", "string-literal: text");
+  0
+}
+
+fn test_char_literal(st: Stats) -> int {
+  let r = P(["Char", "a", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "char-literal: no errors");
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "CharLit", "char-literal: kind");
+  0
+}
+
+fn test_unit_literal(st: Stats) -> int {
+  // `();`
+  let r = P(["Punct", "(", "Punct", ")", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "unit-literal: no errors");
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "UnitLit", "unit-literal: kind");
+  0
+}
+
+fn test_self_expr(st: Stats) -> int {
+  let r = P(["Keyword", "self", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "self-expr: no errors");
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "SelfExpr", "self-expr: kind");
+  0
+}
+
+fn test_ident_expr(st: Stats) -> int {
+  let r = P(["Ident", "x", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "ident-expr: no errors");
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Ident", "ident-expr: kind");
+  checkEqStr(st, e.name, "x", "ident-expr: name");
+  0
+}
+
+fn test_paren_expr(st: Stats) -> int {
+  // `(42);`
+  let r = P(["Punct", "(", "Int", "42", "Punct", ")", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "paren: no errors");
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Paren", "paren: kind");
+  checkEqStr(st, e.items[0].kind, "IntLit", "paren: inner kind");
+  0
+}
+
+fn test_tuple_expr(st: Stats) -> int {
+  // `(1, 2, 3);`
+  let r = P(["Punct", "(", "Int", "1", "Punct", ",", "Int", "2", "Punct", ",", "Int", "3", "Punct", ")", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "tuple: no errors");
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "TupleExpr", "tuple: kind");
+  checkEq(st, e.ival, 3, "tuple: 3 elements");
+  0
+}
+
+fn test_array_expr(st: Stats) -> int {
+  // `[1, 2, 3];`
+  let r = P(["Punct", "[", "Int", "1", "Punct", ",", "Int", "2", "Punct", ",", "Int", "3", "Punct", "]", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "array: no errors");
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "ArrayExpr", "array: kind");
+  checkEq(st, e.ival, 3, "array: 3 elements");
+  0
+}
+
+fn test_empty_array(st: Stats) -> int {
+  let r = P(["Punct", "[", "Punct", "]", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "empty-array: no errors");
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "ArrayExpr", "empty-array: kind");
+  checkEq(st, e.ival, 0, "empty-array: 0 elements");
+  0
+}
+
+fn test_map_expr(st: Stats) -> int {
+  // `{"a": 1};`
+  let r = P(["Punct", "{", "String", "a", "Punct", ":", "Int", "1", "Punct", "}", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "map: no errors");
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "MapExpr", "map: kind");
+  checkEq(st, e.ival, 1, "map: 1 entry");
+  0
+}
+
+// =====================================================================
+// Tests: binary / unary / precedence
+// =====================================================================
+
+fn test_addition(st: Stats) -> int {
+  let r = P(["Int", "1", "Punct", "+", "Int", "2", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Binary", "addition: kind");
+  checkEqStr(st, e.name, "+", "addition: op");
+  checkEq(st, e.items[0].ival, 1, "addition: left");
+  checkEq(st, e.items[1].ival, 2, "addition: right");
+  0
+}
+
+fn test_precedence_mul_over_add(st: Stats) -> int {
+  // 1 + 2 * 3 -> 1 + (2 * 3)
+  let r = P(["Int", "1", "Punct", "+", "Int", "2", "Punct", "*", "Int", "3", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.name, "+", "prec: top op is +");
+  checkEqStr(st, e.items[0].kind, "IntLit", "prec: left is IntLit");
+  checkEqStr(st, e.items[1].kind, "Binary", "prec: right is Binary");
+  checkEqStr(st, e.items[1].name, "*", "prec: right op is *");
+  0
+}
+
+fn test_left_assoc_sub(st: Stats) -> int {
+  // 1 - 2 - 3 -> (1 - 2) - 3
+  let r = P(["Int", "1", "Punct", "-", "Int", "2", "Punct", "-", "Int", "3", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.name, "-", "assoc: top op is -");
+  checkEqStr(st, e.items[0].kind, "Binary", "assoc: left is Binary (1-2)");
+  checkEqStr(st, e.items[1].kind, "IntLit", "assoc: right is IntLit (3)");
+  0
+}
+
+fn test_unary_neg(st: Stats) -> int {
+  // `-5;`
+  let r = P(["Punct", "-", "Int", "5", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Unary", "unary-neg: kind");
+  checkEqStr(st, e.name, "-", "unary-neg: op");
+  checkEqStr(st, e.items[0].kind, "IntLit", "unary-neg: operand");
+  0
+}
+
+fn test_unary_not(st: Stats) -> int {
+  // `!true;`
+  let r = P(["Punct", "!", "Keyword", "true", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Unary", "unary-not: kind");
+  checkEqStr(st, e.name, "!", "unary-not: op");
+  0
+}
+
+fn test_logical_and(st: Stats) -> int {
+  let r = P(["Keyword", "true", "Punct", "&&", "Keyword", "false", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Binary", "and: kind");
+  checkEqStr(st, e.name, "&&", "and: op");
+  0
+}
+
+fn test_logical_or(st: Stats) -> int {
+  let r = P(["Keyword", "true", "Punct", "||", "Keyword", "false", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Binary", "or: kind");
+  checkEqStr(st, e.name, "||", "or: op");
+  0
+}
+
+fn test_equality(st: Stats) -> int {
+  let r = P(["Int", "1", "Punct", "==", "Int", "2", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.name, "==", "eq: op");
+  0
+}
+
+fn test_not_equal(st: Stats) -> int {
+  let r = P(["Int", "1", "Punct", "!=", "Int", "2", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.name, "!=", "neq: op");
+  0
+}
+
+fn test_less_than(st: Stats) -> int {
+  let r = P(["Int", "1", "Punct", "<", "Int", "2", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.name, "<", "lt: op");
+  0
+}
+
+fn test_less_equal(st: Stats) -> int {
+  let r = P(["Int", "1", "Punct", "<=", "Int", "2", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.name, "<=", "le: op");
+  0
+}
+
+fn test_greater_than(st: Stats) -> int {
+  let r = P(["Int", "1", "Punct", ">", "Int", "2", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.name, ">", "gt: op");
+  0
+}
+
+fn test_greater_equal(st: Stats) -> int {
+  let r = P(["Int", "1", "Punct", ">=", "Int", "2", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.name, ">=", "ge: op");
+  0
+}
+
+fn test_modulo(st: Stats) -> int {
+  let r = P(["Int", "10", "Punct", "%", "Int", "3", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.name, "%", "mod: op");
+  0
+}
+
+fn test_division(st: Stats) -> int {
+  let r = P(["Int", "10", "Punct", "/", "Int", "2", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.name, "/", "div: op");
+  0
+}
+
+fn test_combined_precedence(st: Stats) -> int {
+  // 1 + 2 * 3 - 4 / 2 -> (1 + (2*3)) - (4/2)
+  let r = P(["Int", "1", "Punct", "+", "Int", "2", "Punct", "*", "Int", "3", "Punct", "-", "Int", "4", "Punct", "/", "Int", "2", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.name, "-", "combined: top op is -");
+  checkEqStr(st, e.items[0].name, "+", "combined: left is +");
+  checkEqStr(st, e.items[1].name, "/", "combined: right is /");
+  0
+}
+
+fn test_paren_overrides_precedence(st: Stats) -> int {
+  // (1 + 2) * 3 -> (1+2) * 3
+  let r = P(["Punct", "(", "Int", "1", "Punct", "+", "Int", "2", "Punct", ")", "Punct", "*", "Int", "3", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.name, "*", "paren-prec: top op is *");
+  checkEqStr(st, e.items[0].kind, "Paren", "paren-prec: left is Paren");
+  0
+}
+
+fn test_unary_minus_higher_than_binary(st: Stats) -> int {
+  // -1 + 2 -> (-1) + 2
+  let r = P(["Punct", "-", "Int", "1", "Punct", "+", "Int", "2", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.name, "+", "unary-prec: top op is +");
+  checkEqStr(st, e.items[0].kind, "Unary", "unary-prec: left is Unary");
+  0
+}
+
+// =====================================================================
+// Tests: postfix (call, index, field, method)
+// =====================================================================
+
+fn test_call(st: Stats) -> int {
+  // `f();`
+  let r = P(["Ident", "f", "Punct", "(", "Punct", ")", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Call", "call: kind");
+  checkEqStr(st, e.items[0].name, "f", "call: callee");
+  checkEq(st, e.ival, 0, "call: 0 args");
+  0
+}
+
+fn test_call_with_args(st: Stats) -> int {
+  // `add(1, 2);`
+  let r = P(["Ident", "add", "Punct", "(", "Int", "1", "Punct", ",", "Int", "2", "Punct", ")", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Call", "call-args: kind");
+  checkEq(st, e.ival, 2, "call-args: 2 args");
+  0
+}
+
+fn test_index(st: Stats) -> int {
+  // `arr[0];`
+  let r = P(["Ident", "arr", "Punct", "[", "Int", "0", "Punct", "]", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Index", "index: kind");
+  0
+}
+
+fn test_field_access(st: Stats) -> int {
+  // `p.x;`
+  let r = P(["Ident", "p", "Punct", ".", "Ident", "x", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Field", "field: kind");
+  checkEqStr(st, e.name, "x", "field: name");
+  0
+}
+
+fn test_method_call(st: Stats) -> int {
+  // `obj.foo(1, 2);`
+  let r = P(["Ident", "obj", "Punct", ".", "Ident", "foo", "Punct", "(", "Int", "1", "Punct", ",", "Int", "2", "Punct", ")", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "MethodCall", "method: kind");
+  checkEqStr(st, e.name, "foo", "method: name");
+  checkEq(st, e.ival, 2, "method: 2 args");
+  0
+}
+
+fn test_chained_calls(st: Stats) -> int {
+  // `f()();`
+  let r = P(["Ident", "f", "Punct", "(", "Punct", ")", "Punct", "(", "Punct", ")", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Call", "chained: outer Call");
+  checkEqStr(st, e.items[0].kind, "Call", "chained: inner Call");
+  0
+}
+
+fn test_nested_field_then_call(st: Stats) -> int {
+  // `obj.method().field;`
+  let r = P(["Ident", "obj", "Punct", ".", "Ident", "method", "Punct", "(", "Punct", ")", "Punct", ".", "Ident", "field", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Field", "chained-fc: outer Field");
+  checkEqStr(st, e.items[0].kind, "MethodCall", "chained-fc: inner MethodCall");
+  0
+}
+
+fn test_tuple_field_access(st: Stats) -> int {
+  // `t.0;`
+  let r = P(["Ident", "t", "Punct", ".", "Int", "0", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "TupleField", "tuple-field: kind");
+  checkEq(st, e.ival, 0, "tuple-field: index 0");
+  0
+}
+
+fn test_error_propagation(st: Stats) -> int {
+  // `expr?;`
+  let r = P(["Ident", "expr", "Punct", "?", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "ErrorProp", "error-prop: kind");
+  0
+}
+
+fn test_range_expr(st: Stats) -> int {
+  // `1..10;`
+  let r = P(["Int", "1", "Punct", "..", "Int", "10", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Range", "range: kind");
+  checkEq(st, e.ival, 0, "range: not inclusive");
+  0
+}
+
+fn test_range_inclusive(st: Stats) -> int {
+  // `1..=10;`
+  let r = P(["Int", "1", "Punct", "..=", "Int", "10", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Range", "range-inc: kind");
+  checkEq(st, e.ival, 1, "range-inc: inclusive");
+  0
+}
+
+fn test_as_cast(st: Stats) -> int {
+  // `x as int;`
+  let r = P(["Ident", "x", "Keyword", "as", "Ident", "int", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "As", "as-cast: kind");
+  checkEqStr(st, e.items[1].name, "int", "as-cast: type");
+  0
+}
+
+// =====================================================================
+// Tests: enum variant construction
+// =====================================================================
+
+fn test_enum_variant_unit(st: Stats) -> int {
+  // `Option::None;`
+  let r = P(["Ident", "Option", "Punct", "::", "Ident", "None", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "EnumVariant", "enum-unit: kind");
+  checkEqStr(st, e.name, "Option", "enum-unit: enum name");
+  checkEqStr(st, e.text, "None", "enum-unit: variant name");
+  checkEq(st, e.ival, 0, "enum-unit: 0 args");
+  0
+}
+
+fn test_enum_variant_tuple(st: Stats) -> int {
+  // `Option::Some(42);`
+  let r = P(["Ident", "Option", "Punct", "::", "Ident", "Some", "Punct", "(", "Int", "42", "Punct", ")", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "EnumVariant", "enum-tuple: kind");
+  checkEqStr(st, e.text, "Some", "enum-tuple: variant name");
+  checkEq(st, e.ival, 1, "enum-tuple: 1 arg");
+  0
+}
+
+// =====================================================================
+// Tests: struct literal
+// =====================================================================
+
+fn test_struct_literal_empty(st: Stats) -> int {
+  // `Point {};`
+  let r = P(["Ident", "Point", "Punct", "{", "Punct", "}", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "StructExpr", "struct-empty: kind");
+  checkEqStr(st, e.name, "Point", "struct-empty: name");
+  checkEq(st, e.ival, 0, "struct-empty: 0 fields");
+  0
+}
+
+fn test_struct_literal_fields(st: Stats) -> int {
+  // `Point { x: 1, y: 2 };`
+  let r = P(["Ident", "Point", "Punct", "{", "Ident", "x", "Punct", ":", "Int", "1", "Punct", ",", "Ident", "y", "Punct", ":", "Int", "2", "Punct", "}", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "StructExpr", "struct-fields: kind");
+  checkEqStr(st, e.name, "Point", "struct-fields: name");
+  checkEq(st, e.ival, 2, "struct-fields: 2 fields");
+  0
+}
+
+// =====================================================================
+// Tests: lambda
+// =====================================================================
+
+fn test_lambda_simple(st: Stats) -> int {
+  // `fn(x: int) -> int { x };`
+  let r = P(["Keyword", "fn", "Punct", "(", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ")", "Punct", "->", "Ident", "int", "Punct", "{", "Ident", "x", "Punct", "}", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Lambda", "lambda: kind");
+  0
+}
+
+fn test_lambda_no_return(st: Stats) -> int {
+  // `fn(x: int) { x };`
+  let r = P(["Keyword", "fn", "Punct", "(", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ")", "Punct", "{", "Ident", "x", "Punct", "}", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Lambda", "lambda-noret: kind");
+  0
+}
+
+// =====================================================================
+// Tests: if / match / block
+// =====================================================================
+
+fn test_if_expr(st: Stats) -> int {
+  // `if c { 1 } else { 2 };`
+  let r = P(["Keyword", "if", "Ident", "c", "Punct", "{", "Int", "1", "Punct", "}", "Keyword", "else", "Punct", "{", "Int", "2", "Punct", "}", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "If", "if: kind");
+  checkEqStr(st, e.items[0].name, "c", "if: cond is Ident c");
+  checkEqStr(st, e.items[1].kind, "Block", "if: then is Block");
+  checkEqStr(st, e.items[2].kind, "Block", "if: else is Block");
+  0
+}
+
+fn test_if_no_else(st: Stats) -> int {
+  // `if c { 1 };`
+  let r = P(["Keyword", "if", "Ident", "c", "Punct", "{", "Int", "1", "Punct", "}", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "If", "if-noelse: kind");
+  checkEqStr(st, e.items[2].kind, "Null", "if-noelse: else is Null");
+  0
+}
+
+fn test_if_else_if(st: Stats) -> int {
+  // `if a { 1 } else if b { 2 };`
+  let r = P(["Keyword", "if", "Ident", "a", "Punct", "{", "Int", "1", "Punct", "}", "Keyword", "else", "Keyword", "if", "Ident", "b", "Punct", "{", "Int", "2", "Punct", "}", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "If", "if-elseif: outer If");
+  checkEqStr(st, e.items[2].kind, "If", "if-elseif: else is nested If");
+  0
+}
+
+fn test_match_simple(st: Stats) -> int {
+  // `match x { 1 => 10, _ => 20, };`
+  let r = P(["Keyword", "match", "Ident", "x", "Punct", "{", "Int", "1", "Punct", "=>", "Int", "10", "Punct", ",", "Punct", "_", "Punct", "=>", "Int", "20", "Punct", ",", "Punct", "}", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Match", "match: kind");
+  checkEq(st, e.ival, 2, "match: 2 arms");
+  0
+}
+
+fn test_match_with_guard(st: Stats) -> int {
+  // `match x { n if n > 0 => 1, _ => 0, };`
+  let r = P(["Keyword", "match", "Ident", "x", "Punct", "{", "Ident", "n", "Keyword", "if", "Ident", "n", "Punct", ">", "Int", "0", "Punct", "=>", "Int", "1", "Punct", ",", "Punct", "_", "Punct", "=>", "Int", "0", "Punct", ",", "Punct", "}", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Match", "match-guard: kind");
+  let arm0 = e.items[1];
+  checkEqStr(st, arm0.kind, "MatchArm", "match-guard: arm kind");
+  checkEqStr(st, arm0.items[1].kind, "Binary", "match-guard: guard is Binary");
+  0
+}
+
+fn test_block_trailing(st: Stats) -> int {
+  // `{ 42 }` (as an expression)
+  let r = P(["Punct", "{", "Int", "42", "Punct", "}", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Block", "block-trail: kind");
+  checkEq(st, e.ival, 1, "block-trail: has trailing");
+  0
+}
+
+fn test_block_stmts(st: Stats) -> int {
+  // `{ 1; 2; 3 }`
+  let r = P(["Punct", "{", "Int", "1", "Punct", ";", "Int", "2", "Punct", ";", "Int", "3", "Punct", "}", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Block", "block-stmts: kind");
+  checkEq(st, e.ival, 1, "block-stmts: has trailing (3)");
+  0
+}
+
+fn test_empty_block(st: Stats) -> int {
+  // `{};`
+  let r = P(["Punct", "{", "Punct", "}", "Punct", ";"]);
+  let e = r.program.items[0].items[0];
+  checkEqStr(st, e.kind, "Block", "empty-block: kind");
+  checkEq(st, e.ival, 0, "empty-block: no trailing");
+  0
+}
+
+// =====================================================================
+// Tests: statements — let / const / mut / fn / enum / struct / type
+// =====================================================================
+
+fn test_let_simple(st: Stats) -> int {
+  // `let x = 42;`
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", "=", "Int", "42", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "let: no errors");
+  checkEq(st, r.program.ival, 1, "let: 1 stmt");
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "Let", "let: kind");
+  checkEqStr(st, s.name, "x", "let: name");
+  0
+}
+
+fn test_let_with_type(st: Stats) -> int {
+  // `let x: int = 42;`
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", "=", "Int", "42", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "let-type: no errors");
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "Let", "let-type: kind");
+  // items = [typeNode, init]
+  let typeN = s.items[0];
+  checkEqStr(st, typeN.kind, "PrimitiveType", "let-type: type kind");
+  0
+}
+
+fn test_mut_let(st: Stats) -> int {
+  // `let mut y = 0;`
+  let r = P(["Keyword", "let", "Keyword", "mut", "Ident", "y", "Punct", "=", "Int", "0", "Punct", ";"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "MutLet", "mut-let: kind");
+  checkEqStr(st, s.name, "y", "mut-let: name");
+  0
+}
+
+fn test_const_decl(st: Stats) -> int {
+  // `const PI: float = 3.14;`
+  let r = P(["Keyword", "const", "Ident", "PI", "Punct", ":", "Ident", "float", "Punct", "=", "Float", "3.14", "Punct", ";"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "Const", "const: kind");
+  checkEqStr(st, s.name, "PI", "const: name");
+  0
+}
+
+fn test_fn_simple(st: Stats) -> int {
+  // `fn add(a: int, b: int) -> int { a + b }`
+  let r = P(["Keyword", "fn", "Ident", "add", "Punct", "(", "Ident", "a", "Punct", ":", "Ident", "int", "Punct", ",", "Ident", "b", "Punct", ":", "Ident", "int", "Punct", ")", "Punct", "->", "Ident", "int", "Punct", "{", "Ident", "a", "Punct", "+", "Ident", "b", "Punct", "}"]);
+  checkEq(st, len(r.errors), 0, "fn-simple: no errors");
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "FnDecl", "fn-simple: kind");
+  checkEqStr(st, s.name, "add", "fn-simple: name");
+  0
+}
+
+fn test_fn_with_generics(st: Stats) -> int {
+  // `fn id<T>(x: T) -> T { x }`
+  let r = P(["Keyword", "fn", "Ident", "id", "Punct", "<", "Ident", "T", "Punct", ">", "Punct", "(", "Ident", "x", "Punct", ":", "Ident", "T", "Punct", ")", "Punct", "->", "Ident", "T", "Punct", "{", "Ident", "x", "Punct", "}"]);
+  checkEq(st, len(r.errors), 0, "fn-gen: no errors");
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "FnDecl", "fn-gen: kind");
+  checkEqStr(st, s.name, "id", "fn-gen: name");
+  // items = [generics, params, ret, body]
+  let generics = s.items[0];
+  checkEqStr(st, generics.kind, "Generics", "fn-gen: generics kind");
+  checkEq(st, generics.ival, 1, "fn-gen: 1 type param");
+  0
+}
+
+fn test_fn_no_return(st: Stats) -> int {
+  // `fn f() { 42 }`
+  let r = P(["Keyword", "fn", "Ident", "f", "Punct", "(", "Punct", ")", "Punct", "{", "Int", "42", "Punct", "}"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "FnDecl", "fn-noret: kind");
+  let ret = s.items[2];
+  checkEqStr(st, ret.kind, "Null", "fn-noret: ret is Null");
+  0
+}
+
+fn test_fn_recursive(st: Stats) -> int {
+  // `fn fib(n: int) -> int { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }`
+  let r = P(["Keyword", "fn", "Ident", "fib", "Punct", "(", "Ident", "n", "Punct", ":", "Ident", "int", "Punct", ")", "Punct", "->", "Ident", "int", "Punct", "{", "Keyword", "if", "Ident", "n", "Punct", "<", "Int", "2", "Punct", "{", "Ident", "n", "Punct", "}", "Keyword", "else", "Punct", "{", "Ident", "fib", "Punct", "(", "Ident", "n", "Punct", "-", "Int", "1", "Punct", ")", "Punct", "+", "Ident", "fib", "Punct", "(", "Ident", "n", "Punct", "-", "Int", "2", "Punct", ")", "Punct", "}", "Punct", "}"]);
+  checkEq(st, len(r.errors), 0, "fn-fib: no errors");
+  checkEq(st, r.program.ival, 1, "fn-fib: 1 stmt");
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "FnDecl", "fn-fib: kind");
+  checkEqStr(st, s.name, "fib", "fn-fib: name");
+  0
+}
+
+fn test_enum_decl(st: Stats) -> int {
+  // `enum Option<T> { Some(T), None, }`
+  let r = P(["Keyword", "enum", "Ident", "Option", "Punct", "<", "Ident", "T", "Punct", ">", "Punct", "{", "Ident", "Some", "Punct", "(", "Ident", "T", "Punct", ")", "Punct", ",", "Ident", "None", "Punct", ",", "Punct", "}"]);
+  checkEq(st, len(r.errors), 0, "enum: no errors");
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "EnumDecl", "enum: kind");
+  checkEqStr(st, s.name, "Option", "enum: name");
+  checkEq(st, s.ival, 2, "enum: 2 variants");
+  0
+}
+
+fn test_enum_unit_variant(st: Stats) -> int {
+  let r = P(["Keyword", "enum", "Ident", "Color", "Punct", "{", "Ident", "Red", "Punct", ",", "Ident", "Green", "Punct", ",", "Ident", "Blue", "Punct", "}"]);
+  let s = r.program.items[0];
+  // variants: items[0] is generics; items[1..] are variants
+  let v0 = s.items[1];
+  checkEqStr(st, v0.kind, "EnumVariantDecl", "enum-unit-v: kind");
+  checkEq(st, v0.ival, 0, "enum-unit-v: unit variant (0)");
+  0
+}
+
+fn test_enum_tuple_variant(st: Stats) -> int {
+  let r = P(["Keyword", "enum", "Ident", "E", "Punct", "{", "Ident", "V", "Punct", "(", "Ident", "int", "Punct", ")", "Punct", "}"]);
+  let s = r.program.items[0];
+  let v0 = s.items[1];
+  checkEqStr(st, v0.kind, "EnumVariantDecl", "enum-tuple-v: kind");
+  checkEq(st, v0.ival, 1, "enum-tuple-v: tuple variant (1)");
+  0
+}
+
+fn test_enum_struct_variant(st: Stats) -> int {
+  let r = P(["Keyword", "enum", "Ident", "E", "Punct", "{", "Ident", "V", "Punct", "{", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", "}", "Punct", "}"]);
+  let s = r.program.items[0];
+  let v0 = s.items[1];
+  checkEqStr(st, v0.kind, "EnumVariantDecl", "enum-struct-v: kind");
+  checkEq(st, v0.ival, 2, "enum-struct-v: struct variant (2)");
+  0
+}
+
+fn test_struct_decl(st: Stats) -> int {
+  // `struct Point { x: int, y: int }`
+  let r = P(["Keyword", "struct", "Ident", "Point", "Punct", "{", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ",", "Ident", "y", "Punct", ":", "Ident", "int", "Punct", "}"]);
+  checkEq(st, len(r.errors), 0, "struct: no errors");
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "StructDecl", "struct: kind");
+  checkEqStr(st, s.name, "Point", "struct: name");
+  checkEq(st, s.ival, 2, "struct: 2 fields");
+  0
+}
+
+fn test_struct_with_generics(st: Stats) -> int {
+  // `struct Pair<T, U> { a: T, b: U }`
+  let r = P(["Keyword", "struct", "Ident", "Pair", "Punct", "<", "Ident", "T", "Punct", ",", "Ident", "U", "Punct", ">", "Punct", "{", "Ident", "a", "Punct", ":", "Ident", "T", "Punct", ",", "Ident", "b", "Punct", ":", "Ident", "U", "Punct", "}"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "StructDecl", "struct-gen: kind");
+  checkEqStr(st, s.name, "Pair", "struct-gen: name");
+  let generics = s.items[0];
+  checkEq(st, generics.ival, 2, "struct-gen: 2 type params");
+  0
+}
+
+fn test_type_alias(st: Stats) -> int {
+  // `type Age = int;`
+  let r = P(["Keyword", "type", "Ident", "Age", "Punct", "=", "Ident", "int", "Punct", ";"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "TypeAlias", "type-alias: kind");
+  checkEqStr(st, s.name, "Age", "type-alias: name");
+  0
+}
+
+fn test_return_with_value(st: Stats) -> int {
+  // `return 42;`
+  let r = P(["Keyword", "return", "Int", "42", "Punct", ";"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "Return", "return: kind");
+  checkEqStr(st, s.items[0].kind, "IntLit", "return: expr is IntLit");
+  0
+}
+
+fn test_return_void(st: Stats) -> int {
+  // `return;`
+  let r = P(["Keyword", "return", "Punct", ";"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "Return", "return-void: kind");
+  checkEqStr(st, s.items[0].kind, "Null", "return-void: expr is Null");
+  0
+}
+
+fn test_break(st: Stats) -> int {
+  // `break;`
+  let r = P(["Keyword", "break", "Punct", ";"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "Break", "break: kind");
+  0
+}
+
+fn test_continue(st: Stats) -> int {
+  // `continue;`
+  let r = P(["Keyword", "continue", "Punct", ";"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "Continue", "continue: kind");
+  0
+}
+
+fn test_while_loop(st: Stats) -> int {
+  // `while i < n { i = i + 1; }`
+  let r = P(["Keyword", "while", "Ident", "i", "Punct", "<", "Ident", "n", "Punct", "{", "Ident", "i", "Punct", "=", "Ident", "i", "Punct", "+", "Int", "1", "Punct", ";", "Punct", "}"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "While", "while: kind");
+  checkEqStr(st, s.items[0].kind, "Binary", "while: cond is Binary");
+  checkEqStr(st, s.items[1].kind, "Block", "while: body is Block");
+  0
+}
+
+fn test_for_in_range(st: Stats) -> int {
+  // `for i in range(0, 10) { print(i); }`
+  let r = P(["Keyword", "for", "Ident", "i", "Keyword", "in", "Ident", "range", "Punct", "(", "Int", "0", "Punct", ",", "Int", "10", "Punct", ")", "Punct", "{", "Ident", "print", "Punct", "(", "Ident", "i", "Punct", ")", "Punct", ";", "Punct", "}"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "ForIn", "for-in: kind");
+  checkEqStr(st, s.name, "i", "for-in: var name");
+  0
+}
+
+fn test_print_stmt(st: Stats) -> int {
+  // `print(x);`
+  let r = P(["Keyword", "print", "Punct", "(", "Ident", "x", "Punct", ")", "Punct", ";"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "Print", "print: kind");
+  0
+}
+
+fn test_import_stmt(st: Stats) -> int {
+  // `import "math.ae" { sqrt };`
+  let r = P(["Keyword", "import", "String", "math.ae", "Punct", "{", "Ident", "sqrt", "Punct", "}", "Punct", ";"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "Import", "import: kind");
+  checkEqStr(st, s.name, "math.ae", "import: path");
+  checkEq(st, s.ival, 1, "import: 1 name");
+  0
+}
+
+fn test_pub_fn(st: Stats) -> int {
+  // `pub fn f() -> int { 42 }`
+  let r = P(["Keyword", "pub", "Keyword", "fn", "Ident", "f", "Punct", "(", "Punct", ")", "Punct", "->", "Ident", "int", "Punct", "{", "Int", "42", "Punct", "}"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "FnDecl", "pub-fn: kind");
+  checkEq(st, s.ival, 1, "pub-fn: exported (1)");
+  0
+}
+
+fn test_assign_stmt(st: Stats) -> int {
+  // `x = 42;`
+  let r = P(["Ident", "x", "Punct", "=", "Int", "42", "Punct", ";"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "AssignStmt", "assign: kind");
+  0
+}
+
+fn test_compound_add_assign(st: Stats) -> int {
+  // `x += 1;`
+  let r = P(["Ident", "x", "Punct", "+=", "Int", "1", "Punct", ";"]);
+  let s = r.program.items[0];
+  checkEqStr(st, s.kind, "AssignStmt", "add-assign: kind");
+  let v = s.items[1];
+  checkEqStr(st, v.kind, "CompoundAssign", "add-assign: value is CompoundAssign");
+  checkEqStr(st, v.name, "+", "add-assign: op");
+  0
+}
+
+fn test_compound_sub_assign(st: Stats) -> int {
+  let r = P(["Ident", "x", "Punct", "-=", "Int", "1", "Punct", ";"]);
+  let s = r.program.items[0];
+  let v = s.items[1];
+  checkEqStr(st, v.name, "-", "sub-assign: op");
+  0
+}
+
+fn test_compound_mul_assign(st: Stats) -> int {
+  let r = P(["Ident", "x", "Punct", "*=", "Int", "2", "Punct", ";"]);
+  let s = r.program.items[0];
+  let v = s.items[1];
+  checkEqStr(st, v.name, "*", "mul-assign: op");
+  0
+}
+
+fn test_compound_div_assign(st: Stats) -> int {
+  let r = P(["Ident", "x", "Punct", "/=", "Int", "2", "Punct", ";"]);
+  let s = r.program.items[0];
+  let v = s.items[1];
+  checkEqStr(st, v.name, "/", "div-assign: op");
+  0
+}
+
+fn test_compound_mod_assign(st: Stats) -> int {
+  let r = P(["Ident", "x", "Punct", "%=", "Int", "2", "Punct", ";"]);
+  let s = r.program.items[0];
+  let v = s.items[1];
+  checkEqStr(st, v.name, "%", "mod-assign: op");
+  0
+}
+
+// =====================================================================
+// Tests: types
+// =====================================================================
+
+fn test_named_type(st: Stats) -> int {
+  // `let x: MyType = 0;`
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "MyType", "Punct", "=", "Int", "0", "Punct", ";"]);
+  let s = r.program.items[0];
+  let typeN = s.items[0];
+  checkEqStr(st, typeN.kind, "NamedType", "named-type: kind");
+  checkEqStr(st, typeN.name, "MyType", "named-type: name");
+  0
+}
+
+fn test_primitive_type(st: Stats) -> int {
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", "=", "Int", "0", "Punct", ";"]);
+  let s = r.program.items[0];
+  let typeN = s.items[0];
+  checkEqStr(st, typeN.kind, "PrimitiveType", "prim-type: kind");
+  checkEqStr(st, typeN.name, "int", "prim-type: name");
+  0
+}
+
+fn test_array_type(st: Stats) -> int {
+  // `let x: [int] = [];`
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", ":", "Punct", "[", "Ident", "int", "Punct", "]", "Punct", "=", "Punct", "[", "Punct", "]", "Punct", ";"]);
+  let s = r.program.items[0];
+  let typeN = s.items[0];
+  checkEqStr(st, typeN.kind, "ArrayType", "array-type: kind");
+  0
+}
+
+fn test_tuple_type(st: Stats) -> int {
+  // `let x: (int, int) = (0, 0);`
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", ":", "Punct", "(", "Ident", "int", "Punct", ",", "Ident", "int", "Punct", ")", "Punct", "=", "Punct", "(", "Int", "0", "Punct", ",", "Int", "0", "Punct", ")", "Punct", ";"]);
+  let s = r.program.items[0];
+  let typeN = s.items[0];
+  checkEqStr(st, typeN.kind, "TupleType", "tuple-type: kind");
+  checkEq(st, typeN.ival, 2, "tuple-type: 2 types");
+  0
+}
+
+fn test_func_type(st: Stats) -> int {
+  // `let x: fn(int) -> int = f;`
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", ":", "Keyword", "fn", "Punct", "(", "Ident", "int", "Punct", ")", "Punct", "->", "Ident", "int", "Punct", "=", "Ident", "f", "Punct", ";"]);
+  let s = r.program.items[0];
+  let typeN = s.items[0];
+  checkEqStr(st, typeN.kind, "FuncType", "func-type: kind");
+  0
+}
+
+fn test_generic_type(st: Stats) -> int {
+  // `let x: Vec<int> = v;`
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "Vec", "Punct", "<", "Ident", "int", "Punct", ">", "Punct", "=", "Ident", "v", "Punct", ";"]);
+  let s = r.program.items[0];
+  let typeN = s.items[0];
+  checkEqStr(st, typeN.kind, "GenericType", "generic-type: kind");
+  checkEqStr(st, typeN.name, "Vec", "generic-type: name");
+  checkEq(st, typeN.ival, 1, "generic-type: 1 arg");
+  0
+}
+
+fn test_map_type(st: Stats) -> int {
+  // `let x: map[int]string = m;`
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "map", "Punct", "[", "Ident", "int", "Punct", "]", "Ident", "string", "Punct", "=", "Ident", "m", "Punct", ";"]);
+  let s = r.program.items[0];
+  let typeN = s.items[0];
+  checkEqStr(st, typeN.kind, "MapType", "map-type: kind");
+  0
+}
+
+fn test_option_type(st: Stats) -> int {
+  // `let x: option<int> = o;`
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "option", "Punct", "<", "Ident", "int", "Punct", ">", "Punct", "=", "Ident", "o", "Punct", ";"]);
+  let s = r.program.items[0];
+  let typeN = s.items[0];
+  checkEqStr(st, typeN.kind, "OptionType", "option-type: kind");
+  0
+}
+
+fn test_result_type(st: Stats) -> int {
+  // `let x: result<int, string> = r;`
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "result", "Punct", "<", "Ident", "int", "Punct", ",", "Ident", "string", "Punct", ">", "Punct", "=", "Ident", "r", "Punct", ";"]);
+  let s = r.program.items[0];
+  let typeN = s.items[0];
+  checkEqStr(st, typeN.kind, "ResultType", "result-type: kind");
+  0
+}
+
+fn test_unit_type(st: Stats) -> int {
+  // `let x: () = ();`
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", ":", "Punct", "(", "Punct", ")", "Punct", "=", "Punct", "(", "Punct", ")", "Punct", ";"]);
+  let s = r.program.items[0];
+  let typeN = s.items[0];
+  checkEqStr(st, typeN.kind, "UnitType", "unit-type: kind");
+  0
+}
+
+// =====================================================================
+// Tests: patterns
+// =====================================================================
+
+fn test_wildcard_pattern(st: Stats) -> int {
+  // `match x { _ => 0, };`
+  let r = P(["Keyword", "match", "Ident", "x", "Punct", "{", "Punct", "_", "Punct", "=>", "Int", "0", "Punct", ",", "Punct", "}"]);
+  let m = r.program.items[0].items[0];
+  let arm = m.items[1];
+  let pat = arm.items[0];
+  checkEqStr(st, pat.kind, "WildcardPat", "wildcard-pat: kind");
+  0
+}
+
+fn test_bind_pattern(st: Stats) -> int {
+  // `match x { n => n, };`
+  let r = P(["Keyword", "match", "Ident", "x", "Punct", "{", "Ident", "n", "Punct", "=>", "Ident", "n", "Punct", ",", "Punct", "}"]);
+  let m = r.program.items[0].items[0];
+  let arm = m.items[1];
+  let pat = arm.items[0];
+  checkEqStr(st, pat.kind, "BindPat", "bind-pat: kind");
+  checkEqStr(st, pat.name, "n", "bind-pat: name");
+  0
+}
+
+fn test_lit_pattern_int(st: Stats) -> int {
+  // `match x { 42 => 1, _ => 0, };`
+  let r = P(["Keyword", "match", "Ident", "x", "Punct", "{", "Int", "42", "Punct", "=>", "Int", "1", "Punct", ",", "Punct", "_", "Punct", "=>", "Int", "0", "Punct", ",", "Punct", "}"]);
+  let m = r.program.items[0].items[0];
+  let arm = m.items[1];
+  let pat = arm.items[0];
+  checkEqStr(st, pat.kind, "LitPat", "lit-pat: kind");
+  0
+}
+
+fn test_lit_pattern_string(st: Stats) -> int {
+  // `match x { "hello" => 1, _ => 0, };`
+  let r = P(["Keyword", "match", "Ident", "x", "Punct", "{", "String", "hello", "Punct", "=>", "Int", "1", "Punct", ",", "Punct", "_", "Punct", "=>", "Int", "0", "Punct", ",", "Punct", "}"]);
+  let m = r.program.items[0].items[0];
+  let arm = m.items[1];
+  let pat = arm.items[0];
+  checkEqStr(st, pat.kind, "LitPat", "lit-pat-str: kind");
+  0
+}
+
+fn test_tuple_pattern(st: Stats) -> int {
+  // `match x { (a, b) => a, };`
+  let r = P(["Keyword", "match", "Ident", "x", "Punct", "{", "Punct", "(", "Ident", "a", "Punct", ",", "Ident", "b", "Punct", ")", "Punct", "=>", "Ident", "a", "Punct", ",", "Punct", "}"]);
+  let m = r.program.items[0].items[0];
+  let arm = m.items[1];
+  let pat = arm.items[0];
+  checkEqStr(st, pat.kind, "TuplePat", "tuple-pat: kind");
+  0
+}
+
+fn test_array_pattern(st: Stats) -> int {
+  // `match x { [a, b] => 0, };`
+  let r = P(["Keyword", "match", "Ident", "x", "Punct", "{", "Punct", "[", "Ident", "a", "Punct", ",", "Ident", "b", "Punct", "]", "Punct", "=>", "Int", "0", "Punct", ",", "Punct", "}"]);
+  let m = r.program.items[0].items[0];
+  let arm = m.items[1];
+  let pat = arm.items[0];
+  checkEqStr(st, pat.kind, "ArrayPat", "array-pat: kind");
+  0
+}
+
+fn test_array_pattern_with_rest(st: Stats) -> int {
+  // `match x { [a, ..] => 0, };`
+  let r = P(["Keyword", "match", "Ident", "x", "Punct", "{", "Punct", "[", "Ident", "a", "Punct", ",", "Punct", "..", "Punct", "]", "Punct", "=>", "Int", "0", "Punct", ",", "Punct", "}"]);
+  let m = r.program.items[0].items[0];
+  let arm = m.items[1];
+  let pat = arm.items[0];
+  checkEqStr(st, pat.kind, "ArrayPat", "array-pat-rest: kind");
+  checkEq(st, pat.ival, 1, "array-pat-rest: rest index 1");
+  0
+}
+
+fn test_enum_pattern(st: Stats) -> int {
+  // `match x { Option::Some(v) => v, Option::None => 0, };`
+  let r = P(["Keyword", "match", "Ident", "x", "Punct", "{", "Ident", "Option", "Punct", "::", "Ident", "Some", "Punct", "(", "Ident", "v", "Punct", ")", "Punct", "=>", "Ident", "v", "Punct", ",", "Ident", "Option", "Punct", "::", "Ident", "None", "Punct", "=>", "Int", "0", "Punct", ",", "Punct", "}"]);
+  let m = r.program.items[0].items[0];
+  let arm = m.items[1];
+  let pat = arm.items[0];
+  checkEqStr(st, pat.kind, "EnumPat", "enum-pat: kind");
+  checkEqStr(st, pat.name, "Option", "enum-pat: enum name");
+  checkEqStr(st, pat.text, "Some", "enum-pat: variant name");
+  0
+}
+
+fn test_struct_pattern(st: Stats) -> int {
+  // `match p { Point { x, y } => 0, };`
+  let r = P(["Keyword", "match", "Ident", "p", "Punct", "{", "Ident", "Point", "Punct", "{", "Ident", "x", "Punct", ",", "Ident", "y", "Punct", "}", "Punct", "=>", "Int", "0", "Punct", ",", "Punct", "}"]);
+  let m = r.program.items[0].items[0];
+  let arm = m.items[1];
+  let pat = arm.items[0];
+  checkEqStr(st, pat.kind, "StructPat", "struct-pat: kind");
+  checkEqStr(st, pat.name, "Point", "struct-pat: name");
+  0
+}
+
+fn test_or_pattern(st: Stats) -> int {
+  // `match x { 1 | 2 => 0, _ => 1, };`
+  let r = P(["Keyword", "match", "Ident", "x", "Punct", "{", "Int", "1", "Punct", "|", "Int", "2", "Punct", "=>", "Int", "0", "Punct", ",", "Punct", "_", "Punct", "=>", "Int", "1", "Punct", ",", "Punct", "}"]);
+  let m = r.program.items[0].items[0];
+  let arm = m.items[1];
+  let pat = arm.items[0];
+  checkEqStr(st, pat.kind, "OrPat", "or-pat: kind");
+  checkEq(st, pat.ival, 2, "or-pat: 2 patterns");
+  0
+}
+
+fn test_mut_bind_pattern(st: Stats) -> int {
+  // `match x { mut n => n, };`
+  let r = P(["Keyword", "match", "Ident", "x", "Punct", "{", "Keyword", "mut", "Ident", "n", "Punct", "=>", "Ident", "n", "Punct", ",", "Punct", "}"]);
+  let m = r.program.items[0].items[0];
+  let arm = m.items[1];
+  let pat = arm.items[0];
+  checkEqStr(st, pat.kind, "BindPat", "mut-bind: kind");
+  checkEq(st, pat.ival, 1, "mut-bind: isMut (1)");
+  0
+}
+
+// =====================================================================
+// Tests: error recovery
+// =====================================================================
+
+fn test_missing_semicolon(st: Stats) -> int {
+  // `let x = 42` (no `;`)
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", "=", "Int", "42"]);
+  check(st, len(r.errors) >= 1, "missing-semi: at least 1 error");
+  0
+}
+
+fn test_missing_init(st: Stats) -> int {
+  // `let x = ;` (missing init expr)
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", "=", "Punct", ";"]);
+  check(st, len(r.errors) >= 1, "missing-init: at least 1 error");
+  0
+}
+
+fn test_missing_paren_close(st: Stats) -> int {
+  // `fn f( -> int { 42 }` (missing close paren)
+  let r = P(["Keyword", "fn", "Ident", "f", "Punct", "(", "Punct", "->", "Ident", "int", "Punct", "{", "Int", "42", "Punct", "}"]);
+  check(st, len(r.errors) >= 1, "missing-paren: at least 1 error");
+  0
+}
+
+fn test_error_continues_parsing(st: Stats) -> int {
+  // `let x = ; let y = 1;` — first has error, second parses
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", "=", "Punct", ";", "Keyword", "let", "Ident", "y", "Punct", "=", "Int", "1", "Punct", ";"]);
+  check(st, len(r.errors) >= 1, "err-cont: at least 1 error");
+  // Second let should parse; program should have at least 1 stmt
+  check(st, r.program.ival >= 1, "err-cont: at least 1 stmt");
+  0
+}
+
+fn test_missing_brace_close(st: Stats) -> int {
+  // `fn f() { 42` (missing close brace)
+  let r = P(["Keyword", "fn", "Ident", "f", "Punct", "(", "Punct", ")", "Punct", "{", "Int", "42"]);
+  check(st, len(r.errors) >= 1, "missing-brace: at least 1 error");
+  0
+}
+
+fn test_unexpected_token(st: Stats) -> int {
+  // `) ;` (unexpected close paren at start)
+  let r = P(["Punct", ")", "Punct", ";"]);
+  check(st, len(r.errors) >= 1, "unexpected: at least 1 error");
+  0
+}
+
+// =====================================================================
+// Tests: full-program snippets
+// =====================================================================
+
+fn test_full_program_let(st: Stats) -> int {
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", "=", "Int", "42", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "full-let: no errors");
+  checkEq(st, r.program.ival, 1, "full-let: 1 stmt");
+  0
+}
+
+fn test_full_program_two_lets(st: Stats) -> int {
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", "=", "Int", "42", "Punct", ";", "Keyword", "let", "Ident", "y", "Punct", "=", "Int", "10", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "two-lets: no errors");
+  checkEq(st, r.program.ival, 2, "two-lets: 2 stmts");
+  0
+}
+
+fn test_full_program_let_fn(st: Stats) -> int {
+  let r = P([
+    "Keyword", "let", "Ident", "x", "Punct", "=", "Int", "42", "Punct", ";",
+    "Keyword", "fn", "Ident", "f", "Punct", "(", "Punct", ")", "Punct", "->", "Ident", "int", "Punct", "{", "Int", "0", "Punct", "}",
+  ]);
+  checkEq(st, len(r.errors), 0, "let-fn: no errors");
+  checkEq(st, r.program.ival, 2, "let-fn: 2 stmts");
+  0
+}
+
+fn test_full_program_with_block(st: Stats) -> int {
+  // `let x = { 1; 2; 3 };`
+  let r = P(["Keyword", "let", "Ident", "x", "Punct", "=", "Punct", "{", "Int", "1", "Punct", ";", "Int", "2", "Punct", ";", "Int", "3", "Punct", "}", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "let-block: no errors");
+  checkEq(st, r.program.ival, 1, "let-block: 1 stmt");
+  let s = r.program.items[0];
+  let init = s.items[1];
+  checkEqStr(st, init.kind, "Block", "let-block: init is Block");
+  0
+}
+
+fn test_full_program_const(st: Stats) -> int {
+  // `const PI: float = 3.14159;`
+  let r = P(["Keyword", "const", "Ident", "PI", "Punct", ":", "Ident", "float", "Punct", "=", "Float", "3.14159", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "full-const: no errors");
+  let s = r.program.items[0];
+  checkEqStr(st, s.name, "PI", "full-const: name");
+  0
+}
+
+fn test_full_program_enum_result(st: Stats) -> int {
+  // `enum Result<T, E> { Ok(T), Err(E), }`
+  let r = P(["Keyword", "enum", "Ident", "Result", "Punct", "<", "Ident", "T", "Punct", ",", "Ident", "E", "Punct", ">", "Punct", "{", "Ident", "Ok", "Punct", "(", "Ident", "T", "Punct", ")", "Punct", ",", "Ident", "Err", "Punct", "(", "Ident", "E", "Punct", ")", "Punct", ",", "Punct", "}"]);
+  checkEq(st, len(r.errors), 0, "full-result: no errors");
+  let s = r.program.items[0];
+  checkEqStr(st, s.name, "Result", "full-result: name");
+  checkEq(st, s.ival, 2, "full-result: 2 variants");
+  0
+}
+
+fn test_full_program_struct_point(st: Stats) -> int {
+  // `struct Point { x: int, y: int }`
+  let r = P(["Keyword", "struct", "Ident", "Point", "Punct", "{", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ",", "Ident", "y", "Punct", ":", "Ident", "int", "Punct", "}"]);
+  checkEq(st, len(r.errors), 0, "full-point: no errors");
+  let s = r.program.items[0];
+  checkEqStr(st, s.name, "Point", "full-point: name");
+  checkEq(st, s.ival, 2, "full-point: 2 fields");
+  0
+}
+
+// =====================================================================
+// Tests: complex programs
+// =====================================================================
+
+fn test_complex_iterative(st: Stats) -> int {
+  // `let mut acc = 0; let mut i = 0; while i < n { acc = acc + i; i = i + 1; }`
+  let r = P([
+    "Keyword", "let", "Keyword", "mut", "Ident", "acc", "Punct", "=", "Int", "0", "Punct", ";",
+    "Keyword", "let", "Keyword", "mut", "Ident", "i", "Punct", "=", "Int", "0", "Punct", ";",
+    "Keyword", "while", "Ident", "i", "Punct", "<", "Ident", "n", "Punct", "{",
+      "Ident", "acc", "Punct", "=", "Ident", "acc", "Punct", "+", "Ident", "i", "Punct", ";",
+      "Ident", "i", "Punct", "=", "Ident", "i", "Punct", "+", "Int", "1", "Punct", ";",
+    "Punct", "}",
+  ]);
+  checkEq(st, len(r.errors), 0, "iter: no errors");
+  checkEq(st, r.program.ival, 3, "iter: 3 stmts");
+  0
+}
+
+fn test_complex_for_range(st: Stats) -> int {
+  // `for i in range(0, 10) { print(i); }`
+  let r = P([
+    "Keyword", "for", "Ident", "i", "Keyword", "in", "Ident", "range", "Punct", "(", "Int", "0", "Punct", ",", "Int", "10", "Punct", ")", "Punct", "{",
+      "Ident", "print", "Punct", "(", "Ident", "i", "Punct", ")", "Punct", ";",
+    "Punct", "}",
+  ]);
+  checkEq(st, len(r.errors), 0, "for-range: no errors");
+  checkEq(st, r.program.ival, 1, "for-range: 1 stmt");
+  0
+}
+
+fn test_complex_string_interp(st: Stats) -> int {
+  // `let name = "Aether";` (String token with text "Aether")
+  let r = P(["Keyword", "let", "Ident", "name", "Punct", "=", "String", "Aether", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "str-interp: no errors");
+  let s = r.program.items[0];
+  let init = s.items[1];
+  checkEqStr(st, init.kind, "StringLit", "str-interp: init is StringLit");
+  checkEqStr(st, init.text, "Aether", "str-interp: text");
+  0
+}
+
+fn test_complex_array_init(st: Stats) -> int {
+  // `let nums = [1, 2, 3];`
+  let r = P(["Keyword", "let", "Ident", "nums", "Punct", "=", "Punct", "[", "Int", "1", "Punct", ",", "Int", "2", "Punct", ",", "Int", "3", "Punct", "]", "Punct", ";"]);
+  checkEq(st, len(r.errors), 0, "arr-init: no errors");
+  let s = r.program.items[0];
+  let init = s.items[1];
+  checkEqStr(st, init.kind, "ArrayExpr", "arr-init: kind");
+  checkEq(st, init.ival, 3, "arr-init: 3 elements");
+  0
+}
+
+fn test_complex_lambda_call(st: Stats) -> int {
+  // `let doubled = map(nums, fn(x: int) -> int { x * 2 });`
+  let r = P([
+    "Keyword", "let", "Ident", "doubled", "Punct", "=",
+    "Ident", "map", "Punct", "(",
+      "Ident", "nums", "Punct", ",",
+      "Keyword", "fn", "Punct", "(", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ")", "Punct", "->", "Ident", "int", "Punct", "{", "Ident", "x", "Punct", "*", "Int", "2", "Punct", "}",
+    "Punct", ")", "Punct", ";",
+  ]);
+  checkEq(st, len(r.errors), 0, "lambda-call: no errors");
+  let s = r.program.items[0];
+  let init = s.items[1];
+  checkEqStr(st, init.kind, "Call", "lambda-call: init is Call");
+  checkEq(st, init.ival, 2, "lambda-call: 2 args");
+  0
+}
+
+fn test_complex_reduce(st: Stats) -> int {
+  // `let sum = reduce(nums, fn(a: int, x: int) -> int { a + x }, 0);`
+  let r = P([
+    "Keyword", "let", "Ident", "sum", "Punct", "=",
+    "Ident", "reduce", "Punct", "(",
+      "Ident", "nums", "Punct", ",",
+      "Keyword", "fn", "Punct", "(", "Ident", "a", "Punct", ":", "Ident", "int", "Punct", ",", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ")", "Punct", "->", "Ident", "int", "Punct", "{", "Ident", "a", "Punct", "+", "Ident", "x", "Punct", "}",
+      "Punct", ",", "Int", "0",
+    "Punct", ")", "Punct", ";",
+  ]);
+  checkEq(st, len(r.errors), 0, "reduce: no errors");
+  let s = r.program.items[0];
+  let init = s.items[1];
+  checkEqStr(st, init.kind, "Call", "reduce: init is Call");
+  checkEq(st, init.ival, 3, "reduce: 3 args");
+  0
+}
+
+// =====================================================================
+// Tests: program shape
+// =====================================================================
+
+fn test_empty_program(st: Stats) -> int {
+  let r = P([]);
+  checkEq(st, len(r.errors), 0, "empty: no errors");
+  checkEq(st, r.program.ival, 0, "empty: 0 stmts");
+  checkEqStr(st, r.program.kind, "Program", "empty: kind");
+  0
+}
+
+fn test_program_kind(st: Stats) -> int {
+  let r = P(["Int", "42", "Punct", ";"]);
+  checkEqStr(st, r.program.kind, "Program", "prog-kind: Program");
+  0
+}
+
+fn test_program_loc(st: Stats) -> int {
+  let r = P(["Int", "42", "Punct", ";"]);
+  // First token line is 1 (from `toks`)
+  checkEq(st, r.program.loc.line, 1, "prog-loc: line 1");
+  0
+}
+
+// =====================================================================
+// Driver
+// =====================================================================
+
+fn runAllTests() -> int {
+  let st = Stats { passed: 0, failed: 0 };
+  
+  // literals & atoms
+  test_int_literal(st);
+  test_float_literal(st);
+  test_bool_literal_true(st);
+  test_bool_literal_false(st);
+  test_string_literal(st);
+  test_char_literal(st);
+  test_unit_literal(st);
+  test_self_expr(st);
+  test_ident_expr(st);
+  test_paren_expr(st);
+  test_tuple_expr(st);
+  test_array_expr(st);
+  test_empty_array(st);
+  test_map_expr(st);
+  
+  // binary / unary / precedence
+  test_addition(st);
+  test_precedence_mul_over_add(st);
+  test_left_assoc_sub(st);
+  test_unary_neg(st);
+  test_unary_not(st);
+  test_logical_and(st);
+  test_logical_or(st);
+  test_equality(st);
+  test_not_equal(st);
+  test_less_than(st);
+  test_less_equal(st);
+  test_greater_than(st);
+  test_greater_equal(st);
+  test_modulo(st);
+  test_division(st);
+  test_combined_precedence(st);
+  test_paren_overrides_precedence(st);
+  test_unary_minus_higher_than_binary(st);
+  
+  // postfix
+  test_call(st);
+  test_call_with_args(st);
+  test_index(st);
+  test_field_access(st);
+  test_method_call(st);
+  test_chained_calls(st);
+  test_nested_field_then_call(st);
+  test_tuple_field_access(st);
+  test_error_propagation(st);
+  test_range_expr(st);
+  test_range_inclusive(st);
+  test_as_cast(st);
+  
+  // enum variant
+  test_enum_variant_unit(st);
+  test_enum_variant_tuple(st);
+  
+  // struct literal
+  test_struct_literal_empty(st);
+  test_struct_literal_fields(st);
+  
+  // lambda
+  test_lambda_simple(st);
+  test_lambda_no_return(st);
+  
+  // if / match / block
+  test_if_expr(st);
+  test_if_no_else(st);
+  test_if_else_if(st);
+  test_match_simple(st);
+  test_match_with_guard(st);
+  test_block_trailing(st);
+  test_block_stmts(st);
+  test_empty_block(st);
+  
+  // statements
+  test_let_simple(st);
+  test_let_with_type(st);
+  test_mut_let(st);
+  test_const_decl(st);
+  test_fn_simple(st);
+  test_fn_with_generics(st);
+  test_fn_no_return(st);
+  test_fn_recursive(st);
+  test_enum_decl(st);
+  test_enum_unit_variant(st);
+  test_enum_tuple_variant(st);
+  test_enum_struct_variant(st);
+  test_struct_decl(st);
+  test_struct_with_generics(st);
+  test_type_alias(st);
+  test_return_with_value(st);
+  test_return_void(st);
+  test_break(st);
+  test_continue(st);
+  test_while_loop(st);
+  test_for_in_range(st);
+  test_print_stmt(st);
+  test_import_stmt(st);
+  test_pub_fn(st);
+  test_assign_stmt(st);
+  test_compound_add_assign(st);
+  test_compound_sub_assign(st);
+  test_compound_mul_assign(st);
+  test_compound_div_assign(st);
+  test_compound_mod_assign(st);
+  
+  // types
+  test_named_type(st);
+  test_primitive_type(st);
+  test_array_type(st);
+  test_tuple_type(st);
+  test_func_type(st);
+  test_generic_type(st);
+  test_map_type(st);
+  test_option_type(st);
+  test_result_type(st);
+  test_unit_type(st);
+  
+  // patterns
+  test_wildcard_pattern(st);
+  test_bind_pattern(st);
+  test_lit_pattern_int(st);
+  test_lit_pattern_string(st);
+  test_tuple_pattern(st);
+  test_array_pattern(st);
+  test_array_pattern_with_rest(st);
+  test_enum_pattern(st);
+  test_struct_pattern(st);
+  test_or_pattern(st);
+  test_mut_bind_pattern(st);
+  
+  // error recovery
+  test_missing_semicolon(st);
+  test_missing_init(st);
+  test_missing_paren_close(st);
+  test_error_continues_parsing(st);
+  test_missing_brace_close(st);
+  test_unexpected_token(st);
+  
+  // full programs
+  test_full_program_let(st);
+  test_full_program_two_lets(st);
+  test_full_program_let_fn(st);
+  test_full_program_with_block(st);
+  test_full_program_const(st);
+  test_full_program_enum_result(st);
+  test_full_program_struct_point(st);
+  
+  // complex programs
+  test_complex_iterative(st);
+  test_complex_for_range(st);
+  test_complex_string_interp(st);
+  test_complex_array_init(st);
+  test_complex_lambda_call(st);
+  test_complex_reduce(st);
+  
+  // program shape
+  test_empty_program(st);
+  test_program_kind(st);
+  test_program_loc(st);
+  
+  print("=============================");
+  print("Parser test results:");
+  print("  passed: " + str(st.passed));
+  print("  failed: " + str(st.failed));
+  if st.failed == 0 {
+    print("  STATUS: ALL PASS");
+  } else {
+    print("  STATUS: FAILURES");
+  };
+  print("=============================");
+  assert_eq(st.failed, 0);
+  st.passed
+}
+
+// Run all tests; the script's stdout is the report.
+let npass = runAllTests();
+print("Total asserts passed: " + str(npass));

@@ -1,0 +1,660 @@
+// =============================================================================
+// aether-bootstrap/lexer.ae
+// =========================
+// The Aether-in-Aether bootstrap lexer — Wave V3-W1-LEX, part 1 of 6.
+//
+// This is the canonical "real language" milestone: the Aether language lexes
+// itself. The implementation is pure Aether (.ae), mirroring the TypeScript
+// reference lexer at aether/core/lexer/lexer.ts (425 LOC) token-for-token.
+//
+// Public API:
+//   pub fn lex(source: string) -> [Token]
+//   pub fn lexWithErrors(source: string) -> LexResult
+//   pub fn isDigit(c: int) -> bool
+//   pub fn isHexDigit(c: int) -> bool
+//   pub fn isBinDigit(c: int) -> bool
+//   pub fn isOctDigit(c: int) -> bool
+//   pub fn isAlpha(c: int) -> bool
+//   pub fn isAlphaNum(c: int) -> bool
+//   pub fn isWhitespace(c: int) -> bool
+//   pub fn isIdentStart(c: int) -> bool
+//   pub fn isIdentCont(c: int) -> bool
+//   pub fn isKeyword(kw: string) -> bool
+//   pub fn kindOf(t: Token) -> string
+//   pub fn textOf(t: Token) -> string
+//
+// Host primitives (registered in aether/core/eval/eval.ts as inline builtins):
+//   charCode(s: string, i: int) -> int
+//   fromCharCode(n: int) -> string
+//   strSlice(s: string, start: int, end: int) -> string
+//
+// Token model: struct Token { kind, text, line, col, offset, endOffset, segments }.
+// Differences from the TS reference are documented in lexer.README.md.
+// =============================================================================
+
+struct StringSeg {
+  kind: string,
+  value: string
+}
+
+struct Token {
+  kind: string,
+  text: string,
+  line: int,
+  col: int,
+  offset: int,
+  endOffset: int,
+  segments: [StringSeg]
+}
+
+struct LexError {
+  line: int,
+  col: int,
+  message: string
+}
+
+struct LexResult {
+  tokens: [Token],
+  errors: [LexError]
+}
+
+struct Lex {
+  src: string,
+  srcLen: int,
+  pos: int,
+  line: int,
+  col: int,
+  tokens: [Token],
+  errors: [LexError]
+}
+
+// Empty-array constructors — give Aether's type-checker a concrete element
+// type for empty literals (otherwise `[]` triggers a "found [E9]" type error).
+pub fn emptyTokens() -> [Token] { [] }
+pub fn emptyErrors() -> [LexError] { [] }
+pub fn emptySegs() -> [StringSeg] { [] }
+
+// -----------------------------------------------------------------------------
+// Character classification (operates on Unicode code points / char codes).
+// -----------------------------------------------------------------------------
+
+pub fn isDigit(c: int) -> bool { c >= 48 && c <= 57 }
+
+pub fn isHexDigit(c: int) -> bool {
+  isDigit(c) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+}
+
+pub fn isBinDigit(c: int) -> bool { c == 48 || c == 49 }
+
+pub fn isOctDigit(c: int) -> bool { c >= 48 && c <= 55 }
+
+pub fn isWhitespace(c: int) -> bool {
+  c == 32 || c == 9 || c == 10 || c == 13
+}
+
+pub fn isAlpha(c: int) -> bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+}
+
+pub fn isAlphaNum(c: int) -> bool { isAlpha(c) || isDigit(c) }
+
+pub fn isIdentStart(c: int) -> bool {
+  if isAlpha(c) { return true; };
+  if c >= 192 && c <= 214 { return true; };
+  if c >= 216 && c <= 246 { return true; };
+  if c >= 248 && c <= 255 { return true; };
+  if c >= 256 && c <= 687 { return true; };
+  if c >= 880 && c <= 1023 { return true; };
+  if c >= 1024 && c <= 1327 { return true; };
+  if c >= 1424 && c <= 1535 { return true; };
+  false
+}
+
+pub fn isIdentCont(c: int) -> bool {
+  if isIdentStart(c) { return true; };
+  if isDigit(c) { return true; };
+  if c >= 768 && c <= 879 { return true; };
+  false
+}
+
+pub fn isKeyword(kw: string) -> bool {
+  kw == "let" || kw == "mut" || kw == "const" || kw == "fn"
+  || kw == "enum" || kw == "struct" || kw == "type" || kw == "match"
+  || kw == "if" || kw == "else" || kw == "while" || kw == "for"
+  || kw == "in" || kw == "return" || kw == "break" || kw == "continue"
+  || kw == "print" || kw == "true" || kw == "false" || kw == "unit"
+  || kw == "self" || kw == "as" || kw == "range" || kw == "import"
+  || kw == "pub" || kw == "use" || kw == "or" || kw == "do"
+}
+
+pub fn kindOf(t: Token) -> string { t.kind }
+pub fn textOf(t: Token) -> string { t.text }
+
+// -----------------------------------------------------------------------------
+// Helpers: int<->hex string, underscore stripping.
+// -----------------------------------------------------------------------------
+
+fn hexDigitVal(c: int) -> int {
+  if c >= 48 && c <= 57 { return c - 48; };
+  if c >= 65 && c <= 70 { return c - 55; };
+  if c >= 97 && c <= 102 { return c - 87; };
+  -1
+}
+
+fn parseIntHex(s: string) -> int {
+  let mut result = 0;
+  let mut i = 0;
+  let mut ok = true;
+  while i < len(s) {
+    let d = hexDigitVal(charCode(s, i));
+    if d < 0 {
+      ok = false;
+    } else {
+      result = result * 16 + d;
+    };
+    i = i + 1;
+  }
+  if ok { result } else { -1 }
+}
+
+fn stripUnderscores(s: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(s) {
+    let c = str(s[i]);
+    if c != "_" {
+      out = out + c;
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// -----------------------------------------------------------------------------
+// Cursor primitives.
+// -----------------------------------------------------------------------------
+
+fn cur(l: Lex) -> int {
+  charCode(l.src, l.pos)
+}
+
+fn peek(l: Lex, n: int) -> int {
+  charCode(l.src, l.pos + n)
+}
+
+fn advance(l: Lex) -> int {
+  let c = cur(l);
+  if c == 10 {
+    l.line = l.line + 1;
+    l.col = 1;
+  } else {
+    l.col = l.col + 1;
+  };
+  l.pos = l.pos + 1;
+  c
+}
+
+// -----------------------------------------------------------------------------
+// Token + error emitters.
+// -----------------------------------------------------------------------------
+
+fn pushTok(l: Lex, kind: string, text: string, sLine: int, sCol: int, sOff: int, segs: [StringSeg]) {
+  push(l.tokens, Token {
+    kind: kind,
+    text: text,
+    line: sLine,
+    col: sCol,
+    offset: sOff,
+    endOffset: l.pos,
+    segments: segs
+  })
+}
+
+fn pushErr(l: Lex, line: int, col: int, message: string) {
+  push(l.errors, LexError { line: line, col: col, message: message });
+  pushTok(l, "Error", "", line, col, l.pos, emptySegs())
+}
+
+// -----------------------------------------------------------------------------
+// Comment skippers
+// -----------------------------------------------------------------------------
+
+fn skipLineComment(l: Lex) {
+  while l.pos < l.srcLen && cur(l) != 10 {
+    let _ = advance(l);
+  }
+}
+
+fn skipBlockComment(l: Lex, sLine: int, sCol: int) {
+  let _ = advance(l);
+  let _ = advance(l);
+  let mut depth = 1;
+  while l.pos < l.srcLen && depth > 0 {
+    let c = cur(l);
+    let c1 = peek(l, 1);
+    if c == 47 && c1 == 42 {
+      let _ = advance(l);
+      let _ = advance(l);
+      depth = depth + 1;
+    } else if c == 42 && c1 == 47 {
+      let _ = advance(l);
+      let _ = advance(l);
+      depth = depth - 1;
+    } else {
+      let _ = advance(l);
+    };
+  }
+  if depth > 0 {
+    pushErr(l, sLine, sCol, "unterminated block comment");
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Numbers (Int, Float, Hex, Binary, Octal)
+// -----------------------------------------------------------------------------
+
+fn prevIsAtom(l: Lex) -> bool {
+  let n = len(l.tokens);
+  if n == 0 { return false; };
+  let prev = l.tokens[n - 1];
+  if prev.kind == "Ident" { return true; };
+  if prev.kind == "Char" { return true; };
+  if prev.kind == "String" { return true; };
+  if prev.kind == "FString" { return true; };
+  if prev.kind == "Int" { return true; };
+  if prev.kind == "Float" { return true; };
+  if prev.kind == "Hex" { return true; };
+  if prev.kind == "Binary" { return true; };
+  if prev.kind == "Octal" { return true; };
+  if prev.kind == "Punct" {
+    if prev.text == ")" { return true; };
+    if prev.text == "]" { return true; };
+  };
+  if prev.kind == "Keyword" {
+    if prev.text == "true" { return true; };
+    if prev.text == "false" { return true; };
+    if prev.text == "self" { return true; };
+    if prev.text == "unit" { return true; };
+  };
+  false
+}
+
+fn scanNumber(l: Lex, sLine: int, sCol: int, sOff: int) {
+  let mut raw = "";
+  // Hex (0x..)
+  if cur(l) == 48 && (peek(l, 1) == 120 || peek(l, 1) == 88) {
+    let _ = advance(l);
+    let _ = advance(l);
+    while l.pos < l.srcLen && (isHexDigit(cur(l)) || cur(l) == 95) {
+      raw = raw + fromCharCode(advance(l));
+    }
+    pushTok(l, "Hex", "0x" + stripUnderscores(raw), sLine, sCol, sOff, emptySegs());
+    return;
+  };
+  // Binary (0b..)
+  if cur(l) == 48 && (peek(l, 1) == 98 || peek(l, 1) == 66) {
+    let _ = advance(l);
+    let _ = advance(l);
+    while l.pos < l.srcLen && (isBinDigit(cur(l)) || cur(l) == 95) {
+      raw = raw + fromCharCode(advance(l));
+    }
+    pushTok(l, "Binary", "0b" + stripUnderscores(raw), sLine, sCol, sOff, emptySegs());
+    return;
+  };
+  // Octal (0o..)
+  if cur(l) == 48 && (peek(l, 1) == 111 || peek(l, 1) == 79) {
+    let _ = advance(l);
+    let _ = advance(l);
+    while l.pos < l.srcLen && (isOctDigit(cur(l)) || cur(l) == 95) {
+      raw = raw + fromCharCode(advance(l));
+    }
+    pushTok(l, "Octal", "0o" + stripUnderscores(raw), sLine, sCol, sOff, emptySegs());
+    return;
+  };
+  // Decimal int / float
+  let mut isFloat = false;
+  let mut enteredExp = false;
+  while l.pos < l.srcLen && (isDigit(cur(l)) || cur(l) == 95) {
+    raw = raw + fromCharCode(advance(l));
+  }
+  if cur(l) == 46 && isDigit(peek(l, 1)) {
+    isFloat = true;
+    raw = raw + fromCharCode(advance(l));
+    while l.pos < l.srcLen && (isDigit(cur(l)) || cur(l) == 95) {
+      raw = raw + fromCharCode(advance(l));
+    }
+  };
+  if cur(l) == 101 || cur(l) == 69 {
+    let savePos = l.pos;
+    let saveLine = l.line;
+    let saveCol = l.col;
+    enteredExp = true;
+    let mut exp = fromCharCode(advance(l));
+    if cur(l) == 43 || cur(l) == 45 {
+      exp = exp + fromCharCode(advance(l));
+    };
+    if isDigit(cur(l)) {
+      isFloat = true;
+      while l.pos < l.srcLen && isDigit(cur(l)) {
+        exp = exp + fromCharCode(advance(l));
+      }
+      raw = raw + exp;
+    } else {
+      l.pos = savePos;
+      l.line = saveLine;
+      l.col = saveCol;
+    };
+  };
+  if l.pos < l.srcLen && isIdentStart(cur(l)) && !isDigit(cur(l)) {
+    let isExpChar = cur(l) == 101 || cur(l) == 69;
+    if !isExpChar || !enteredExp {
+      while l.pos < l.srcLen && isIdentCont(cur(l)) {
+        raw = raw + fromCharCode(advance(l));
+      }
+      pushErr(l, sLine, sCol, "invalid number literal '" + stripUnderscores(raw) + "'");
+      return;
+    };
+  };
+  let kind = if isFloat { "Float" } else { "Int" };
+  pushTok(l, kind, stripUnderscores(raw), sLine, sCol, sOff, emptySegs())
+}
+
+// -----------------------------------------------------------------------------
+// Characters ('c', '\n', '\u{1F600}')
+// -----------------------------------------------------------------------------
+
+fn scanEscape(l: Lex) -> string {
+  let c = advance(l);
+  if c == 110 { return "\n"; };
+  if c == 114 { return "\r"; };
+  if c == 116 { return "\t"; };
+  if c == 48 { return "\0"; };
+  if c == 92 { return "\\"; };
+  if c == 39 { return "'"; };
+  if c == 34 { return "\""; };
+  if c == 117 {
+    let mut hex = "";
+    if cur(l) == 123 {
+      let _ = advance(l);
+      let mut i = 0;
+      while l.pos < l.srcLen && cur(l) != 125 && i < 8 {
+        hex = hex + fromCharCode(advance(l));
+        i = i + 1;
+      }
+      if cur(l) == 125 {
+        let _ = advance(l);
+      };
+    };
+    let code = parseIntHex(hex);
+    if code < 0 { return ""; };
+    return fromCharCode(code);
+  };
+  fromCharCode(c)
+}
+
+fn scanChar(l: Lex, sLine: int, sCol: int, sOff: int) {
+  let _ = advance(l);
+  if l.pos >= l.srcLen {
+    pushErr(l, sLine, sCol, "unterminated char literal");
+    return;
+  };
+  let c = cur(l);
+  if c == 92 {
+    let _ = advance(l);
+    let value = scanEscape(l);
+    if cur(l) != 39 {
+      pushErr(l, sLine, sCol, "unterminated char literal");
+      return;
+    };
+    let _ = advance(l);
+    pushTok(l, "Char", value, sLine, sCol, sOff, emptySegs());
+    return;
+  };
+  if c == 39 {
+    pushErr(l, sLine, sCol, "empty char literal");
+    let _ = advance(l);
+    return;
+  };
+  let value = fromCharCode(advance(l));
+  if cur(l) != 39 {
+    pushErr(l, sLine, sCol, "unterminated char literal");
+    return;
+  };
+  let _ = advance(l);
+  pushTok(l, "Char", value, sLine, sCol, sOff, emptySegs())
+}
+
+// -----------------------------------------------------------------------------
+// Strings (plain "..." and f"...", with interpolation + escapes)
+// -----------------------------------------------------------------------------
+
+fn scanString(l: Lex, sLine: int, sCol: int, sOff: int) {
+  let mut isF = false;
+  if cur(l) == 102 {
+    isF = true;
+    let _ = advance(l);
+  };
+  let _ = advance(l);
+  let segs = emptySegs();
+  let mut text = "";
+  while l.pos < l.srcLen && cur(l) != 34 {
+    let c = cur(l);
+    if c == 92 {
+      let _ = advance(l);
+      text = text + scanEscape(l);
+    } else if isF && c == 123 {
+      if len(text) > 0 {
+        push(segs, StringSeg { kind: "text", value: text });
+        text = "";
+      };
+      let _ = advance(l);
+      let mut depth = 1;
+      let mut inner = "";
+      let mut innerDone = false;
+      while l.pos < l.srcLen && depth > 0 && !innerDone {
+        let c2 = cur(l);
+        if c2 == 123 {
+          depth = depth + 1;
+          inner = inner + fromCharCode(advance(l));
+        } else if c2 == 125 {
+          depth = depth - 1;
+          if depth == 0 {
+            let _ = advance(l);
+            innerDone = true;
+          } else {
+            inner = inner + fromCharCode(advance(l));
+          };
+        } else if c2 == 34 {
+          inner = inner + fromCharCode(advance(l));
+          let mut strDone = false;
+          while l.pos < l.srcLen && cur(l) != 34 && !strDone {
+            if cur(l) == 92 {
+              inner = inner + fromCharCode(advance(l));
+              if l.pos < l.srcLen {
+                inner = inner + fromCharCode(advance(l));
+              };
+            } else {
+              inner = inner + fromCharCode(advance(l));
+            };
+          }
+          if l.pos < l.srcLen {
+            inner = inner + fromCharCode(advance(l));
+          };
+        } else {
+          inner = inner + fromCharCode(advance(l));
+        };
+      }
+      if depth > 0 {
+        pushErr(l, sLine, sCol, "unterminated string interpolation");
+        return;
+      };
+      push(segs, StringSeg { kind: "interp", value: inner });
+    } else {
+      text = text + fromCharCode(advance(l));
+    };
+  }
+  if len(text) > 0 {
+    push(segs, StringSeg { kind: "text", value: text });
+  };
+  if l.pos >= l.srcLen {
+    pushErr(l, sLine, sCol, "unterminated string literal");
+    return;
+  };
+  let _ = advance(l);
+  if isF {
+    pushTok(l, "FString", "", sLine, sCol, sOff, segs);
+  } else {
+    pushTok(l, "String", "", sLine, sCol, sOff, segs);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Identifiers / keywords
+// -----------------------------------------------------------------------------
+
+fn scanIdent(l: Lex, sLine: int, sCol: int, sOff: int) {
+  let mut raw = "";
+  while l.pos < l.srcLen && isIdentCont(cur(l)) {
+    raw = raw + fromCharCode(advance(l));
+  }
+  let kind = if isKeyword(raw) { "Keyword" } else { "Ident" };
+  pushTok(l, kind, raw, sLine, sCol, sOff, emptySegs())
+}
+
+// -----------------------------------------------------------------------------
+// Punctuation (longest-match)
+// -----------------------------------------------------------------------------
+
+fn matchPunct(l: Lex) -> string {
+  let c = cur(l);
+  if c < 0 { return ""; };
+  let c1 = peek(l, 1);
+  let c2 = peek(l, 2);
+  if c == 46 && c1 == 46 && c2 == 61 { return "..="; };
+  if c == 46 && c1 == 46 && c2 == 46 { return "..."; };
+  if c == 46 && c1 == 46 { return ".."; };
+  if c == 58 && c1 == 58 { return "::"; };
+  if c == 45 && c1 == 62 { return "->"; };
+  if c == 61 && c1 == 62 { return "=>"; };
+  if c == 61 && c1 == 61 { return "=="; };
+  if c == 33 && c1 == 61 { return "!="; };
+  if c == 60 && c1 == 61 { return "<="; };
+  if c == 62 && c1 == 61 { return ">="; };
+  if c == 38 && c1 == 38 { return "&&"; };
+  if c == 124 && c1 == 124 { return "||"; };
+  if c == 43 && c1 == 61 { return "+="; };
+  if c == 45 && c1 == 61 { return "-="; };
+  if c == 42 && c1 == 61 { return "*="; };
+  if c == 47 && c1 == 61 { return "/="; };
+  if c == 37 && c1 == 61 { return "%="; };
+  if c == 60 && c1 == 60 { return "<<"; };
+  if c == 62 && c1 == 62 { return ">>"; };
+  if c == 63 && c1 == 63 { return "??"; };
+  if c == 63 { return "?"; };
+  if c == 33 { return "!"; };
+  if c == 126 { return "~"; };
+  if c == 43 { return "+"; };
+  if c == 45 { return "-"; };
+  if c == 42 { return "*"; };
+  if c == 47 { return "/"; };
+  if c == 37 { return "%"; };
+  if c == 38 { return "&"; };
+  if c == 124 { return "|"; };
+  if c == 94 { return "^"; };
+  if c == 60 { return "<"; };
+  if c == 62 { return ">"; };
+  if c == 61 { return "="; };
+  if c == 40 { return "("; };
+  if c == 41 { return ")"; };
+  if c == 91 { return "["; };
+  if c == 93 { return "]"; };
+  if c == 123 { return "{"; };
+  if c == 125 { return "}"; };
+  if c == 44 { return ","; };
+  if c == 59 { return ";"; };
+  if c == 58 { return ":"; };
+  if c == 46 { return "."; };
+  if c == 64 { return "@"; };
+  ""
+}
+
+fn scanPunct(l: Lex, sLine: int, sCol: int, sOff: int) -> bool {
+  let p = matchPunct(l);
+  if p == "" { return false; };
+  let mut i = 0;
+  while i < len(p) {
+    let _ = advance(l);
+    i = i + 1;
+  }
+  pushTok(l, "Punct", p, sLine, sCol, sOff, emptySegs());
+  true
+}
+
+// -----------------------------------------------------------------------------
+// Public API: lex / lexWithErrors
+// -----------------------------------------------------------------------------
+
+pub fn lexWithErrors(source: string) -> LexResult {
+  let l = Lex {
+    src: source,
+    srcLen: len(source),
+    pos: 0,
+    line: 1,
+    col: 1,
+    tokens: emptyTokens(),
+    errors: emptyErrors()
+  };
+  while l.pos < l.srcLen {
+    let sLine = l.line;
+    let sCol = l.col;
+    let sOff = l.pos;
+    let c = cur(l);
+    if isWhitespace(c) {
+      let _ = advance(l);
+    } else if c == 47 && peek(l, 1) == 47 {
+      skipLineComment(l);
+    } else if c == 47 && peek(l, 1) == 42 {
+      skipBlockComment(l, sLine, sCol);
+    } else if isDigit(c) || (c == 46 && isDigit(peek(l, 1)) && !prevIsAtom(l)) {
+      scanNumber(l, sLine, sCol, sOff);
+    } else if c == 39 {
+      scanChar(l, sLine, sCol, sOff);
+    } else if c == 34 || (c == 102 && peek(l, 1) == 34) {
+      scanString(l, sLine, sCol, sOff);
+    } else if isIdentStart(c) {
+      scanIdent(l, sLine, sCol, sOff);
+    } else if scanPunct(l, sLine, sCol, sOff) {
+      let _ = 0;
+    } else {
+      let ch = fromCharCode(c);
+      pushErr(l, sLine, sCol, "unexpected character '" + ch + "'");
+      let _ = advance(l);
+    };
+  }
+  pushTok(l, "Eof", "", l.line, l.col, l.pos, emptySegs());
+  LexResult { tokens: l.tokens, errors: l.errors }
+}
+
+pub fn lex(source: string) -> [Token] {
+  let r = lexWithErrors(source);
+  r.tokens
+}
+
+// -----------------------------------------------------------------------------
+// Self-test: lex a small Aether snippet and print each token.
+// -----------------------------------------------------------------------------
+
+fn tokRepr(t: Token) -> string {
+  t.kind + " '" + t.text + "' @ " + str(t.line) + ":" + str(t.col) + "+" + str(t.offset)
+}
+
+print("== aether-bootstrap/lexer.ae self-test ==");
+let sample = "let x: int = 42;";
+print("lexing: '" + sample + "'");
+let selfToks = lex(sample);
+let mut i = 0;
+while i < len(selfToks) {
+  print(tokRepr(selfToks[i]));
+  i = i + 1;
+}
+print("== done (" + str(len(selfToks)) + " tokens) ==");

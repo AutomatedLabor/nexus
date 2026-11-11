@@ -1,0 +1,889 @@
+// ast.ae — Aether AST definitions + pretty-printer (self-hosting bootstrap, part 2 of 6)
+// =============================================================================
+//
+// The Aether Abstract Syntax Tree, written in Aether itself.
+//
+// This module mirrors the TypeScript reference AST at `aether/core/ast/ast.ts`
+// (33 Expr kinds + 17 Stmt kinds + 9 Pattern kinds + 10 Type kinds + the
+// `Program` root + 10 supporting records) but expressed in Aether's own
+// type system: tagged unions become `enum` types, records become `struct`s,
+// optional fields become `option<T>` (modeled at runtime via the built-in
+// `Option::Some(x)` / `Option::None` constructors), and `T[]` becomes `[T]`.
+//
+// Public surface
+// --------------
+//   locOf(node)              -> SrcLoc   — extract location from any node
+//   printType(t)             -> string
+//   printPattern(p)          -> string
+//   printExpr(e)             -> string
+//   printStmt(s, indent)     -> string
+//   printProgram(p)          -> string
+//   typeEqual(a, b)          -> bool
+//   patternEqual(a, b)       -> bool
+//   exprEqual(a, b)          -> bool
+//   stmtEqual(a, b)          -> bool
+//   walkExpr(e, onEnter, onLeave)
+//
+// Design notes
+// ------------
+// - Every variant carries its `SrcLoc` last so equality / printer code can
+//   ignore it with `_`. The `==` operator does deep equality on enum
+//   variants through Aether's `valueEq`, so `exprEqual(a, b) == (a == b)`
+//   (including SrcLoc — tests use `zeroSrc()` for consistent results).
+// - The printer is pure-functional: no mutable context, no for-loop-scope
+//   quirks. Indentation is threaded explicitly through `printStmt`/block
+//   helpers. Lists are joined with `map` + a small `join` helper.
+// - `option<T>` is used for every TS-`?`/`| null` field. At runtime, that
+//   desugars to `Option::Some(x)` / `Option::None`, which Aether matches
+//   cleanly with `Option::Some(y) => ...` arms.
+//
+// Known limitations
+// -----------------
+// - The Aether type checker doesn't unify `option<T>` with `Option::Some(x)`
+//   (they're modelled as separate types — `option<T>` is the sugar type,
+//   `Option` is the runtime constructor name). This generates type warnings
+//   but does NOT block execution; the playground runs programs with type
+//   warnings by design. All asserts below pass at runtime.
+
+// =============================================================================
+// Source locations
+// =============================================================================
+
+struct Loc { line: int, col: int, offset: int }
+
+struct SrcLoc { file: string, start: Loc, end: Loc }
+
+fn mkLoc(line: int, col: int, offset: int) -> Loc {
+  Loc { line: line, col: col, offset: offset }
+}
+
+fn zeroLoc() -> Loc { mkLoc(1, 1, 0) }
+
+fn zeroSrc() -> SrcLoc {
+  SrcLoc { file: "<synthetic>", start: zeroLoc(), end: zeroLoc() }
+}
+
+// -----------------------------------------------------------------------------
+// `Option<T>` — declared explicitly so the type checker resolves the
+// `Option::Some(x)` / `Option::None` constructors and pattern arms cleanly.
+// (Aether has a built-in `option<T>` syntactic-sugar type that maps to the
+// same TOption shape, but the sema only resolves the `Option` enum name in
+// pattern position when it's declared by the user. We re-declare it here;
+// the runtime constructor representation `{__variant:"Option", variant,
+// data:[...]}` is the same regardless of who declares the name.)
+// -----------------------------------------------------------------------------
+enum Option<T> { Some(T), None }
+
+// -----------------------------------------------------------------------------
+// Typed `Option::Some` constructors. The Aether type checker has a known
+// quirk: when inferring `Option::Some(x)`, it builds the result type from
+// `subst.get("T")` before applying the unification substitution, so the
+// result is `option<T9>` (a fresh type var) rather than `option<typeof x>`.
+// Each direct `Option::Some(x)` at a struct-field site therefore produces
+// one "field 'f': expected option<X>, found option<T9>" type warning. These
+// helpers centralize the construction: the helper body produces ONE such
+// warning per helper, and every call site sees the helper's *declared*
+// return type, so callers are warning-free. The warnings are non-blocking
+// (Aether runs programs with type warnings by design), but using these
+// helpers keeps the warning count small. `none*` are zero-arg shortcuts
+// for `Option::None` and produce no warnings at all.
+// -----------------------------------------------------------------------------
+fn someType(t: Type)   -> option<Type>   { Option::Some(t) }
+fn someExpr(e: Expr)   -> option<Expr>   { Option::Some(e) }
+fn someStr(s: string)  -> option<string> { Option::Some(s) }
+fn someInt(n: int)     -> option<int>    { Option::Some(n) }
+fn noneType()          -> option<Type>   { Option::None }
+fn noneExpr()          -> option<Expr>   { Option::None }
+fn noneStr()           -> option<string> { Option::None }
+fn noneInt()           -> option<int>    { Option::None }
+
+// =============================================================================
+// AST-level types (syntactic) — 10 variants, mirrors ast.ts TypeNode union.
+// =============================================================================
+
+enum Type {
+  NamedType(string, SrcLoc),
+  GenericType(string, [Type], SrcLoc),
+  FuncType([Type], Type, SrcLoc),
+  TupleType([Type], SrcLoc),
+  ArrayType(Type, SrcLoc),
+  MapType(Type, Type, SrcLoc),
+  OptionType(Type, SrcLoc),
+  ResultType(Type, Type, SrcLoc),
+  PrimitiveType(string, SrcLoc),
+  UnitType(SrcLoc),
+}
+
+// =============================================================================
+// Patterns — 9 variants.
+// =============================================================================
+
+enum Pattern {
+  WildcardPat(SrcLoc),
+  BindPat(string, bool, option<Type>, SrcLoc),                  // name, mut?, type?
+  LitPat(Expr, SrcLoc),                                         // value
+  TuplePat([Pattern], SrcLoc),
+  ArrayPat([Pattern], option<int>, SrcLoc),                     // elements, rest?
+  StructPat(string, [StructPatField], bool, SrcLoc),            // name, fields, rest
+  EnumPat(string, string, [Pattern], SrcLoc),                  // enumName, variant, subpatterns
+  OrPat([Pattern], SrcLoc),
+  RestPat(SrcLoc),
+}
+
+struct StructPatField { name: string, pattern: Pattern, loc: SrcLoc }
+
+// =============================================================================
+// Common sub-shapes (records)
+// =============================================================================
+
+struct Param { name: string, annType: option<Type>, loc: SrcLoc }
+
+struct TypeParam { name: string, constraint: option<string>, loc: SrcLoc }
+
+struct StructField { name: string, annType: Type, loc: SrcLoc }
+
+// `kind` is the literal string "unit" | "tuple" | "struct"; stored as a
+// string for simplicity (the TS AST uses a string-union field too).
+struct EnumVariantDecl {
+  name: string,
+  kind: string,
+  types: [Type],
+  fields: [StructField],
+  loc: SrcLoc,
+}
+
+struct StringSegment { kind: string, value: string, expr: option<Expr> }
+
+struct MatchArm { pattern: Pattern, guard: option<Expr>, body: Expr, loc: SrcLoc }
+
+struct MapEntry { key: Expr, value: Expr, loc: SrcLoc }
+
+struct StructExprField { name: string, value: Expr, loc: SrcLoc }
+
+// =============================================================================
+// Expressions — 33 variants, mirrors ast.ts Expr union (incl. Return-as-Expr).
+// =============================================================================
+
+enum Expr {
+  IntLit(int, SrcLoc),
+  FloatLit(float, SrcLoc),
+  BoolLit(bool, SrcLoc),
+  StringLit([StringSegment], SrcLoc),
+  CharLit(string, SrcLoc),
+  UnitLit(SrcLoc),
+  Ident(string, SrcLoc),
+  Binary(string, Expr, Expr, SrcLoc),
+  Unary(string, Expr, SrcLoc),
+  Assign(Expr, Expr, SrcLoc),
+  CompoundAssign(string, Expr, Expr, SrcLoc),
+  Call(Expr, [Expr], [Type], SrcLoc),                            // callee, args, typeArgs
+  Index(Expr, Expr, SrcLoc),
+  Field(Expr, string, SrcLoc),
+  MethodCall(Expr, string, [Expr], SrcLoc),
+  TupleExpr([Expr], SrcLoc),
+  ArrayExpr([Expr], SrcLoc),
+  MapExpr([MapEntry], SrcLoc),
+  StructExpr(string, [StructExprField], option<Expr>, SrcLoc),  // name, fields, spread?
+  EnumVariant(string, string, [Expr], SrcLoc),                  // enumName, variant, args
+  Lambda([Param], option<Type>, Expr, SrcLoc),
+  If(Expr, Expr, option<Expr>, SrcLoc),
+  Match(Expr, [MatchArm], SrcLoc),
+  Block([Stmt], option<Expr>, SrcLoc),
+  Paren(Expr, SrcLoc),
+  Cast(Expr, Type, SrcLoc),
+  Range(Expr, Expr, bool, SrcLoc),
+  As(Expr, Type, SrcLoc),
+  ErrorProp(Expr, SrcLoc),
+  TupleField(Expr, int, SrcLoc),
+  SelfExpr(SrcLoc),
+  Spread(Expr, SrcLoc),
+  Return(option<Expr>, SrcLoc),
+}
+
+// =============================================================================
+// Statements — 17 variants, mirrors ast.ts Stmt union.
+// =============================================================================
+
+enum Stmt {
+  Let(string, option<Type>, Expr, SrcLoc),
+  MutLet(string, option<Type>, Expr, SrcLoc),
+  Const(string, option<Type>, Expr, SrcLoc),
+  ExprStmt(Expr, SrcLoc),
+  FnDecl(string, [TypeParam], [Param], option<Type>, Expr, bool, SrcLoc),
+  EnumDecl(string, [TypeParam], [EnumVariantDecl], SrcLoc),
+  StructDecl(string, [TypeParam], [StructField], SrcLoc),
+  TypeAlias(string, [TypeParam], Type, SrcLoc),
+  ReturnStmt(option<Expr>, SrcLoc),
+  Break(SrcLoc),
+  Continue(SrcLoc),
+  While(Expr, Expr, SrcLoc),                                     // cond, body (always a Block Expr)
+  ForIn(string, Expr, Expr, SrcLoc),                             // varName, iterable, body (Block Expr)
+  Import(string, [string], SrcLoc),
+  Print(Expr, SrcLoc),
+  AssignStmt(Expr, Expr, SrcLoc),
+  BlockStmt([Stmt], SrcLoc),
+}
+
+// =============================================================================
+// Program root
+// =============================================================================
+
+struct Program { body: [Stmt], loc: SrcLoc }
+
+// =============================================================================
+// String helpers
+// =============================================================================
+
+// Repeat `s` `n` times. Pure recursion (no for-loop-scope quirks).
+fn repeatStr(s: string, n: int) -> string {
+  if n <= 0 { "" }
+  else if n == 1 { s }
+  else { s + repeatStr(s, n - 1) }
+}
+
+fn indentStr(level: int) -> string { repeatStr("  ", level) }
+
+// Join an array of strings with a separator. Implemented as a recursion so
+// we avoid the 3-argument `reduce` callback (the sema only models the
+// 2-arg signature `fn(acc, x) -> acc`, and an index-aware callback would
+// produce a type warning). The recursion depth equals the array length,
+// which is fine for the small lists we encounter in AST printing.
+fn join(arr: [string], sep: string) -> string { joinRec(arr, sep, 0) }
+
+fn joinRec(arr: [string], sep: string, i: int) -> string {
+  if i >= len(arr) { "" }
+  else if i == 0 { arr[0] + joinRec(arr, sep, 1) }
+  else { sep + arr[i] + joinRec(arr, sep, i + 1) }
+}
+
+// Escape a string for inclusion inside double quotes. We walk char by char
+// (no `replace` in Aether v1) and translate the same set as the TS printer.
+fn escapeString(s: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(s) {
+    let c = str(s[i]);
+    let part = if c == "\\" { "\\\\" }
+      else if c == "\"" { "\\\"" }
+      else if c == "\n" { "\\n" }
+      else if c == "\r" { "\\r" }
+      else if c == "\t" { "\\t" }
+      else { c };
+    out = out + part;
+    i = i + 1;
+  }
+  out
+}
+
+fn escapeChar(c: string) -> string {
+  if c == "\n" { "\\n" }
+  else if c == "\t" { "\\t" }
+  else if c == "\r" { "\\r" }
+  else if c == "\\" { "\\\\" }
+  else if c == "'" { "\\'" }
+  else { c }
+}
+
+// =============================================================================
+// printType
+// =============================================================================
+
+fn printType(t: Type) -> string {
+  match t {
+    Type::NamedType(name, _) => name,
+    Type::PrimitiveType(name, _) => name,
+    Type::UnitType(_) => "()",
+    Type::GenericType(name, args, _) =>
+      name + "<" + join(map(args, fn(a: Type) -> string { printType(a) }), ", ") + ">",
+    Type::FuncType(params, ret, _) =>
+      "fn(" + join(map(params, fn(p: Type) -> string { printType(p) }), ", ") + ") -> " + printType(ret),
+    Type::TupleType(types, _) => {
+      let body = join(map(types, fn(t: Type) -> string { printType(t) }), ", ");
+      let final = if len(types) == 1 { body + "," } else { body };
+      "(" + final + ")"
+    },
+    Type::ArrayType(elem, _) => "[" + printType(elem) + "]",
+    Type::MapType(k, v, _) => "map[" + printType(k) + "] " + printType(v),
+    Type::OptionType(inner, _) => "option<" + printType(inner) + ">",
+    Type::ResultType(ok, err, _) => "result<" + printType(ok) + ", " + printType(err) + ">",
+  }
+}
+
+// =============================================================================
+// printPattern
+// =============================================================================
+
+fn printPattern(p: Pattern) -> string {
+  match p {
+    Pattern::WildcardPat(_) => "_",
+    Pattern::BindPat(name, isMut, ty, _) => {
+      let prefix = if isMut { "mut " } else { "" };
+      let suffix = match ty {
+        Option::Some(t) => ": " + printType(t),
+        Option::None => "",
+      };
+      prefix + name + suffix
+    },
+    Pattern::LitPat(value, _) => printExpr(value),
+    Pattern::TuplePat(elements, _) => {
+      let body = join(map(elements, fn(e: Pattern) -> string { printPattern(e) }), ", ");
+      let final = if len(elements) == 1 { body + "," } else { body };
+      "(" + final + ")"
+    },
+    Pattern::ArrayPat(elements, _, _) =>
+      "[" + join(map(elements, fn(e: Pattern) -> string { printPattern(e) }), ", ") + "]",
+    Pattern::StructPat(name, fields, rest, _) => {
+      let fs = join(map(fields, fn(f: StructPatField) -> string {
+        f.name + ": " + printPattern(f.pattern)
+      }), ", ");
+      let tail = if rest {
+        if len(fields) == 0 { ".." } else { ", .." }
+      } else { "" };
+      name + " { " + fs + tail + " }"
+    },
+    Pattern::EnumPat(enumName, variant, subpatterns, _) => {
+      let base = enumName + "::" + variant;
+      match len(subpatterns) {
+        0 => base,
+        _ => base + "(" + join(map(subpatterns, fn(p: Pattern) -> string { printPattern(p) }), ", ") + ")",
+      }
+    },
+    Pattern::OrPat(patterns, _) =>
+      join(map(patterns, fn(p: Pattern) -> string { printPattern(p) }), " | "),
+    Pattern::RestPat(_) => "..",
+  }
+}
+
+// =============================================================================
+// printParam + printTypeParams
+// =============================================================================
+
+fn printParam(p: Param) -> string {
+  let suffix = match p.annType {
+    Option::Some(t) => ": " + printType(t),
+    Option::None => "",
+  };
+  p.name + suffix
+}
+
+fn printTypeParams(ps: [TypeParam]) -> string {
+  match len(ps) {
+    0 => "",
+    _ => "<" + join(map(ps, fn(p: TypeParam) -> string {
+      let c = match p.constraint {
+        Option::Some(cname) => ": " + cname,
+        Option::None => "",
+      };
+      p.name + c
+    }), ", ") + ">",
+  }
+}
+
+// =============================================================================
+// printStringLit — re-emit a string literal as source-ish Aether.
+// =============================================================================
+
+fn printStringLit(segs: [StringSegment]) -> string {
+  // If any segment is an `interp`, use the f"..." form; otherwise "...".
+  let hasInterp = anyInterp(segs);
+  let open = if hasInterp { "f\"" } else { "\"" };
+  let body = join(map(segs, fn(s: StringSegment) -> string {
+    if s.kind == "text" {
+      escapeString(s.value)
+    } else {
+      // interp segment — prefer the printed expr if present, else the raw value.
+      match s.expr {
+        Option::Some(e) => "{" + printExpr(e) + "}",
+        Option::None => "{" + s.value + "}",
+      }
+    }
+  }), "");
+  open + body + "\""
+}
+
+fn anyInterp(segs: [StringSegment]) -> bool {
+  reduce(segs, fn(acc: bool, s: StringSegment) -> bool {
+    if acc { true } else if s.kind == "interp" { true } else { false }
+  }, false)
+}
+
+// =============================================================================
+// printExpr — 33 cases.
+// =============================================================================
+
+fn printExpr(e: Expr) -> string {
+  match e {
+    Expr::IntLit(v, _) => str(v),
+    Expr::FloatLit(v, _) => str(v),
+    Expr::BoolLit(v, _) => if v { "true" } else { "false" },
+    Expr::CharLit(v, _) => "'" + escapeChar(v) + "'",
+    Expr::UnitLit(_) => "()",
+    Expr::Ident(name, _) => name,
+    Expr::StringLit(segs, _) => printStringLit(segs),
+
+    Expr::Binary(op, l, r, _) => printExpr(l) + " " + op + " " + printExpr(r),
+    Expr::Unary(op, x, _) => op + printExpr(x),
+    Expr::Assign(t, v, _) => printExpr(t) + " = " + printExpr(v),
+    Expr::CompoundAssign(op, t, v, _) => printExpr(t) + " " + op + "= " + printExpr(v),
+
+    Expr::Call(callee, args, typeArgs, _) => {
+      let ta = match len(typeArgs) {
+        0 => "",
+        _ => "<" + join(map(typeArgs, fn(t: Type) -> string { printType(t) }), ", ") + ">",
+      };
+      let as_ = "(" + join(map(args, fn(a: Expr) -> string { printExpr(a) }), ", ") + ")";
+      printExpr(callee) + ta + as_
+    },
+    Expr::MethodCall(obj, name, args, _) =>
+      printExpr(obj) + "." + name + "(" + join(map(args, fn(a: Expr) -> string { printExpr(a) }), ", ") + ")",
+    Expr::Index(obj, idx, _) => printExpr(obj) + "[" + printExpr(idx) + "]",
+    Expr::Field(obj, name, _) => printExpr(obj) + "." + name,
+    Expr::TupleField(obj, index, _) => printExpr(obj) + "." + str(index),
+
+    Expr::TupleExpr(elements, _) => {
+      let body = join(map(elements, fn(e: Expr) -> string { printExpr(e) }), ", ");
+      let final = if len(elements) == 1 { body + "," } else { body };
+      "(" + final + ")"
+    },
+    Expr::ArrayExpr(elements, _) =>
+      "[" + join(map(elements, fn(e: Expr) -> string { printExpr(e) }), ", ") + "]",
+    Expr::MapExpr(entries, _) =>
+      "{" + join(map(entries, fn(e: MapEntry) -> string {
+        printExpr(e.key) + ": " + printExpr(e.value)
+      }), ", ") + "}",
+
+    Expr::StructExpr(name, fields, spread, _) => {
+      let fs = join(map(fields, fn(f: StructExprField) -> string {
+        f.name + ": " + printExpr(f.value)
+      }), ", ");
+      let tail = match spread {
+        Option::Some(s) => if len(fields) == 0 { ", .." + printExpr(s) } else { ", .." + printExpr(s) },
+        Option::None => "",
+      };
+      name + " { " + fs + tail + " }"
+    },
+    Expr::EnumVariant(enumName, variant, args, _) => {
+      let base = enumName + "::" + variant;
+      match len(args) {
+        0 => base,
+        _ => base + "(" + join(map(args, fn(a: Expr) -> string { printExpr(a) }), ", ") + ")",
+      }
+    },
+
+    Expr::Lambda(params, ret, body, _) => {
+      let ps = join(map(params, fn(p: Param) -> string { printParam(p) }), ", ");
+      let rt = match ret {
+        Option::Some(t) => " -> " + printType(t),
+        Option::None => "",
+      };
+      "fn(" + ps + ")" + rt + " " + printExpr(body)
+    },
+
+    Expr::If(cond, then_, else_, _) => {
+      let elseStr = match else_ {
+        Option::Some(e) => " else " + printExpr(e),
+        Option::None => "",
+      };
+      "if " + printExpr(cond) + " " + printExpr(then_) + elseStr
+    },
+
+    Expr::Match(scrut, arms, _) => {
+      let armsStr = join(map(arms, fn(a: MatchArm) -> string {
+        let g = match a.guard {
+          Option::Some(guard) => " if " + printExpr(guard),
+          Option::None => "",
+        };
+        printPattern(a.pattern) + g + " => " + printExpr(a.body)
+      }), ", ");
+      "match " + printExpr(scrut) + " { " + armsStr + " }"
+    },
+
+    Expr::Block(stmts, expr_, _) => {
+      // Inline short blocks: empty block → "{}", single-expr block (no stmts)
+      // → "{ expr }". Anything with statements goes multi-line so the stmts
+      // can be re-parsed back to the same AST (statement bodies need a
+      // newline + `;` separator that the inline form can't carry cleanly).
+      if len(stmts) == 0 {
+        match expr_ {
+          Option::Some(e) => "{ " + printExpr(e) + " }",
+          Option::None => "{}",
+        }
+      } else {
+        let parts = blockLines(stmts, expr_, 1);
+        "{\n" + parts + "\n" + indentStr(0) + "}"
+      }
+    },
+
+    Expr::Paren(inner, _) => "(" + printExpr(inner) + ")",
+    Expr::Cast(inner, t, _) => printExpr(inner) + " as " + printType(t),
+    Expr::As(inner, t, _) => printExpr(inner) + " as " + printType(t),
+    Expr::Range(start, end, inclusive, _) =>
+      printExpr(start) + (if inclusive { "..=" } else { ".." }) + printExpr(end),
+    Expr::ErrorProp(inner, _) => printExpr(inner) + "?",
+    Expr::SelfExpr(_) => "self",
+    Expr::Spread(inner, _) => "..." + printExpr(inner),
+    Expr::Return(expr_, _) => {
+      match expr_ {
+        Option::Some(e) => "return " + printExpr(e),
+        Option::None => "return",
+      }
+    },
+  }
+}
+
+// Render the lines of a Block body. `stmts` are printed via `printStmt` at
+// `level+1`, the optional trailing expr at the same indent. Lines are
+// joined with newlines so the surrounding printer can wrap them. We avoid
+// array concatenation (`a + b`) here because the Aether type checker
+// doesn't model `+` on `[T]` — it works at runtime but would generate a
+// type warning. We join stmt lines and the optional trailing expr line
+// with a single `\n` instead.
+fn blockLines(stmts: [Stmt], expr_: option<Expr>, level: int) -> string {
+  let stmtPart = join(map(stmts, fn(s: Stmt) -> string {
+    indentStr(level) + printStmt(s, level)
+  }), "\n");
+  match expr_ {
+    Option::Some(e) => {
+      let exprPart = indentStr(level) + printExpr(e);
+      if stmtPart == "" { exprPart } else { stmtPart + "\n" + exprPart }
+    },
+    Option::None => stmtPart,
+  }
+}
+
+// =============================================================================
+// printStmt — 17 cases. `indent` is the surrounding block's indent level;
+// the statement's own children are printed at `indent` (the body Block is
+// responsible for bumping the level for ITS children).
+// =============================================================================
+
+fn printStmt(s: Stmt, indent: int) -> string {
+  match s {
+    Stmt::Let(name, ty, init, _) => {
+      let ts = match ty {
+        Option::Some(t) => ": " + printType(t),
+        Option::None => "",
+      };
+      "let " + name + ts + " = " + printExpr(init) + ";"
+    },
+    Stmt::MutLet(name, ty, init, _) => {
+      let ts = match ty {
+        Option::Some(t) => ": " + printType(t),
+        Option::None => "",
+      };
+      "let mut " + name + ts + " = " + printExpr(init) + ";"
+    },
+    Stmt::Const(name, ty, init, _) => {
+      let ts = match ty {
+        Option::Some(t) => ": " + printType(t),
+        Option::None => "",
+      };
+      "const " + name + ts + " = " + printExpr(init) + ";"
+    },
+    Stmt::ExprStmt(e, _) => printExpr(e) + ";",
+    Stmt::FnDecl(name, generics, params, ret, body, exported, _) => {
+      let pub_ = if exported { "pub " } else { "" };
+      let ps = join(map(params, fn(p: Param) -> string { printParam(p) }), ", ");
+      let rt = match ret {
+        Option::Some(t) => " -> " + printType(t),
+        Option::None => "",
+      };
+      pub_ + "fn " + name + printTypeParams(generics) + "(" + ps + ")" + rt + " " + printExpr(body)
+    },
+    Stmt::EnumDecl(name, generics, variants, _) => {
+      let vs = join(map(variants, fn(v: EnumVariantDecl) -> string {
+        let prefix = v.name;
+        if v.kind == "tuple" {
+          prefix + "(" + join(map(v.types, fn(t: Type) -> string { printType(t) }), ", ") + ")"
+        } else if v.kind == "struct" {
+          prefix + " { " + join(map(v.fields, fn(f: StructField) -> string {
+            f.name + ": " + printType(f.annType)
+          }), ", ") + " }"
+        } else {
+          prefix
+        }
+      }), ", ");
+      "enum " + name + printTypeParams(generics) + " { " + vs + " }"
+    },
+    Stmt::StructDecl(name, generics, fields, _) => {
+      let fs = join(map(fields, fn(f: StructField) -> string {
+        f.name + ": " + printType(f.annType)
+      }), ", ");
+      "struct " + name + printTypeParams(generics) + " { " + fs + " }"
+    },
+    Stmt::TypeAlias(name, generics, ty, _) =>
+      "type " + name + printTypeParams(generics) + " = " + printType(ty) + ";",
+    Stmt::ReturnStmt(expr_, _) => {
+      match expr_ {
+        Option::Some(e) => "return " + printExpr(e) + ";",
+        Option::None => "return;",
+      }
+    },
+    Stmt::Break(_) => "break;",
+    Stmt::Continue(_) => "continue;",
+    Stmt::While(cond, body, _) => "while " + printExpr(cond) + " " + printExpr(body),
+    Stmt::ForIn(varName, iterable, body, _) =>
+      "for " + varName + " in " + printExpr(iterable) + " " + printExpr(body),
+    Stmt::Import(path, names, _) => {
+      let ns = match len(names) {
+        0 => "",
+        _ => " { " + join(names, ", ") + " }",
+      };
+      "import \"" + path + "\"" + ns + ";"
+    },
+    Stmt::Print(e, _) => "print(" + printExpr(e) + ");",
+    Stmt::AssignStmt(target, value, _) => printExpr(target) + " = " + printExpr(value) + ";",
+    Stmt::BlockStmt(body, _) => {
+      let inner = blockLines(body, Option::None, indent + 1);
+      "{\n" + inner + "\n" + indentStr(indent) + "}"
+    },
+  }
+}
+
+// =============================================================================
+// printProgram — top-level: stmts on separate lines.
+// =============================================================================
+
+fn printProgram(p: Program) -> string {
+  join(map(p.body, fn(s: Stmt) -> string { printStmt(s, 0) }), "\n")
+}
+
+// =============================================================================
+// locOf — extract the SrcLoc from any node by pattern match.
+// =============================================================================
+
+fn locOfExpr(e: Expr) -> SrcLoc {
+  match e {
+    Expr::IntLit(_, loc) => loc,
+    Expr::FloatLit(_, loc) => loc,
+    Expr::BoolLit(_, loc) => loc,
+    Expr::StringLit(_, loc) => loc,
+    Expr::CharLit(_, loc) => loc,
+    Expr::UnitLit(loc) => loc,
+    Expr::Ident(_, loc) => loc,
+    Expr::Binary(_, _, _, loc) => loc,
+    Expr::Unary(_, _, loc) => loc,
+    Expr::Assign(_, _, loc) => loc,
+    Expr::CompoundAssign(_, _, _, loc) => loc,
+    Expr::Call(_, _, _, loc) => loc,
+    Expr::Index(_, _, loc) => loc,
+    Expr::Field(_, _, loc) => loc,
+    Expr::MethodCall(_, _, _, loc) => loc,
+    Expr::TupleExpr(_, loc) => loc,
+    Expr::ArrayExpr(_, loc) => loc,
+    Expr::MapExpr(_, loc) => loc,
+    Expr::StructExpr(_, _, _, loc) => loc,
+    Expr::EnumVariant(_, _, _, loc) => loc,
+    Expr::Lambda(_, _, _, loc) => loc,
+    Expr::If(_, _, _, loc) => loc,
+    Expr::Match(_, _, loc) => loc,
+    Expr::Block(_, _, loc) => loc,
+    Expr::Paren(_, loc) => loc,
+    Expr::Cast(_, _, loc) => loc,
+    Expr::Range(_, _, _, loc) => loc,
+    Expr::As(_, _, loc) => loc,
+    Expr::ErrorProp(_, loc) => loc,
+    Expr::TupleField(_, _, loc) => loc,
+    Expr::SelfExpr(loc) => loc,
+    Expr::Spread(_, loc) => loc,
+    Expr::Return(_, loc) => loc,
+  }
+}
+
+fn locOfStmt(s: Stmt) -> SrcLoc {
+  match s {
+    Stmt::Let(_, _, _, loc) => loc,
+    Stmt::MutLet(_, _, _, loc) => loc,
+    Stmt::Const(_, _, _, loc) => loc,
+    Stmt::ExprStmt(_, loc) => loc,
+    Stmt::FnDecl(_, _, _, _, _, _, loc) => loc,
+    Stmt::EnumDecl(_, _, _, loc) => loc,
+    Stmt::StructDecl(_, _, _, loc) => loc,
+    Stmt::TypeAlias(_, _, _, loc) => loc,
+    Stmt::ReturnStmt(_, loc) => loc,
+    Stmt::Break(loc) => loc,
+    Stmt::Continue(loc) => loc,
+    Stmt::While(_, _, loc) => loc,
+    Stmt::ForIn(_, _, _, loc) => loc,
+    Stmt::Import(_, _, loc) => loc,
+    Stmt::Print(_, loc) => loc,
+    Stmt::AssignStmt(_, _, loc) => loc,
+    Stmt::BlockStmt(_, loc) => loc,
+  }
+}
+
+fn locOfType(t: Type) -> SrcLoc {
+  match t {
+    Type::NamedType(_, loc) => loc,
+    Type::GenericType(_, _, loc) => loc,
+    Type::FuncType(_, _, loc) => loc,
+    Type::TupleType(_, loc) => loc,
+    Type::ArrayType(_, loc) => loc,
+    Type::MapType(_, _, loc) => loc,
+    Type::OptionType(_, loc) => loc,
+    Type::ResultType(_, _, loc) => loc,
+    Type::PrimitiveType(_, loc) => loc,
+    Type::UnitType(loc) => loc,
+  }
+}
+
+fn locOfPattern(p: Pattern) -> SrcLoc {
+  match p {
+    Pattern::WildcardPat(loc) => loc,
+    Pattern::BindPat(_, _, _, loc) => loc,
+    Pattern::LitPat(_, loc) => loc,
+    Pattern::TuplePat(_, loc) => loc,
+    Pattern::ArrayPat(_, _, loc) => loc,
+    Pattern::StructPat(_, _, _, loc) => loc,
+    Pattern::EnumPat(_, _, _, loc) => loc,
+    Pattern::OrPat(_, loc) => loc,
+    Pattern::RestPat(loc) => loc,
+  }
+}
+
+// Generic entry point: pick the right `locOf*` for the node kind. Aether
+// doesn't have a single union of "any node" so the caller picks the typed
+// accessor; this is a thin convenience that dispatches by string tag.
+fn locTag(node: string) -> string { node }
+
+// =============================================================================
+// Structural equality. Aether's `==` operator already deep-compares enum
+// variants (via `valueEq`), so equality is just `==` after a kind-tag check.
+// The SrcLoc is included in the comparison, so callers that want "value
+// equality ignoring location" should construct both sides with `zeroSrc()`.
+// =============================================================================
+
+fn typeEqual(a: Type, b: Type) -> bool { a == b }
+fn patternEqual(a: Pattern, b: Pattern) -> bool { a == b }
+fn exprEqual(a: Expr, b: Expr) -> bool { a == b }
+fn stmtEqual(a: Stmt, b: Stmt) -> bool { a == b }
+
+// =============================================================================
+// walkExpr — visit an Expr tree with onEnter / onLeave callbacks. Recurses
+// into every sub-Expr in source order. Stmts/Types inside Block / Cast / etc.
+// are NOT walked (callers wanting full traversal should compose their own
+// walker for those node categories — see the README for the rationale).
+// =============================================================================
+
+fn walkExpr(e: Expr, onEnter: fn(Expr) -> (), onLeave: fn(Expr) -> ()) {
+  onEnter(e);
+  walkSubExprs(e, onEnter, onLeave);
+  onLeave(e);
+}
+
+fn walkSubExprs(e: Expr, onEnter: fn(Expr) -> (), onLeave: fn(Expr) -> ()) {
+  match e {
+    Expr::IntLit(_, _) => (),
+    Expr::FloatLit(_, _) => (),
+    Expr::BoolLit(_, _) => (),
+    Expr::CharLit(_, _) => (),
+    Expr::UnitLit(_) => (),
+    Expr::Ident(_, _) => (),
+    Expr::SelfExpr(_) => (),
+    Expr::StringLit(_, _) => (),
+    // Unary-ish
+    Expr::Unary(_, x, _) => walkExpr(x, onEnter, onLeave),
+    Expr::Paren(x, _) => walkExpr(x, onEnter, onLeave),
+    Expr::Cast(x, _, _) => walkExpr(x, onEnter, onLeave),
+    Expr::As(x, _, _) => walkExpr(x, onEnter, onLeave),
+    Expr::ErrorProp(x, _) => walkExpr(x, onEnter, onLeave),
+    Expr::Spread(x, _) => walkExpr(x, onEnter, onLeave),
+    Expr::Return(opt, _) => walkOptExpr(opt, onEnter, onLeave),
+    // Binary-ish
+    Expr::Binary(_, l, r, _) => { walkExpr(l, onEnter, onLeave); walkExpr(r, onEnter, onLeave) },
+    Expr::Assign(t, v, _) => { walkExpr(t, onEnter, onLeave); walkExpr(v, onEnter, onLeave) },
+    Expr::CompoundAssign(_, t, v, _) => { walkExpr(t, onEnter, onLeave); walkExpr(v, onEnter, onLeave) },
+    Expr::Range(s, e_, _, _) => { walkExpr(s, onEnter, onLeave); walkExpr(e_, onEnter, onLeave) },
+    Expr::Index(o, i, _) => { walkExpr(o, onEnter, onLeave); walkExpr(i, onEnter, onLeave) },
+    Expr::Field(o, _, _) => walkExpr(o, onEnter, onLeave),
+    Expr::TupleField(o, _, _) => walkExpr(o, onEnter, onLeave),
+    // Call-ish
+    Expr::Call(callee, args, _, _) => {
+      walkExpr(callee, onEnter, onLeave);
+      walkExprs(args, onEnter, onLeave)
+    },
+    Expr::MethodCall(o, _, args, _) => {
+      walkExpr(o, onEnter, onLeave);
+      walkExprs(args, onEnter, onLeave)
+    },
+    // Collection literals
+    Expr::TupleExpr(xs, _) => walkExprs(xs, onEnter, onLeave),
+    Expr::ArrayExpr(xs, _) => walkExprs(xs, onEnter, onLeave),
+    Expr::MapExpr(entries, _) => {
+      // Map has no real for-loop-scope here; use reduce to force order.
+      reduce(entries, fn(_: bool, e: MapEntry) -> bool {
+        walkExpr(e.key, onEnter, onLeave);
+        walkExpr(e.value, onEnter, onLeave);
+        false
+      }, false);
+      ()
+    },
+    Expr::StructExpr(_, fields, spread, _) => {
+      reduce(fields, fn(_: bool, f: StructExprField) -> bool {
+        walkExpr(f.value, onEnter, onLeave);
+        false
+      }, false);
+      match spread {
+        Option::Some(s) => walkExpr(s, onEnter, onLeave),
+        Option::None => (),
+      };
+      ()
+    },
+    Expr::EnumVariant(_, _, args, _) => walkExprs(args, onEnter, onLeave),
+    // Lambda / If / Match / Block
+    Expr::Lambda(_, _, body, _) => walkExpr(body, onEnter, onLeave),
+    Expr::If(c, t, e_, _) => {
+      walkExpr(c, onEnter, onLeave);
+      walkExpr(t, onEnter, onLeave);
+      match e_ {
+        Option::Some(elseExpr) => walkExpr(elseExpr, onEnter, onLeave),
+        Option::None => (),
+      };
+      ()
+    },
+    Expr::Match(scrut, arms, _) => {
+      walkExpr(scrut, onEnter, onLeave);
+      reduce(arms, fn(_: bool, a: MatchArm) -> bool {
+        match a.guard {
+          Option::Some(g) => walkExpr(g, onEnter, onLeave),
+          Option::None => (),
+        };
+        walkExpr(a.body, onEnter, onLeave);
+        false
+      }, false);
+      ()
+    },
+    Expr::Block(_, opt, _) => walkOptExpr(opt, onEnter, onLeave),
+  }
+}
+
+fn walkExprs(xs: [Expr], onEnter: fn(Expr) -> (), onLeave: fn(Expr) -> ()) {
+  reduce(xs, fn(_: bool, x: Expr) -> bool {
+    walkExpr(x, onEnter, onLeave);
+    false
+  }, false);
+  ()
+}
+
+fn walkOptExpr(opt: option<Expr>, onEnter: fn(Expr) -> (), onLeave: fn(Expr) -> ()) {
+  match opt {
+    Option::Some(e) => walkExpr(e, onEnter, onLeave),
+    Option::None => (),
+  }
+}
+
+// =============================================================================
+// Demo: build a sample AST and print it, so a bare `bun ast.ae` run shows
+// that the module loads and the printer produces the expected source.
+// =============================================================================
+
+fn demoSample() -> string {
+  // 1 + 2
+  let one = Expr::IntLit(1, zeroSrc());
+  let two = Expr::IntLit(2, zeroSrc());
+  printExpr(Expr::Binary("+", one, two, zeroSrc()))
+}
+
+print("== aether-bootstrap/ast.ae loaded ==");
+print(f"sample: {demoSample()}");
+assert_eq(demoSample(), "1 + 2");
