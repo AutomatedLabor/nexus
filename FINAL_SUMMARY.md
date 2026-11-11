@@ -3,7 +3,7 @@
 **Project Nexus** is the Aether programming language and its interactive
 web playground. v1 ships a tree-walking interpreter (lexer → parser →
 semantic checker → evaluator) running entirely in the browser, with a
-212-function standard library across 10 modules, 703 passing tests, 13
+212-function standard library across 10 modules, 703 passing tests, 15
 example programs, and ~111k words of language docs (spec / tutorials /
 ADRs / RFCs / reference). The playground — built on Next.js 16 — lets you
 write, run, and explore Aether programs with zero install.
