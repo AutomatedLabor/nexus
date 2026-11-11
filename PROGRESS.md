@@ -9,7 +9,7 @@ Phase-by-phase status of the brief. Last updated: Phase J (deployment).
 | C     | Tree-walking evaluator                 | ✅ Done         | Closures, mutability, pattern matching, stdlib builtins. (For-loop closure quirk noted.) |
 | D     | Standard library                       | 🟡 Partial     | 10 modules / 212 functions (brief asked 25 / 300+).                                       |
 | E     | Toolchain (LSP, formatter, lint, CLI)  | 🔵 Spec only    | All specced in RFCs (`rfc-001/002/003/005`); none implemented in v1.                       |
-| F     | Example programs                       | 🟡 Partial     | 13 programs in HEAD (brief asked 30). First deploy shipped 11.                            |
+| F     | Example programs                       | 🟡 Partial     | 15 programs in HEAD (brief asked 30). Live deploy shipped 15 after final redeploy.            |
 | G     | Playground UI                          | ✅ Done         | 6 views, in-browser execution, dark/light, responsive. Live on Vercel.                   |
 | H     | Documentation                          | 🟡 Partial     | 51 markdown files / ~111k words (brief asked ~300k).                                       |
 | I     | Testing                                | ✅ Done         | vitest, 703 tests / 14 files. CI runs `bunx vitest run aether` + `bun run lint`.           |

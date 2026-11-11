@@ -34,7 +34,7 @@ write, run, and explore Aether programs with zero install.
 | Stdlib LOC (non-test, TS)           | 3,291 lines (10 modules)                        |
 | Stdlib functions                    | **212** (string 25, math 32, collections 40, io 13, datetime 22, regex 15, encoding 20, crypto 14, text 15, async 16) |
 | Tests passing                       | **703** across 14 test files                    |
-| Example Aether programs (`.ae`)     | 13 (HEAD; first deploy shipped 11 — see note below) |
+| Example Aether programs (`.ae`)     | 15 (binary_tree, calculator, expression_formatter, fibonacci, fizzbuzz, game_of_life, interpret_brainfuck, json_parser, linked_list, matrix_ops, number_guessing, primes, quicksort, string_utils, todo_cli) |
 | Playground views                    | 6 (Playground, Explorer, Standard Library, Examples, Benchmarks, About) |
 | Playground UI components (`.tsx`)   | 63 (shadcn/ui + playground-specific)            |
 | API endpoints                       | 1 (`GET /api/examples` — lists example files)  |
@@ -46,7 +46,8 @@ write, run, and explore Aether programs with zero install.
 | Guides                              | 6  (idiomatic-aether, anti-patterns, migrations) |
 | Total docs files                    | 51 markdown files                               |
 | Total docs words                    | ~111,306                                        |
-| Repo commit SHA (initial deploy)    | `7254f487c94191b5d95ed1aafcc9d9de21df0507`       |
+| Repo commit SHA (initial deploy)    | `7254f487c94191b5d95ed1aafcc9d9de21df0507` (11 examples)  |
+| Repo commit SHA (final redeploy)    | `1a7f581696516e209b8725c649e3f72702a6edc8` (15 examples)  |
 
 ## Phase completion (A–K)
 
@@ -61,7 +62,7 @@ write, run, and explore Aether programs with zero install.
 | C     | Tree-walking evaluator         | **Done**     | Closures, mutability, pattern matching, stdlib builtins. Known quirk: for-loop closure capture. |
 | D     | Standard library               | **Partial**  | Brief asked 25 modules / 300+ fns. Got 10 modules / 212 fns — substantial subset.         |
 | E     | Toolchain (LSP, formatter, lint, CLI, pkg) | **Spec only** | All specced in RFCs (`rfc-005-lsp`, `rfc-003-modules-and-packages`); none implemented in v1. |
-| F     | Example programs               | **Partial**  | Brief asked 30. Got 13 — covers fib, fizzbuzz, primes, quicksort, calculator, json_parser, linked_list, matrix_ops, string_utils, todo_cli, game_of_life, binary_tree, number_guessing. |
+| F     | Example programs               | **Partial**  | Brief asked 30. Got 15 — covers fib, fizzbuzz, primes, quicksort, calculator, json_parser, linked_list, matrix_ops, string_utils, todo_cli, game_of_life, binary_tree, number_guessing, expression_formatter, interpret_brainfuck. |
 | G     | Playground UI                  | **Done**     | 6 views, in-browser execution, dark mode, responsive, sticky header/footer. Live on Vercel. |
 | H     | Documentation                  | **Partial**  | Brief asked ~300k words. Got ~111k words across 51 files (spec/tutorials/ADRs/RFCs/reference/guides). |
 | I     | Testing                        | **Done**     | 703 tests / 14 files / vitest. CI workflow runs `bunx vitest run aether` + `bun run lint`. |
@@ -123,7 +124,7 @@ views to click) to the subagent and only specified the success criteria
   - Code editor + Run button visible ✓
   - Clicking Run produces output: `55`, `2`, `12.56636`, `12`, `hello, world!`, `fib(10) = 55` ✓ (matches expected — fib(10)=55 and "hello, world!" both present)
   - Standard Library view renders all 10 modules (string 25, math 32, collections 40, io 13, datetime 22, regex 15, encoding 20, crypto 14, text 15, async 16 = 212 functions) ✓
-  - Examples view renders 11 "Run in Playground" cards (matches the first deploy's 11 examples) ✓
+  - Examples view renders 15 "Run in Playground" cards (matches the final deploy's 15 examples, including the 4 added after the first deploy: binary_tree, number_guessing, expression_formatter, interpret_brainfuck) ✓
   - About view renders with link to GitHub and language spec ✓
   - Theme toggle works (DARK → LIGHT verified via `<html>.classList`) ✓
   - Footer visible (FOOTER element with `mt-auto border-t bg-background/80 backdrop-blur`) ✓
@@ -134,7 +135,8 @@ views to click) to the subagent and only specified the success criteria
 functional.** The playground renders, runs Aether code in the browser
 (verified: `fib(10)=55` and `hello, world!` both printed), all 6 views
 render, the Standard Library view lists all 10 modules with 212
-functions, Examples view shows 11 cards, About view renders, theme
+functions, Examples view shows 15 cards, About view renders, theme
 toggle works, footer is visible. The repo is pushed to
-`https://github.com/AutomatedLabor/nexus` (SHA `7254f48`). CI workflow
-runs vitest (703 tests) + lint on every push/PR.
+`https://github.com/AutomatedLabor/nexus` (final SHA `1a7f581`, initial
+deploy SHA `7254f48`). CI workflow runs vitest (703 tests) + lint on every
+push/PR.
