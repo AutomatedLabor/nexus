@@ -7,6 +7,9 @@
     "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "aether:smoke": "bun /tmp/aether_smoke.ts",
     "postinstall": "prisma generate",
     "seed": "bun run prisma/seed.ts",
     "db:push": "prisma db push --accept-data-loss",
@@ -91,6 +94,7 @@
     "eslint-config-next": "^16.1.1",
     "tailwindcss": "^4",
     "tw-animate-css": "^1.3.5",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^5.1.0"
   }
 }

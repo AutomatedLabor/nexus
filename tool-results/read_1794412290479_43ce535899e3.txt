@@ -1,0 +1,694 @@
+   600→    if (this.isPunct("..")) {
+   601→      this.advance();
+   602→      return { kind: "RestPat", loc: this.locFrom(start) };
+   603→    }
+   604→    if (this.isPunct("(")) {
+   605→      this.advance();
+   606→      const elements: Pattern[] = [];
+   607→      if (!this.isPunct(")")) {
+   608→        do {
+   609→          if (this.isPunct(")")) break;
+   610→          elements.push(this.parsePattern());
+   611→        } while (this.eatPunct(","));
+   612→      }
+   613→      this.expectPunct(")");
+   614→      return { kind: "TuplePat", loc: this.locFrom(start), elements };
+   615→    }
+   616→    if (this.isPunct("[")) {
+   617→      this.advance();
+   618→      const elements: Pattern[] = [];
+   619→      let rest: number | null = null;
+   620→      if (!this.isPunct("]")) {
+   621→        let i = 0;
+   622→        do {
+   623→          if (this.isPunct("]")) break;
+   624→          if (this.isPunct("..")) {
+   625→            this.advance();
+   626→            rest = i;
+   627→          } else {
+   628→            elements.push(this.parsePattern());
+   629→            i++;
+   630→          }
+   631→        } while (this.eatPunct(","));
+   632→      }
+   633→      this.expectPunct("]");
+   634→      return { kind: "ArrayPat", loc: this.locFrom(start), elements, rest };
+   635→    }
+   636→    if (this.isKeyword("mut")) {
+   637→      this.advance();
+   638→      const name = this.expectIdent();
+   639→      let type: TypeNode | undefined;
+   640→      if (this.eatPunct(":")) type = this.parseType();
+   641→      return { kind: "BindPat", loc: this.locFrom(start), name: name ?? "_", mut: true, type };
+   642→    }
+   643→    if (t.kind === "Ident" || t.kind === "Keyword") {
+   644→      // Could be: enum variant `Enum::Variant(...)`, struct pat `Name { ... }`,
+   645→      // or a binding `x` / `x: type`.
+   646→      const name = this.advance().value;
+   647→      if (this.isPunct("::")) {
+   648→        this.advance();
+   649→        const variant = this.advance().value;
+   650→        let subpatterns: Pattern[] = [];
+   651→        if (this.eatPunct("(")) {
+   652→          if (!this.isPunct(")")) {
+   653→            do {
+   654→              if (this.isPunct(")")) break;
+   655→              subpatterns.push(this.parsePattern());
+   656→            } while (this.eatPunct(","));
+   657→          }
+   658→          this.expectPunct(")");
+   659→        }
+   660→        return { kind: "EnumPat", loc: this.locFrom(start), enumName: name, variant, subpatterns };
+   661→      }
+   662→      if (this.isPunct("{")) {
+   663→        this.advance();
+   664→        const fields: { name: string; pattern: Pattern; loc: SourceLocation }[] = [];
+   665→        let hasRest = false;
+   666→        if (!this.isPunct("}")) {
+   667→          do {
+   668→            if (this.isPunct("}")) break;
+   669→            if (this.isPunct("..")) { this.advance(); hasRest = true; break; }
+   670→            const fname = this.expectIdent();
+   671→            let pat: Pattern;
+   672→            if (this.eatPunct(":")) pat = this.parsePattern();
+   673→            else if (fname) pat = { kind: "BindPat", loc: this.locFrom(start), name: fname };
+   674→            else pat = { kind: "WildcardPat", loc: this.locFrom(start) };
+   675→            if (fname) fields.push({ name: fname, pattern: pat, loc: this.locFrom(start) });
+   676→          } while (this.eatPunct(","));
+   677→        }
+   678→        this.expectPunct("}");
+   679→        return { kind: "StructPat", loc: this.locFrom(start), name, fields, rest: hasRest };
+   680→      }
+   681→      // plain binding; allow `x: type` annotation
+   682→      let type: TypeNode | undefined;
+   683→      if (this.eatPunct(":")) type = this.parseType();
+   684→      return { kind: "BindPat", loc: this.locFrom(start), name, type };
+   685→    }
+   686→    // literal pattern: int, float, string, char, bool, -literal
+   687→    if (t.kind === "Int" || t.kind === "Float" || t.kind === "Hex" || t.kind === "Binary" || t.kind === "Octal" || t.kind === "Char" || t.kind === "String") {
+   688→      const e = this.parseAtom(true);
+   689→      return { kind: "LitPat", loc: this.locFrom(start), value: e };
+   690→    }
+   691→    if (this.isKeyword("true") || this.isKeyword("false")) {
+   692→      const e = this.parseAtom(true);
+   693→      return { kind: "LitPat", loc: this.locFrom(start), value: e };
+   694→    }
+   695→    if (this.isPunct("-")) {
+   696→      const e = this.parseExpr();
+   697→      return { kind: "LitPat", loc: this.locFrom(start), value: e };
+   698→    }
+   699→    this.err(`expected pattern, found '${t.value || "<eof>"}' at ${locStr(t.loc)}`);
+   700→    return { kind: "WildcardPat", loc: this.locFrom(start) };
+   701→  }
+   702→
+   703→  // =====================================================================
+   704→  // Expressions
+   705→  // =====================================================================
+   706→  parseExpr(allowStruct = true): Expr {
+   707→    return this.parseBinary(0, allowStruct);
+   708→  }
+   709→
+   710→  parseBinary(minPrec: number, allowStruct: boolean): Expr {
+   711→    let left = this.parseUnary(allowStruct);
+   712→    while (true) {
+   713→      const t = this.peek();
+   714→      if (t.kind === "Punct" && (t.value in BIN_PREC) && BIN_PREC[t.value] >= minPrec) {
+   715→        const op = this.advance().value;
+   716→        const right = this.parseBinary(BIN_PREC[op] + 1, allowStruct);
+   717→        left = { kind: "Binary", loc: this.locFrom(left.loc), op, left, right };
+   718→        left = this.applyPostfix(left, allowStruct);
+   719→        continue;
+   720→      }
+   721→      if (t.kind === "Keyword" && t.value === "as" && AS_PREC >= minPrec) {
+   722→        this.advance();
+   723→        const type = this.parseType();
+   724→        left = { kind: "As", loc: this.locFrom(left.loc), expr: left, type };
+   725→        left = this.applyPostfix(left, allowStruct);
+   726→        continue;
+   727→      }
+   728→      // `or` keyword as low-precedence short-circuit (Python-style: returns the
+   729→      // value, not a bool). Kept distinct from the boolean `||` operator so the
+   730→      // sema layer can type them differently.
+   731→      if (t.kind === "Keyword" && t.value === "or" && 0 >= minPrec) {
+   732→        this.advance();
+   733→        const right = this.parseBinary(1, allowStruct);
+   734→        left = { kind: "Binary", loc: this.locFrom(left.loc), op: "or", left, right };
+   735→        continue;
+   736→      }
+   737→      // Range
+   738→      if (t.kind === "Punct" && (t.value === ".." || t.value === "..=") && RANGE_PREC >= minPrec) {
+   739→        const op = this.advance().value;
+   740→        const right = this.parseBinary(RANGE_PREC + 1, allowStruct);
+   741→        left = { kind: "Range", loc: this.locFrom(left.loc), start: left, end: right, inclusive: op === "..=" };
+   742→        continue;
+   743→      }
+   744→      break;
+   745→    }
+   746→    return left;
+   747→  }
+   748→
+   749→  parseUnary(allowStruct: boolean): Expr {
+   750→    const t = this.peek();
+   751→    if (t.kind === "Punct" && (t.value === "!" || t.value === "-" || t.value === "~")) {
+   752→      const op = this.advance().value;
+   753→      const operand = this.parseUnary(allowStruct);
+   754→      return { kind: "Unary", loc: this.locFrom(t.loc), op, operand };
+   755→    }
+   756→    return this.parsePostfix(undefined, allowStruct);
+   757→  }
+   758→
+   759→  parsePostfix(initial: Expr | undefined, allowStruct: boolean): Expr {
+   760→    let e = initial ?? this.parseAtom(allowStruct);
+   761→    while (true) {
+   762→      const t = this.peek();
+   763→      if (t.kind === "Punct" && t.value === "(") {
+   764→        const start = e.loc.start;
+   765→        this.advance();
+   766→        const args: Expr[] = [];
+   767→        if (!this.isPunct(")")) {
+   768→          do {
+   769→            if (this.isPunct(")")) break;
+   770→            args.push(this.parseExpr());
+   771→          } while (this.eatPunct(","));
+   772→        }
+   773→        this.expectPunct(")");
+   774→        e = { kind: "Call", loc: this.locFrom({ start, end: start, file: this.file }), callee: e, args };
+   775→        continue;
+   776→      }
+   777→      if (t.kind === "Punct" && t.value === "[") {
+   778→        const start = e.loc.start;
+   779→        this.advance();
+   780→        const index = this.parseExpr();
+   781→        this.expectPunct("]");
+   782→        e = { kind: "Index", loc: this.locFrom({ start, end: start, file: this.file }), object: e, index };
+   783→        continue;
+   784→      }
+   785→      if (t.kind === "Punct" && t.value === ".") {
+   786→        const start = e.loc.start;
+   787→        this.advance();
+   788→        const next = this.peek();
+   789→        if (next.kind === "Int") {
+   790→          this.advance();
+   791→          e = { kind: "TupleField", loc: this.locFrom({ start, end: start, file: this.file }), object: e, index: parseInt(next.value, 10) };
+   792→          continue;
+   793→        }
+   794→        const name = next.value;
+   795→        if (next.kind !== "Ident" && next.kind !== "Keyword") {
+   796→          this.err(`expected field name, found '${next.value}' at ${locStr(next.loc)}`);
+   797→          break;
+   798→        }
+   799→        this.advance();
+   800→        if (this.isPunct("(")) {
+   801→          this.advance();
+   802→          const args: Expr[] = [];
+   803→          if (!this.isPunct(")")) {
+   804→            do {
+   805→              if (this.isPunct(")")) break;
+   806→              args.push(this.parseExpr());
+   807→            } while (this.eatPunct(","));
+   808→          }
+   809→          this.expectPunct(")");
+   810→          e = { kind: "MethodCall", loc: this.locFrom({ start, end: start, file: this.file }), object: e, name, args };
+   811→        } else {
+   812→          e = { kind: "Field", loc: this.locFrom({ start, end: start, file: this.file }), object: e, name };
+   813→        }
+   814→        continue;
+   815→      }
+   816→      if (t.kind === "Punct" && t.value === "?") {
+   817→        const start = e.loc.start;
+   818→        this.advance();
+   819→        e = { kind: "ErrorProp", loc: this.locFrom({ start, end: start, file: this.file }), expr: e };
+   820→        continue;
+   821→      }
+   822→      if (allowStruct && t.kind === "Punct" && t.value === "{") {
+   823→        // Struct literal — only if followed by `Ident:` or `}` and the callee
+   824→        // is an Ident (not an arbitrary expression).
+   825→        if (e.kind === "Ident") {
+   826→          const save = this.pos;
+   827→          this.advance();
+   828→          if (this.isPunct("}")) {
+   829→            // empty struct literal
+   830→            this.advance();
+   831→            e = { kind: "StructExpr", loc: this.locFrom(e.loc), name: e.name, fields: [], spread: null };
+   832→            continue;
+   833→          }
+   834→          // peek for `Ident :` pattern
+   835→          if (this.peek().kind === "Ident" && this.isPunct(":", 1)) {
+   836→            const fields: StructExprField[] = [];
+   837→            do {
+   838→              if (this.isPunct("}")) break;
+   839→              if (this.isPunct("..")) break; // trailing spread handled below
+   840→              const fname = this.advance().value;
+   841→              this.expectPunct(":");
+   842→              const value = this.parseExpr(false);
+   843→              fields.push({ name: fname, value, loc: this.locFrom({ start: this.peek().loc.start, end: this.peek().loc.start, file: this.file }) });
+   844→            } while (this.eatPunct(","));
+   845→            let spread: Expr | null = null;
+   846→            if (this.isPunct("..")) {
+   847→              this.advance();
+   848→              spread = this.parseExpr(false);
+   849→              // allow optional trailing comma after spread
+   850→              this.eatPunct(",");
+   851→            }
+   852→            this.expectPunct("}");
+   853→            e = { kind: "StructExpr", loc: this.locFrom(e.loc), name: e.name, fields, spread };
+   854→            continue;
+   855→          }
+   856→          // Not a struct literal — restore and bail out
+   857→          this.pos = save;
+   858→          break;
+   859→        }
+   860→      }
+   861→      break;
+   862→    }
+   863→    return e;
+   864→  }
+   865→
+   866→  applyPostfix(e: Expr, allowStruct: boolean): Expr {
+   867→    return this.parsePostfix(e, allowStruct);
+   868→  }
+   869→
+   870→  parseAtom(allowStruct: boolean): Expr {
+   871→    const t = this.peek();
+   872→    const start = t.loc;
+   873→    if (t.kind === "Int") {
+   874→      this.advance();
+   875→      return { kind: "IntLit", loc: this.locFrom(start), value: parseInt(t.value, 10) };
+   876→    }
+   877→    if (t.kind === "Float") {
+   878→      this.advance();
+   879→      return { kind: "FloatLit", loc: this.locFrom(start), value: parseFloat(t.value) };
+   880→    }
+   881→    if (t.kind === "Hex") {
+   882→      this.advance();
+   883→      return { kind: "IntLit", loc: this.locFrom(start), value: parseInt(t.value.slice(2), 16) };
+   884→    }
+   885→    if (t.kind === "Binary") {
+   886→      this.advance();
+   887→      return { kind: "IntLit", loc: this.locFrom(start), value: parseInt(t.value.slice(2), 2) };
+   888→    }
+   889→    if (t.kind === "Octal") {
+   890→      this.advance();
+   891→      return { kind: "IntLit", loc: this.locFrom(start), value: parseInt(t.value.slice(2), 8) };
+   892→    }
+   893→    if (t.kind === "Char") {
+   894→      this.advance();
+   895→      return { kind: "CharLit", loc: this.locFrom(start), value: t.value };
+   896→    }
+   897→    if (t.kind === "String") {
+   898→      this.advance();
+   899→      const segments = this.parseStringSegments(t.segments || []);
+   900→      return { kind: "StringLit", loc: this.locFrom(start), segments };
+   901→    }
+   902→    if (t.kind === "Keyword") {
+   903→      if (t.value === "true") { this.advance(); return { kind: "BoolLit", loc: this.locFrom(start), value: true }; }
+   904→      if (t.value === "false") { this.advance(); return { kind: "BoolLit", loc: this.locFrom(start), value: false }; }
+   905→      if (t.value === "self") { this.advance(); return { kind: "SelfExpr", loc: this.locFrom(start) }; }
+   906→      if (t.value === "unit") { this.advance(); return { kind: "UnitLit", loc: this.locFrom(start) }; }
+   907→      if (t.value === "fn") {
+   908→        // lambda
+   909→        this.advance();
+   910→        const params = this.parseParams();
+   911→        let ret: TypeNode | undefined;
+   912→        if (this.eatPunct("->")) ret = this.parseType();
+   913→        const body = this.parseBlock();
+   914→        return { kind: "Lambda", loc: this.locFrom(start), params, ret, body };
+   915→      }
+   916→      if (t.value === "return") {
+   917→        this.advance();
+   918→        let expr: Expr | null = null;
+   919→        if (!this.isPunct(";") && !this.isPunct("}") && !this.isPunct(")") && !this.atEnd()) {
+   920→          expr = this.parseExpr();
+   921→        }
+   922→        return { kind: "Return", loc: this.locFrom(start), expr };
+   923→      }
+   924→      if (t.value === "if") return this.parseIf();
+   925→      if (t.value === "match") return this.parseMatch();
+   926→      if (t.value === "range") {
+   927→        // could be a function call: range(a, b)
+   928→        this.advance();
+   929→        if (this.isPunct("(")) {
+   930→          this.advance();
+   931→          const args: Expr[] = [];
+   932→          if (!this.isPunct(")")) {
+   933→            do {
+   934→              if (this.isPunct(")")) break;
+   935→              args.push(this.parseExpr());
+   936→            } while (this.eatPunct(","));
+   937→          }
+   938→          this.expectPunct(")");
+   939→          return { kind: "Call", loc: this.locFrom(start), callee: { kind: "Ident", loc: this.locFrom(start), name: "range" }, args };
+   940→        }
+   941→        // bare `range` ident
+   942→        return { kind: "Ident", loc: this.locFrom(start), name: "range" };
+   943→      }
+   944→      // other keywords used as identifiers (rare) — fall through
+   945→    }
+   946→    if (this.isPunct("(")) {
+   947→      this.advance();
+   948→      if (this.eatPunct(")")) return { kind: "UnitLit", loc: this.locFrom(start) };
+   949→      const e = this.parseExpr();
+   950→      if (this.eatPunct(",")) {
+   951→        const elements: Expr[] = [e];
+   952→        do {
+   953→          if (this.isPunct(")")) break;
+   954→          elements.push(this.parseExpr());
+   955→        } while (this.eatPunct(","));
+   956→        this.expectPunct(")");
+   957→        return { kind: "TupleExpr", loc: this.locFrom(start), elements };
+   958→      }
+   959→      this.expectPunct(")");
+   960→      return { kind: "Paren", loc: this.locFrom(start), expr: e };
+   961→    }
+   962→    if (this.isPunct("[")) {
+   963→      this.advance();
+   964→      const elements: Expr[] = [];
+   965→      if (!this.isPunct("]")) {
+   966→        do {
+   967→          if (this.isPunct("]")) break;
+   968→          if (this.isPunct("..")) {
+   969→            this.advance();
+   970→            const spread = this.parseExpr(false);
+   971→            void spread;
+   972→            // for v1 we ignore spread in arrays (would desugar in future)
+   973→            continue;
+   974→          }
+   975→          elements.push(this.parseExpr());
+   976→        } while (this.eatPunct(","));
+   977→      }
+   978→      this.expectPunct("]");
+   979→      return { kind: "ArrayExpr", loc: this.locFrom(start), elements };
+   980→    }
+   981→    if (this.isPunct("{")) {
+   982→      return this.parseBraceExpr();
+   983→    }
+   984→    if (t.kind === "Ident") {
+   985→      const name = this.advance().value;
+   986→      // EnumVariant: Name::Variant
+   987→      if (this.isPunct("::")) {
+   988→        this.advance();
+   989→        const variant = this.advance().value;
+   990→        let args: Expr[] = [];
+   991→        if (this.eatPunct("(")) {
+   992→          if (!this.isPunct(")")) {
+   993→            do {
+   994→              if (this.isPunct(")")) break;
+   995→              args.push(this.parseExpr());
+   996→            } while (this.eatPunct(","));
+   997→          }
+   998→          this.expectPunct(")");
+   999→        }
+  1000→        return { kind: "EnumVariant", loc: this.locFrom(start), enumName: name, variant, args };
+  1001→      }
+  1002→      // Generic instantiation: name<type, ...>(args). Disambiguate from a
+  1003→      // comparison `name < x` by peeking: the token right after `<` must be a
+  1004→      // valid type-starting token.
+  1005→      if (this.isPunct("<") && couldStartType(this.peek(1))) {
+  1006→        const save = this.pos;
+  1007→        const saveErrCount = this.errors.length;
+  1008→        this.advance(); // consume `<`
+  1009→        const typeArgs: TypeNode[] = [];
+  1010→        let valid = true;
+  1011→        try {
+  1012→          do {
+  1013→            if (this.isPunct(">")) break;
+  1014→            typeArgs.push(this.parseType());
+  1015→          } while (this.eatPunct(","));
+  1016→          if (!this.eatPunct(">")) valid = false;
+  1017→        } catch {
+  1018→          valid = false;
+  1019→        }
+  1020→        const errored = this.errors.length !== saveErrCount;
+  1021→        if (valid && !errored && this.isPunct("(")) {
+  1022→          this.advance();
+  1023→          const args: Expr[] = [];
+  1024→          if (!this.isPunct(")")) {
+  1025→            do {
+  1026→              if (this.isPunct(")")) break;
+  1027→              args.push(this.parseExpr());
+  1028→            } while (this.eatPunct(","));
+  1029→          }
+  1030→          this.expectPunct(")");
+  1031→          return { kind: "Call", loc: this.locFrom(start), callee: { kind: "Ident", loc: this.locFrom(start), name }, args, typeArgs };
+  1032→        }
+  1033→        // not a generic call — restore and treat as plain ident
+  1034→        this.errors.length = saveErrCount;
+  1035→        this.pos = save;
+  1036→      }
+  1037→      return { kind: "Ident", loc: this.locFrom(start), name };
+  1038→    }
+  1039→    if (t.kind === "Eof" || t.kind === "Error") {
+  1040→      this.err(`unexpected end of input at ${locStr(t.loc)}`);
+  1041→      return { kind: "UnitLit", loc: this.locFrom(start) };
+  1042→    }
+  1043→    this.err(`unexpected token '${t.value}' at ${locStr(t.loc)}`);
+  1044→    this.advance();
+  1045→    return { kind: "UnitLit", loc: this.locFrom(start) };
+  1046→  }
+  1047→
+  1048→  parseStringSegments(segments: StringSegment[]): StringSegment[] {
+  1049→    return segments.map(seg => {
+  1050→      if (seg.kind === "text") return seg;
+  1051→      // re-lex and parse the inner expression
+  1052→      try {
+  1053→        const innerTokens = lexSource(seg.value, this.file);
+  1054→        const sub = new Parser(innerTokens, this.file);
+  1055→        if (sub.tokens.length > 1) {
+  1056→          const e = sub.parseExpr();
+  1057→          if (sub.errors.length > 0) {
+  1058→            for (const err of sub.errors) this.errors.push(err);
+  1059→          }
+  1060→          return { kind: "interp", value: seg.value, expr: e };
+  1061→        }
+  1062→      } catch (e) {
+  1063→        this.err(`failed to parse interpolation '${seg.value}': ${(e as Error).message}`);
+  1064→      }
+  1065→      return seg;
+  1066→    });
+  1067→  }
+  1068→
+  1069→  parseIf(): Expr {
+  1070→    const start = this.peek().loc;
+  1071→    this.advance(); // if
+  1072→    const cond = this.parseExpr(false);
+  1073→    const then = this.parseBlock();
+  1074→    let els: Expr | null = null;
+  1075→    if (this.eatKeyword("else")) {
+  1076→      if (this.isKeyword("if")) els = this.parseIf();
+  1077→      else els = this.parseBlock();
+  1078→    }
+  1079→    return { kind: "If", loc: this.locFrom(start), cond, then, else: els };
+  1080→  }
+  1081→
+  1082→  parseMatch(): Expr {
+  1083→    const start = this.peek().loc;
+  1084→    this.advance();
+  1085→    const scrutinee = this.parseExpr(false);
+  1086→    this.expectPunct("{");
+  1087→    const arms: MatchArm[] = [];
+  1088→    while (!this.isPunct("}") && !this.atEnd()) {
+  1089→      const aStart = this.peek().loc;
+  1090→      const pattern = this.parsePattern();
+  1091→      let guard: Expr | null = null;
+  1092→      if (this.eatKeyword("if")) guard = this.parseExpr(false);
+  1093→      this.expectPunct("=>");
+  1094→      const body = this.parseExpr();
+  1095→      arms.push({ pattern, guard, body, loc: this.locFrom(aStart) });
+  1096→      if (!this.eatPunct(",")) {
+  1097→        // allow trailing without comma if next is `}`
+  1098→        if (!this.isPunct("}")) {
+  1099→          this.err(`expected ',' or '}' after match arm at ${locStr(this.peek().loc)}`);
+  1100→          this.recover();
+  1101→        }
+  1102→      }
+  1103→    }
+  1104→    this.expectPunct("}");
+  1105→    return { kind: "Match", loc: this.locFrom(start), scrutinee, arms };
+  1106→  }
+  1107→
+  1108→  parseBlock(): any /* Block */ {
+  1109→    const start = this.peek().loc;
+  1110→    this.expectPunct("{");
+  1111→    const stmts: Stmt[] = [];
+  1112→    let trailing: Expr | null = null;
+  1113→    while (!this.isPunct("}") && !this.atEnd()) {
+  1114→      if (this.isStmtStart()) {
+  1115→        const s = this.parseStmt();
+  1116→        if (s) stmts.push(s);
+  1117→        continue;
+  1118→      }
+  1119→      const e = this.parseExpr();
+  1120→      if (this.isPunct("=")) {
+  1121→        // assignment statement
+  1122→        this.advance();
+  1123→        const value = this.parseExpr();
+  1124→        this.expectPunct(";");
+  1125→        stmts.push({ kind: "AssignStmt", loc: this.locFrom(start), target: e, value });
+  1126→        continue;
+  1127→      }
+  1128→      if (this.isPunct("+=") || this.isPunct("-=") || this.isPunct("*=") || this.isPunct("/=") || this.isPunct("%=")) {
+  1129→        const op = this.advance().value[0];
+  1130→        const value = this.parseExpr();
+  1131→        this.expectPunct(";");
+  1132→        stmts.push({ kind: "AssignStmt", loc: this.locFrom(start), target: e, value: { kind: "CompoundAssign", loc: this.locFrom(start), op, target: e, value } });
+  1133→        continue;
+  1134→      }
+  1135→      if (this.isPunct(";")) {
+  1136→        this.advance();
+  1137→        if (isAssignmentExpr(e)) {
+  1138→          stmts.push({ kind: "AssignStmt", loc: e.loc, target: (e as any).target, value: (e as any).value });
+  1139→        } else {
+  1140→          stmts.push({ kind: "ExprStmt", loc: this.locFrom(start), expr: e });
+  1141→        }
+  1142→        continue;
+  1143→      }
+  1144→      if (this.isPunct("}")) {
+  1145→        trailing = e;
+  1146→        break;
+  1147→      }
+  1148→      this.err(`expected ';', found '${this.peek().value}' at ${locStr(this.peek().loc)}`);
+  1149→      this.recover();
+  1150→    }
+  1151→    this.expectPunct("}");
+  1152→    return { kind: "Block", loc: this.locFrom(start), stmts, expr: trailing };
+  1153→  }
+  1154→
+  1155→  parseBraceExpr(): Expr {
+  1156→    const start = this.peek().loc;
+  1157→    this.advance(); // `{`
+  1158→    if (this.isPunct("}")) { this.advance(); return { kind: "Block", loc: this.locFrom(start), stmts: [], expr: null }; }
+  1159→    if (!this.isStmtStart()) {
+  1160→      // Could be a map literal: { key: value, ... } or a block.
+  1161→      const firstExpr = this.parseExpr();
+  1162→      if (this.isPunct(":")) {
+  1163→        this.advance();
+  1164→        const value = this.parseExpr();
+  1165→        const entries: MapEntry[] = [{ key: firstExpr, value, loc: this.locFrom(start) }];
+  1166→        while (this.eatPunct(",")) {
+  1167→          if (this.isPunct("}")) break;
+  1168→          const k = this.parseExpr();
+  1169→          this.expectPunct(":");
+  1170→          const v = this.parseExpr();
+  1171→          entries.push({ key: k, value: v, loc: this.locFrom(start) });
+  1172→        }
+  1173→        this.expectPunct("}");
+  1174→        return { kind: "MapExpr", loc: this.locFrom(start), entries };
+  1175→      }
+  1176→      // It's a block. firstExpr is either ExprStmt or trailing.
+  1177→      const stmts: Stmt[] = [];
+  1178→      if (this.isPunct(";")) {
+  1179→        this.advance();
+  1180→        if (isAssignmentExpr(firstExpr)) {
+  1181→          stmts.push({ kind: "AssignStmt", loc: firstExpr.loc, target: (firstExpr as any).target, value: (firstExpr as any).value });
+  1182→        } else {
+  1183→          stmts.push({ kind: "ExprStmt", loc: this.locFrom(start), expr: firstExpr });
+  1184→        }
+  1185→      } else if (this.isPunct("}")) {
+  1186→        this.advance();
+  1187→        return { kind: "Block", loc: this.locFrom(start), stmts, expr: firstExpr };
+  1188→      } else {
+  1189→        this.err(`expected ';' or '}' in block at ${locStr(this.peek().loc)}`);
+  1190→        this.recover();
+  1191→      }
+  1192→      // continue parsing rest of block
+  1193→      let trailing: Expr | null = null;
+  1194→      while (!this.isPunct("}") && !this.atEnd()) {
+  1195→        if (this.isStmtStart()) {
+  1196→          const s = this.parseStmt();
+  1197→          if (s) stmts.push(s);
+  1198→          continue;
+  1199→        }
+  1200→        const e = this.parseExpr();
+  1201→        if (this.isPunct(";")) {
+  1202→          this.advance();
+  1203→          if (isAssignmentExpr(e)) {
+  1204→            stmts.push({ kind: "AssignStmt", loc: e.loc, target: (e as any).target, value: (e as any).value });
+  1205→          } else {
+  1206→            stmts.push({ kind: "ExprStmt", loc: this.locFrom(start), expr: e });
+  1207→          }
+  1208→        } else if (this.isPunct("}")) {
+  1209→          trailing = e;
+  1210→          break;
+  1211→        } else {
+  1212→          this.err(`expected ';' or '}' in block at ${locStr(this.peek().loc)}`);
+  1213→          this.recover();
+  1214→        }
+  1215→      }
+  1216→      this.expectPunct("}");
+  1217→      return { kind: "Block", loc: this.locFrom(start), stmts, expr: trailing };
+  1218→    }
+  1219→    // Statement-start: parse statements
+  1220→    const stmts: Stmt[] = [];
+  1221→    let trailing: Expr | null = null;
+  1222→    while (!this.isPunct("}") && !this.atEnd()) {
+  1223→      if (this.isStmtStart()) {
+  1224→        const s = this.parseStmt();
+  1225→        if (s) stmts.push(s);
+  1226→        continue;
+  1227→      }
+  1228→      const e = this.parseExpr();
+  1229→      if (this.isPunct(";")) {
+  1230→        this.advance();
+  1231→        if (isAssignmentExpr(e)) {
+  1232→          stmts.push({ kind: "AssignStmt", loc: e.loc, target: (e as any).target, value: (e as any).value });
+  1233→        } else {
+  1234→          stmts.push({ kind: "ExprStmt", loc: this.locFrom(start), expr: e });
+  1235→        }
+  1236→      } else if (this.isPunct("}")) {
+  1237→        trailing = e;
+  1238→        break;
+  1239→      } else {
+  1240→        this.err(`expected ';' or '}' in block at ${locStr(this.peek().loc)}`);
+  1241→        this.recover();
+  1242→      }
+  1243→    }
+  1244→    this.expectPunct("}");
+  1245→    return { kind: "Block", loc: this.locFrom(start), stmts, expr: trailing };
+  1246→  }
+  1247→
+  1248→  isStmtStart(): boolean {
+  1249→    const t = this.peek();
+  1250→    if (t.kind !== "Keyword") return false;
+  1251→    if (t.value === "fn") {
+  1252→      // `fn name` is a declaration; `fn(` is a lambda expression.
+  1253→      return this.peek(1).kind === "Ident";
+  1254→    }
+  1255→    return [
+  1256→      "let", "const", "enum", "struct", "type", "return", "break",
+  1257→      "continue", "while", "for", "import", "pub", "print",
+  1258→    ].includes(t.value);
+  1259→  }
+  1260→}
+  1261→
+  1262→function isAssignmentExpr(e: Expr): boolean {
+  1263→  return e.kind === "Assign" || e.kind === "CompoundAssign";
+  1264→}
+  1265→
+  1266→const PRIMITIVE_TYPES = new Set<string>(["int", "float", "bool", "string", "char"]);
+  1267→
+  1268→function locStr(loc: SourceLocation): string {
+  1269→  return `${loc.start.line}:${loc.start.col}`;
+  1270→}
+  1271→
+  1272→/** Whether a token could plausibly start a type. */
+  1273→function couldStartType(t: Token): boolean {
+  1274→  if (t.kind === "Ident") return true;
+  1275→  if (t.kind === "Keyword" && ["fn", "map", "option", "result", "unit", "self", "true", "false"].includes(t.value)) return t.value === "fn" || t.value === "map" || t.value === "option" || t.value === "result" || t.value === "unit";
+  1276→  if (t.kind === "Punct" && (t.value === "(" || t.value === "[")) return true;
+  1277→  return false;
+  1278→}
+  1279→
+  1280→// Thrown to abort a sub-parse for error recovery.
+  1281→class ParseAbort extends Error {
+  1282→  loc: SourceLocation;
+  1283→  constructor(message: string, loc: SourceLocation) {
+  1284→    super(message);
+  1285→    this.loc = loc;
+  1286→  }
+  1287→}
+  1288→
+  1289→// Re-lex a snippet of source (used for string interpolation segments).
+  1290→function lexSource(source: string, file: string): Token[] {
+  1291→  return lex(source, file);
+  1292→}
+  1293→

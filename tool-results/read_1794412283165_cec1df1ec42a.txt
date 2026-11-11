@@ -1,0 +1,1293 @@
+     1→     1→/**
+     2→     2→ * aether/core/parser/parser.ts
+     3→     3→ * ===========================
+     4→     4→ * Recursive-descent + Pratt parser for Aether.
+     5→     5→ *
+     6→     6→ * Pipeline:
+     7→     7→ *   tokens → parse(tokens) → { program, errors }
+     8→     8→ *
+     9→     9→ * Precedence (low → high):
+    10→    10→ *   `||`               1
+    11→    11→ *   `&&`               2
+    12→    12→ *   `== != < <= > >=`  3
+    13→    13→ *   `.. ..=`           4
+    14→    14→ *   `+ -`              5
+    15→    15→ *   `* / %`            6
+    16→    16→ *   `as`               7
+    17→    17→ *   `?`                8 (postfix)
+    18→    18→ *   unary `! -`        9 (prefix)
+    19→    19→ *   postfix call/index/field/method  10
+    20→    20→ *   atoms              11
+    21→    21→ *
+    22→    22→ * Error recovery: on a parse error, the parser records an error with the
+    23→    23→ * location and a message of the form
+    24→    24→ *   "expected ';', found '}' at line 42:15"
+    25→    25→ * and skips to the next `;` or `}` (whichever comes first), then continues
+    26→    26→ * parsing. All errors are collected and returned alongside the partial AST.
+    27→    27→ *
+    28→    28→ * Simplified in v1
+    29→    29→ * ----------------
+    30→    30→ * - `Import` is parsed and emitted as an `Import` AST node but never
+    31→    31→ *   resolved. Single-file programs only.
+    32→    32→ * - Struct literals `Name { ... }` are disambiguated from block bodies via an
+    33→    33→ *   `allowStruct` flag, threaded into `parseExpr`. Inside `if`/`while`/`for`/
+    34→    34→ *   `match` heads, struct literals are disabled.
+    35→    35→ * - `match` arms do not support `if` guards beyond `Pattern if Expr => Body`.
+    36→    36→ * - Generics support `<T: Ord>` constraint syntax but the sema layer treats
+    37→    37→ *   the constraint name opaquely.
+    38→    38→ */
+    39→    39→import {
+    40→    40→  loc as makeLoc,
+    41→    41→  SOURCE_LOCATION_ZERO,
+    42→    42→  type SourceLocation,
+    43→    43→  type Program,
+    44→    44→  type Stmt,
+    45→    45→  type Expr,
+    46→    46→  type Pattern,
+    47→    47→  type TypeNode,
+    48→    48→  type Param,
+    49→    49→  type TypeParam,
+    50→    50→  type StructField,
+    51→    51→  type EnumVariantDecl,
+    52→    52→  type StringSegment,
+    53→    53→  type MatchArm,
+    54→    54→  type MapEntry,
+    55→    55→  type StructExprField,
+    56→    56→} from "../ast/ast";
+    57→    57→import {
+    58→    58→  lex,
+    59→    59→  lexWithErrors,
+    60→    60→  type Token,
+    61→    61→  type LexError,
+    62→    62→  isPunct,
+    63→    63→  isKeyword,
+    64→    64→} from "../lexer/lexer";
+    65→    65→
+    66→    66→export interface ParseError {
+    67→    67→  message: string;
+    68→    68→  loc: SourceLocation;
+    69→    69→}
+    70→    70→
+    71→    71→export interface ParseResult {
+    72→    72→  program: Program;
+    73→    73→  errors: ParseError[];
+    74→    74→}
+    75→    75→
+    76→    76→export function parse(tokens: Token[], file = "<aether>"): ParseResult {
+    77→    77→  const p = new Parser(tokens, file);
+    78→    78→  return p.parse();
+    79→    79→}
+    80→    80→
+    81→    81→export function parseSource(source: string, file = "<aether>"): ParseResult {
+    82→    82→  const { tokens } = lexWithErrors(source, file);
+    83→    83→  return parse(tokens, file);
+    84→    84→}
+    85→    85→
+    86→    86→//----------------------------------------------------------------------------
+    87→    87→// Precedence
+    88→    88→//----------------------------------------------------------------------------
+    89→    89→const BIN_PREC: Record<string, number> = {
+    90→    90→  "||": 1,
+    91→    91→  "&&": 2,
+    92→    92→  "==": 3, "!=": 3, "<": 3, "<=": 3, ">": 3, ">=": 3,
+    93→    93→  // range `.. ..=` is handled specially below (precedence 4)
+    94→    94→  // Bitwise / shift — looser than add (5), tighter than range (4):
+    95→    95→  "|": 4, "^": 4, "&": 4, "<<": 4, ">>": 4,
+    96→    96→  "+": 5, "-": 5,
+    97→    97→  "*": 6, "/": 6, "%": 6,
+    98→    98→  // `as` is precedence 7 (handled specially in the binary loop)
+    99→    99→};
+   100→   100→const RANGE_PREC = 4;
+   101→   101→const AS_PREC = 7;
+   102→   102→
+   103→   103→//----------------------------------------------------------------------------
+   104→   104→// Parser
+   105→   105→//----------------------------------------------------------------------------
+   106→   106→class Parser {
+   107→   107→  tokens: Token[];
+   108→   108→  pos = 0;
+   109→   109→  errors: ParseError[] = [];
+   110→   110→  file: string;
+   111→   111→
+   112→   112→  constructor(tokens: Token[], file: string) {
+   113→   113→    this.tokens = tokens;
+   114→   114→    this.file = file;
+   115→   115→  }
+   116→   116→
+   117→   117→  parse(): ParseResult {
+   118→   118→    const body: Stmt[] = [];
+   119→   119→    const start = this.peek().loc.start;
+   120→   120→    while (!this.atEnd()) {
+   121→   121→      const stmt = this.parseStmt();
+   122→   122→      if (stmt) body.push(stmt);
+   123→   123→    }
+   124→   124→    const end = this.tokens.length > 0 ? this.tokens[this.tokens.length - 1].loc.end : start;
+   125→   125→    return {
+   126→   126→      program: { kind: "Program", body, loc: makeLoc(start, end, this.file) },
+   127→   127→      errors: this.errors,
+   128→   128→    };
+   129→   129→  }
+   130→   130→
+   131→   131→  // -------- token helpers --------
+   132→   132→  peek(n = 0): Token {
+   133→   133→    return this.tokens[this.pos + n] ?? { kind: "Eof", value: "", loc: SOURCE_LOCATION_ZERO };
+   134→   134→  }
+   135→   135→
+   136→   136→  advance(): Token {
+   137→   137→    return this.tokens[this.pos++] ?? this.peek();
+   138→   138→  }
+   139→   139→
+   140→   140→  atEnd(): boolean {
+   141→   141→    return this.peek().kind === "Eof";
+   142→   142→  }
+   143→   143→
+   144→   144→  isPunct(value: string, n = 0): boolean {
+   145→   145→    const t = this.peek(n);
+   146→   146→    return isPunct(t, value);
+   147→   147→  }
+   148→   148→
+   149→   149→  isKeyword(value: string, n = 0): boolean {
+   150→   150→    const t = this.peek(n);
+   151→   151→    return isKeyword(t, value);
+   152→   152→  }
+   153→   153→
+   154→   154→  eatPunct(value: string): boolean {
+   155→   155→    if (this.isPunct(value)) { this.advance(); return true; }
+   156→   156→    return false;
+   157→   157→  }
+   158→   158→
+   159→   159→  eatKeyword(value: string): boolean {
+   160→   160→    if (this.isKeyword(value)) { this.advance(); return true; }
+   161→   161→    return false;
+   162→   162→  }
+   163→   163→
+   164→   164→  expectPunct(value: string): Token | null {
+   165→   165→    if (this.isPunct(value)) return this.advance();
+   166→   166→    this.err(`expected '${value}', found '${this.peek().value || "<eof>"}' at ${locStr(this.peek().loc)}`);
+   167→   167→    return null;
+   168→   168→  }
+   169→   169→
+   170→   170→  expectIdent(): string | null {
+   171→   171→    const t = this.peek();
+   172→   172→    if (t.kind === "Ident") { this.advance(); return t.value; }
+   173→   173→    this.err(`expected identifier, found '${t.value || "<eof>"}' at ${locStr(t.loc)}`);
+   174→   174→    return null;
+   175→   175→  }
+   176→   176→
+   177→   177→  err(message: string, loc?: SourceLocation): void {
+   178→   178→    this.errors.push({ message, loc: loc ?? this.peek().loc });
+   179→   179→  }
+   180→   180→
+   181→   181→  recover(): void {
+   182→   182→    while (!this.atEnd()) {
+   183→   183→      const t = this.advance();
+   184→   184→      if (t.kind === "Punct" && (t.value === ";" || t.value === "}")) return;
+   185→   185→    }
+   186→   186→  }
+   187→   187→
+   188→   188→  locFrom(start: SourceLocation): SourceLocation {
+   189→   189→    return makeLoc(start.start, this.tokens[this.pos - 1]?.loc.end ?? start.end, this.file);
+   190→   190→  }
+   191→   191→
+   192→   192→  // =====================================================================
+   193→   193→  // Statements
+   194→   194→  // =====================================================================
+   195→   195→  parseStmt(): Stmt | null {
+   196→   196→    const start = this.peek().loc;
+   197→   197→    try {
+   198→   198→      if (this.isKeyword("let")) return this.parseLet();
+   199→   199→      if (this.isKeyword("const")) return this.parseConst();
+   200→   200→      if (this.isKeyword("fn")) return this.parseFnOrLambda();
+   201→   201→      if (this.isKeyword("enum")) return this.parseEnum();
+   202→   202→      if (this.isKeyword("struct")) return this.parseStruct();
+   203→   203→      if (this.isKeyword("type")) return this.parseTypeAlias();
+   204→   204→      if (this.isKeyword("return")) return this.parseReturn();
+   205→   205→      if (this.isKeyword("break")) { this.advance(); this.expectPunct(";"); return { kind: "Break", loc: this.locFrom(start) }; }
+   206→   206→      if (this.isKeyword("continue")) { this.advance(); this.expectPunct(";"); return { kind: "Continue", loc: this.locFrom(start) }; }
+   207→   207→      if (this.isKeyword("while")) return this.parseWhile();
+   208→   208→      if (this.isKeyword("for")) return this.parseFor();
+   209→   209→      if (this.isKeyword("import")) return this.parseImport();
+   210→   210→      if (this.isKeyword("pub")) return this.parsePub();
+   211→   211→      if (this.isKeyword("print")) return this.parsePrint();
+   212→   212→      // expression statement or assignment
+   213→   213→      return this.parseExprOrAssignStmt();
+   214→   214→    } catch (e) {
+   215→   215→      if (e instanceof ParseAbort) {
+   216→   216→        this.err(e.message, e.loc);
+   217→   217→        this.recover();
+   218→   218→        return null;
+   219→   219→      }
+   220→   220→      throw e;
+   221→   221→    }
+   222→   222→  }
+   223→   223→
+   224→   224→  parseLet(): Stmt {
+   225→   225→    const start = this.peek().loc;
+   226→   226→    this.advance(); // let
+   227→   227→    let mut = false;
+   228→   228→    if (this.isKeyword("mut")) { this.advance(); mut = true; }
+   229→   229→    const name = this.expectIdent();
+   230→   230→    let type: TypeNode | undefined;
+   231→   231→    if (this.eatPunct(":")) type = this.parseType();
+   232→   232→    this.expectPunct("=");
+   233→   233→    const init = this.parseExpr();
+   234→   234→    this.expectPunct(";");
+   235→   235→    const loc = this.locFrom(start);
+   236→   236→    if (mut) {
+   237→   237→      return { kind: "MutLet", loc, name: name ?? "_", type, init };
+   238→   238→    }
+   239→   239→    return { kind: "Let", loc, name: name ?? "_", type, init };
+   240→   240→  }
+   241→   241→
+   242→   242→  parseConst(): Stmt {
+   243→   243→    const start = this.peek().loc;
+   244→   244→    this.advance();
+   245→   245→    const name = this.expectIdent();
+   246→   246→    let type: TypeNode | undefined;
+   247→   247→    if (this.eatPunct(":")) type = this.parseType();
+   248→   248→    this.expectPunct("=");
+   249→   249→    const init = this.parseExpr();
+   250→   250→    this.expectPunct(";");
+   251→   251→    return { kind: "Const", loc: this.locFrom(start), name: name ?? "_", type, init };
+   252→   252→  }
+   253→   253→
+   254→   254→  parseFnOrLambda(): Stmt {
+   255→   255→    const start = this.peek().loc;
+   256→   256→    this.advance(); // fn
+   257→   257→    if (this.peek().kind === "Ident") {
+   258→   258→      // function declaration
+   259→   259→      const name = this.advance().value;
+   260→   260→      const generics = this.parseTypeParams();
+   261→   261→      const params = this.parseParams();
+   262→   262→      let ret: TypeNode | undefined;
+   263→   263→      if (this.eatPunct("->")) ret = this.parseType();
+   264→   264→      const body = this.parseBlock();
+   265→   265→      return { kind: "FnDecl", loc: this.locFrom(start), name, generics, params, ret, body };
+   266→   266→    } else {
+   267→   267→      // lambda used as expression statement (rare)
+   268→   268→      this.pos--; // un-consume `fn`
+   269→   269→      const e = this.parseExpr();
+   270→   270→      this.expectPunct(";");
+   271→   271→      return { kind: "ExprStmt", loc: this.locFrom(start), expr: e };
+   272→   272→    }
+   273→   273→  }
+   274→   274→
+   275→   275→  parseEnum(): Stmt {
+   276→   276→    const start = this.peek().loc;
+   277→   277→    this.advance();
+   278→   278→    const name = this.expectIdent();
+   279→   279→    const generics = this.parseTypeParams();
+   280→   280→    this.expectPunct("{");
+   281→   281→    const variants: EnumVariantDecl[] = [];
+   282→   282→    while (!this.isPunct("}") && !this.atEnd()) {
+   283→   283→      const vStart = this.peek().loc;
+   284→   284→      const vName = this.expectIdent();
+   285→   285→      if (!vName) { this.recover(); continue; }
+   286→   286→      if (this.eatPunct("(")) {
+   287→   287→        const types: TypeNode[] = [];
+   288→   288→        if (!this.isPunct(")")) {
+   289→   289→          do {
+   290→   290→            if (this.isPunct(")")) break;
+   291→   291→            types.push(this.parseType());
+   292→   292→          } while (this.eatPunct(","));
+   293→   293→        }
+   294→   294→        this.expectPunct(")");
+   295→   295→        variants.push({ name: vName, kind: "tuple", types, loc: this.locFrom(vStart) });
+   296→   296→      } else if (this.eatPunct("{")) {
+   297→   297→        const fields: StructField[] = [];
+   298→   298→        if (!this.isPunct("}")) {
+   299→   299→          do {
+   300→   300→            if (this.isPunct("}")) break;
+   301→   301→            const fname = this.expectIdent();
+   302→   302→            this.expectPunct(":");
+   303→   303→            const ftype = this.parseType();
+   304→   304→            if (fname) fields.push({ name: fname, type: ftype, loc: this.locFrom(vStart) });
+   305→   305→          } while (this.eatPunct(","));
+   306→   306→        }
+   307→   307→        this.expectPunct("}");
+   308→   308→        variants.push({ name: vName, kind: "struct", fields, loc: this.locFrom(vStart) });
+   309→   309→      } else {
+   310→   310→        variants.push({ name: vName, kind: "unit", loc: this.locFrom(vStart) });
+   311→   311→      }
+   312→   312→      this.eatPunct(",");
+   313→   313→    }
+   314→   314→    this.expectPunct("}");
+   315→   315→    return { kind: "EnumDecl", loc: this.locFrom(start), name: name ?? "_", generics, variants };
+   316→   316→  }
+   317→   317→
+   318→   318→  parseStruct(): Stmt {
+   319→   319→    const start = this.peek().loc;
+   320→   320→    this.advance();
+   321→   321→    const name = this.expectIdent();
+   322→   322→    const generics = this.parseTypeParams();
+   323→   323→    this.expectPunct("{");
+   324→   324→    const fields: StructField[] = [];
+   325→   325→    if (!this.isPunct("}")) {
+   326→   326→      do {
+   327→   327→        if (this.isPunct("}")) break;
+   328→   328→        const fname = this.expectIdent();
+   329→   329→        this.expectPunct(":");
+   330→   330→        const ftype = this.parseType();
+   331→   331→        if (fname) fields.push({ name: fname, type: ftype, loc: this.locFrom(start) });
+   332→   332→      } while (this.eatPunct(","));
+   333→   333→    }
+   334→   334→    this.expectPunct("}");
+   335→   335→    return { kind: "StructDecl", loc: this.locFrom(start), name: name ?? "_", generics, fields };
+   336→   336→  }
+   337→   337→
+   338→   338→  parseTypeAlias(): Stmt {
+   339→   339→    const start = this.peek().loc;
+   340→   340→    this.advance();
+   341→   341→    const name = this.expectIdent();
+   342→   342→    const generics = this.parseTypeParams();
+   343→   343→    this.expectPunct("=");
+   344→   344→    const type = this.parseType();
+   345→   345→    this.expectPunct(";");
+   346→   346→    return { kind: "TypeAlias", loc: this.locFrom(start), name: name ?? "_", generics, type };
+   347→   347→  }
+   348→   348→
+   349→   349→  parseReturn(): Stmt {
+   350→   350→    const start = this.peek().loc;
+   351→   351→    this.advance();
+   352→   352→    let expr: Expr | null = null;
+   353→   353→    if (!this.isPunct(";") && !this.isPunct("}") && !this.atEnd()) {
+   354→   354→      expr = this.parseExpr();
+   355→   355→    }
+   356→   356→    this.expectPunct(";");
+   357→   357→    return { kind: "Return", loc: this.locFrom(start), expr };
+   358→   358→  }
+   359→   359→
+   360→   360→  parseWhile(): Stmt {
+   361→   361→    const start = this.peek().loc;
+   362→   362→    this.advance();
+   363→   363→    const cond = this.parseExpr(false);
+   364→   364→    const body = this.parseBlock();
+   365→   365→    return { kind: "While", loc: this.locFrom(start), cond, body };
+   366→   366→  }
+   367→   367→
+   368→   368→  parseFor(): Stmt {
+   369→   369→    const start = this.peek().loc;
+   370→   370→    this.advance();
+   371→   371→    const varName = this.expectIdent();
+   372→   372→    if (!this.eatKeyword("in")) this.err(`expected 'in', found '${this.peek().value}' at ${locStr(this.peek().loc)}`);
+   373→   373→    const iterable = this.parseExpr(false);
+   374→   374→    const body = this.parseBlock();
+   375→   375→    return { kind: "ForIn", loc: this.locFrom(start), varName: varName ?? "_", iterable, body };
+   376→   376→  }
+   377→   377→
+   378→   378→  parseImport(): Stmt {
+   379→   379→    const start = this.peek().loc;
+   380→   380→    this.advance();
+   381→   381→    let path = "";
+   382→   382→    if (this.peek().kind === "String") { path = (this.peek().segments || []).map(s => s.value).join(""); this.advance(); }
+   383→   383→    else { this.err(`expected string after import, found '${this.peek().value}'`); }
+   384→   384→    const names: string[] = [];
+   385→   385→    if (this.eatPunct("{")) {
+   386→   386→      do {
+   387→   387→        if (this.isPunct("}")) break;
+   388→   388→        const n = this.expectIdent();
+   389→   389→        if (n) names.push(n);
+   390→   390→      } while (this.eatPunct(","));
+   391→   391→      this.expectPunct("}");
+   392→   392→    }
+   393→   393→    this.eatPunct(";");
+   394→   394→    return { kind: "Import", loc: this.locFrom(start), path, names };
+   395→   395→  }
+   396→   396→
+   397→   397→  parsePub(): Stmt {
+   398→   398→    const start = this.peek().loc;
+   399→   399→    this.advance();
+   400→   400→    if (this.isKeyword("fn")) {
+   401→   401→      const d = this.parseFnOrLambda() as any;
+   402→   402→      if (d && d.kind === "FnDecl") d.exported = true;
+   403→   403→      return d;
+   404→   404→    }
+   405→   405→    this.err(`expected 'fn' after 'pub', found '${this.peek().value}'`);
+   406→   406→    this.recover();
+   407→   407→    return { kind: "ExprStmt", loc: this.locFrom(start), expr: { kind: "UnitLit", loc: this.locFrom(start) } };
+   408→   408→  }
+   409→   409→
+   410→   410→  parsePrint(): Stmt {
+   411→   411→    const start = this.peek().loc;
+   412→   412→    this.advance();
+   413→   413→    this.expectPunct("(");
+   414→   414→    const expr = this.parseExpr();
+   415→   415→    this.expectPunct(")");
+   416→   416→    this.expectPunct(";");
+   417→   417→    return { kind: "Print", loc: this.locFrom(start), expr };
+   418→   418→  }
+   419→   419→
+   420→   420→  parseExprOrAssignStmt(): Stmt {
+   421→   421→    const start = this.peek().loc;
+   422→   422→    const e = this.parseExpr();
+   423→   423→    if (this.isPunct("=")) {
+   424→   424→      this.advance();
+   425→   425→      const value = this.parseExpr();
+   426→   426→      this.expectPunct(";");
+   427→   427→      return { kind: "AssignStmt", loc: this.locFrom(start), target: e, value };
+   428→   428→    }
+   429→   429→    if (this.isPunct("+=") || this.isPunct("-=") || this.isPunct("*=") || this.isPunct("/=") || this.isPunct("%=")) {
+   430→   430→      const op = this.advance().value[0];
+   431→   431→      const value = this.parseExpr();
+   432→   432→      this.expectPunct(";");
+   433→   433→      return { kind: "AssignStmt", loc: this.locFrom(start), target: e, value: { kind: "CompoundAssign", loc: this.locFrom(start), op, target: e, value } };
+   434→   434→    }
+   435→   435→    this.expectPunct(";");
+   436→   436→    return { kind: "ExprStmt", loc: this.locFrom(start), expr: e };
+   437→   437→  }
+   438→   438→
+   439→   439→  // =====================================================================
+   440→   440→  // Type parameters and parameters
+   441→   441→  // =====================================================================
+   442→   442→  parseTypeParams(): TypeParam[] {
+   443→   443→    const out: TypeParam[] = [];
+   444→   444→    if (!this.isPunct("<")) return out;
+   445→   445→    this.advance();
+   446→   446→    do {
+   447→   447→      if (this.isPunct(">")) break;
+   448→   448→      const nameTok = this.advance();
+   449→   449→      let constraint: string | undefined;
+   450→   450→      if (this.eatPunct(":")) {
+   451→   451→        constraint = this.advance().value;
+   452→   452→      }
+   453→   453→      out.push({ name: nameTok.value, constraint, loc: nameTok.loc });
+   454→   454→    } while (this.eatPunct(","));
+   455→   455→    this.expectPunct(">");
+   456→   456→    return out;
+   457→   457→  }
+   458→   458→
+   459→   459→  parseParams(): Param[] {
+   460→   460→    const out: Param[] = [];
+   461→   461→    this.expectPunct("(");
+   462→   462→    if (!this.isPunct(")")) {
+   463→   463→      do {
+   464→   464→        if (this.isPunct(")")) break;
+   465→   465→        const start = this.peek().loc;
+   466→   466→        let nameTok: Token;
+   467→   467→        let type: TypeNode | undefined;
+   468→   468→        // `self` parameter
+   469→   469→        if (this.isKeyword("self")) { nameTok = this.advance(); }
+   470→   470→        else { nameTok = this.advance(); }
+   471→   471→        if (nameTok.kind !== "Ident" && !isKeyword(nameTok, "self")) {
+   472→   472→          this.err(`expected parameter name, found '${nameTok.value}' at ${locStr(nameTok.loc)}`);
+   473→   473→        }
+   474→   474→        if (this.eatPunct(":")) type = this.parseType();
+   475→   475→        out.push({ name: nameTok.value, type, loc: start });
+   476→   476→      } while (this.eatPunct(","));
+   477→   477→    }
+   478→   478→    this.expectPunct(")");
+   479→   479→    return out;
+   480→   480→  }
+   481→   481→
+   482→   482→  // =====================================================================
+   483→   483→  // Types
+   484→   484→  // =====================================================================
+   485→   485→  parseType(): TypeNode {
+   486→   486→    return this.parseFuncType();
+   487→   487→  }
+   488→   488→
+   489→   489→  parseFuncType(): TypeNode {
+   490→   490→    if (this.isKeyword("fn")) {
+   491→   491→      const start = this.peek().loc;
+   492→   492→      this.advance();
+   493→   493→      this.expectPunct("(");
+   494→   494→      const params: TypeNode[] = [];
+   495→   495→      if (!this.isPunct(")")) {
+   496→   496→        do {
+   497→   497→          if (this.isPunct(")")) break;
+   498→   498→          params.push(this.parseType());
+   499→   499→        } while (this.eatPunct(","));
+   500→   500→      }
+   501→   501→      this.expectPunct(")");
+   502→   502→      this.expectPunct("->");
+   503→   503→      const ret = this.parseType();
+   504→   504→      return { kind: "FuncType", loc: this.locFrom(start), params, ret };
+   505→   505→    }
+   506→   506→    return this.parsePrimaryType();
+   507→   507→  }
+   508→   508→
+   509→   509→  parsePrimaryType(): TypeNode {
+   510→   510→    const t = this.peek();
+   511→   511→    const start = t.loc;
+   512→   512→    if (this.isPunct("(")) {
+   513→   513→      this.advance();
+   514→   514→      if (this.eatPunct(")")) return { kind: "UnitType", loc: this.locFrom(start) };
+   515→   515→      const types: TypeNode[] = [];
+   516→   516→      do {
+   517→   517→        if (this.isPunct(")")) break;
+   518→   518→        types.push(this.parseType());
+   519→   519→      } while (this.eatPunct(","));
+   520→   520→      this.expectPunct(")");
+   521→   521→      return { kind: "TupleType", loc: this.locFrom(start), types };
+   522→   522→    }
+   523→   523→    if (this.isPunct("[")) {
+   524→   524→      this.advance();
+   525→   525→      const elem = this.parseType();
+   526→   526→      this.expectPunct("]");
+   527→   527→      return { kind: "ArrayType", loc: this.locFrom(start), elem };
+   528→   528→    }
+   529→   529→    // `map`, `option`, `result` are not keywords — they are Ident tokens.
+   530→   530→    // Treat them as the corresponding sugar type nodes.
+   531→   531→    if ((this.isKeyword("map") || (t.kind === "Ident" && t.value === "map"))) {
+   532→   532→      this.advance();
+   533→   533→      this.expectPunct("[");
+   534→   534→      const key = this.parseType();
+   535→   535→      this.expectPunct("]");
+   536→   536→      const value = this.parseType();
+   537→   537→      return { kind: "MapType", loc: this.locFrom(start), key, value };
+   538→   538→    }
+   539→   539→    if ((this.isKeyword("option") || (t.kind === "Ident" && t.value === "option"))) {
+   540→   540→      this.advance();
+   541→   541→      this.expectPunct("<");
+   542→   542→      const inner = this.parseType();
+   543→   543→      this.expectPunct(">");
+   544→   544→      return { kind: "OptionType", loc: this.locFrom(start), inner };
+   545→   545→    }
+   546→   546→    if ((this.isKeyword("result") || (t.kind === "Ident" && t.value === "result"))) {
+   547→   547→      this.advance();
+   548→   548→      this.expectPunct("<");
+   549→   549→      const ok = this.parseType();
+   550→   550→      this.expectPunct(",");
+   551→   551→      const err = this.parseType();
+   552→   552→      this.expectPunct(">");
+   553→   553→      return { kind: "ResultType", loc: this.locFrom(start), ok, err };
+   554→   554→    }
+   555→   555→    if (t.kind === "Ident" || t.kind === "Keyword") {
+   556→   556→      // Primitive names: int, float, bool, string, char, unit
+   557→   557→      const name = this.advance().value;
+   558→   558→      if (PRIMITIVE_TYPES.has(name)) {
+   559→   559→        return { kind: "PrimitiveType", loc: this.locFrom(start), name };
+   560→   560→      }
+   561→   561→      // `unit` keyword
+   562→   562→      if (name === "unit") return { kind: "UnitType", loc: this.locFrom(start) };
+   563→   563→      if (this.isPunct("<")) {
+   564→   564→        this.advance();
+   565→   565→        const args: TypeNode[] = [];
+   566→   566→        do {
+   567→   567→          if (this.isPunct(">")) break;
+   568→   568→          args.push(this.parseType());
+   569→   569→        } while (this.eatPunct(","));
+   570→   570→        this.expectPunct(">");
+   571→   571→        return { kind: "GenericType", loc: this.locFrom(start), name, args };
+   572→   572→      }
+   573→   573→      return { kind: "NamedType", loc: this.locFrom(start), name };
+   574→   574→    }
+   575→   575→    this.err(`expected type, found '${t.value || "<eof>"}' at ${locStr(t.loc)}`);
+   576→   576→    return { kind: "UnitType", loc: this.locFrom(start) };
+   577→   577→  }
+   578→   578→
+   579→   579→  // =====================================================================
+   580→   580→  // Patterns
+   581→   581→  // =====================================================================
+   582→   582→  parsePattern(): Pattern {
+   583→   583→    let p = this.parsePatternAtom();
+   584→   584→    if (this.isPunct("|")) {
+   585→   585→      const patterns: Pattern[] = [p];
+   586→   586→      while (this.eatPunct("|")) patterns.push(this.parsePatternAtom());
+   587→   587→      const start = p.loc.start;
+   588→   588→      p = { kind: "OrPat", loc: makeLoc(start, this.tokens[this.pos - 1].loc.end, this.file), patterns };
+   589→   589→    }
+   590→   590→    return p;
+   591→   591→  }
+   592→   592→
+   593→   593→  parsePatternAtom(): Pattern {
+   594→   594→    const t = this.peek();
+   595→   595→    const start = t.loc;
+   596→   596→    if (this.isPunct("_") || (t.kind === "Ident" && t.value === "_")) {
+   597→   597→      this.advance();
+   598→   598→      return { kind: "WildcardPat", loc: this.locFrom(start) };
+   599→   599→    }
+   600→   600→    if (this.isPunct("..")) {
+   601→   601→      this.advance();
+   602→   602→      return { kind: "RestPat", loc: this.locFrom(start) };
+   603→   603→    }
+   604→   604→    if (this.isPunct("(")) {
+   605→   605→      this.advance();
+   606→   606→      const elements: Pattern[] = [];
+   607→   607→      if (!this.isPunct(")")) {
+   608→   608→        do {
+   609→   609→          if (this.isPunct(")")) break;
+   610→   610→          elements.push(this.parsePattern());
+   611→   611→        } while (this.eatPunct(","));
+   612→   612→      }
+   613→   613→      this.expectPunct(")");
+   614→   614→      return { kind: "TuplePat", loc: this.locFrom(start), elements };
+   615→   615→    }
+   616→   616→    if (this.isPunct("[")) {
+   617→   617→      this.advance();
+   618→   618→      const elements: Pattern[] = [];
+   619→   619→      let rest: number | null = null;
+   620→   620→      if (!this.isPunct("]")) {
+   621→   621→        let i = 0;
+   622→   622→        do {
+   623→   623→          if (this.isPunct("]")) break;
+   624→   624→          if (this.isPunct("..")) {
+   625→   625→            this.advance();
+   626→   626→            rest = i;
+   627→   627→          } else {
+   628→   628→            elements.push(this.parsePattern());
+   629→   629→            i++;
+   630→   630→          }
+   631→   631→        } while (this.eatPunct(","));
+   632→   632→      }
+   633→   633→      this.expectPunct("]");
+   634→   634→      return { kind: "ArrayPat", loc: this.locFrom(start), elements, rest };
+   635→   635→    }
+   636→   636→    if (this.isKeyword("mut")) {
+   637→   637→      this.advance();
+   638→   638→      const name = this.expectIdent();
+   639→   639→      let type: TypeNode | undefined;
+   640→   640→      if (this.eatPunct(":")) type = this.parseType();
+   641→   641→      return { kind: "BindPat", loc: this.locFrom(start), name: name ?? "_", mut: true, type };
+   642→   642→    }
+   643→   643→    if (t.kind === "Ident" || t.kind === "Keyword") {
+   644→   644→      // Could be: enum variant `Enum::Variant(...)`, struct pat `Name { ... }`,
+   645→   645→      // or a binding `x` / `x: type`.
+   646→   646→      const name = this.advance().value;
+   647→   647→      if (this.isPunct("::")) {
+   648→   648→        this.advance();
+   649→   649→        const variant = this.advance().value;
+   650→   650→        let subpatterns: Pattern[] = [];
+   651→   651→        if (this.eatPunct("(")) {
+   652→   652→          if (!this.isPunct(")")) {
+   653→   653→            do {
+   654→   654→              if (this.isPunct(")")) break;
+   655→   655→              subpatterns.push(this.parsePattern());
+   656→   656→            } while (this.eatPunct(","));
+   657→   657→          }
+   658→   658→          this.expectPunct(")");
+   659→   659→        }
+   660→   660→        return { kind: "EnumPat", loc: this.locFrom(start), enumName: name, variant, subpatterns };
+   661→   661→      }
+   662→   662→      if (this.isPunct("{")) {
+   663→   663→        this.advance();
+   664→   664→        const fields: { name: string; pattern: Pattern; loc: SourceLocation }[] = [];
+   665→   665→        let hasRest = false;
+   666→   666→        if (!this.isPunct("}")) {
+   667→   667→          do {
+   668→   668→            if (this.isPunct("}")) break;
+   669→   669→            if (this.isPunct("..")) { this.advance(); hasRest = true; break; }
+   670→   670→            const fname = this.expectIdent();
+   671→   671→            let pat: Pattern;
+   672→   672→            if (this.eatPunct(":")) pat = this.parsePattern();
+   673→   673→            else if (fname) pat = { kind: "BindPat", loc: this.locFrom(start), name: fname };
+   674→   674→            else pat = { kind: "WildcardPat", loc: this.locFrom(start) };
+   675→   675→            if (fname) fields.push({ name: fname, pattern: pat, loc: this.locFrom(start) });
+   676→   676→          } while (this.eatPunct(","));
+   677→   677→        }
+   678→   678→        this.expectPunct("}");
+   679→   679→        return { kind: "StructPat", loc: this.locFrom(start), name, fields, rest: hasRest };
+   680→   680→      }
+   681→   681→      // plain binding; allow `x: type` annotation
+   682→   682→      let type: TypeNode | undefined;
+   683→   683→      if (this.eatPunct(":")) type = this.parseType();
+   684→   684→      return { kind: "BindPat", loc: this.locFrom(start), name, type };
+   685→   685→    }
+   686→   686→    // literal pattern: int, float, string, char, bool, -literal
+   687→   687→    if (t.kind === "Int" || t.kind === "Float" || t.kind === "Hex" || t.kind === "Binary" || t.kind === "Octal" || t.kind === "Char" || t.kind === "String") {
+   688→   688→      const e = this.parseAtom(true);
+   689→   689→      return { kind: "LitPat", loc: this.locFrom(start), value: e };
+   690→   690→    }
+   691→   691→    if (this.isKeyword("true") || this.isKeyword("false")) {
+   692→   692→      const e = this.parseAtom(true);
+   693→   693→      return { kind: "LitPat", loc: this.locFrom(start), value: e };
+   694→   694→    }
+   695→   695→    if (this.isPunct("-")) {
+   696→   696→      const e = this.parseExpr();
+   697→   697→      return { kind: "LitPat", loc: this.locFrom(start), value: e };
+   698→   698→    }
+   699→   699→    this.err(`expected pattern, found '${t.value || "<eof>"}' at ${locStr(t.loc)}`);
+   700→   700→    return { kind: "WildcardPat", loc: this.locFrom(start) };
+   701→   701→  }
+   702→   702→
+   703→   703→  // =====================================================================
+   704→   704→  // Expressions
+   705→   705→  // =====================================================================
+   706→   706→  parseExpr(allowStruct = true): Expr {
+   707→   707→    return this.parseBinary(0, allowStruct);
+   708→   708→  }
+   709→   709→
+   710→   710→  parseBinary(minPrec: number, allowStruct: boolean): Expr {
+   711→   711→    let left = this.parseUnary(allowStruct);
+   712→   712→    while (true) {
+   713→   713→      const t = this.peek();
+   714→   714→      if (t.kind === "Punct" && (t.value in BIN_PREC) && BIN_PREC[t.value] >= minPrec) {
+   715→   715→        const op = this.advance().value;
+   716→   716→        const right = this.parseBinary(BIN_PREC[op] + 1, allowStruct);
+   717→   717→        left = { kind: "Binary", loc: this.locFrom(left.loc), op, left, right };
+   718→   718→        left = this.applyPostfix(left, allowStruct);
+   719→   719→        continue;
+   720→   720→      }
+   721→   721→      if (t.kind === "Keyword" && t.value === "as" && AS_PREC >= minPrec) {
+   722→   722→        this.advance();
+   723→   723→        const type = this.parseType();
+   724→   724→        left = { kind: "As", loc: this.locFrom(left.loc), expr: left, type };
+   725→   725→        left = this.applyPostfix(left, allowStruct);
+   726→   726→        continue;
+   727→   727→      }
+   728→   728→      // `or` keyword as low-precedence short-circuit (Python-style: returns the
+   729→   729→      // value, not a bool). Kept distinct from the boolean `||` operator so the
+   730→   730→      // sema layer can type them differently.
+   731→   731→      if (t.kind === "Keyword" && t.value === "or" && 0 >= minPrec) {
+   732→   732→        this.advance();
+   733→   733→        const right = this.parseBinary(1, allowStruct);
+   734→   734→        left = { kind: "Binary", loc: this.locFrom(left.loc), op: "or", left, right };
+   735→   735→        continue;
+   736→   736→      }
+   737→   737→      // Range
+   738→   738→      if (t.kind === "Punct" && (t.value === ".." || t.value === "..=") && RANGE_PREC >= minPrec) {
+   739→   739→        const op = this.advance().value;
+   740→   740→        const right = this.parseBinary(RANGE_PREC + 1, allowStruct);
+   741→   741→        left = { kind: "Range", loc: this.locFrom(left.loc), start: left, end: right, inclusive: op === "..=" };
+   742→   742→        continue;
+   743→   743→      }
+   744→   744→      break;
+   745→   745→    }
+   746→   746→    return left;
+   747→   747→  }
+   748→   748→
+   749→   749→  parseUnary(allowStruct: boolean): Expr {
+   750→   750→    const t = this.peek();
+   751→   751→    if (t.kind === "Punct" && (t.value === "!" || t.value === "-" || t.value === "~")) {
+   752→   752→      const op = this.advance().value;
+   753→   753→      const operand = this.parseUnary(allowStruct);
+   754→   754→      return { kind: "Unary", loc: this.locFrom(t.loc), op, operand };
+   755→   755→    }
+   756→   756→    return this.parsePostfix(undefined, allowStruct);
+   757→   757→  }
+   758→   758→
+   759→   759→  parsePostfix(initial: Expr | undefined, allowStruct: boolean): Expr {
+   760→   760→    let e = initial ?? this.parseAtom(allowStruct);
+   761→   761→    while (true) {
+   762→   762→      const t = this.peek();
+   763→   763→      if (t.kind === "Punct" && t.value === "(") {
+   764→   764→        const start = e.loc.start;
+   765→   765→        this.advance();
+   766→   766→        const args: Expr[] = [];
+   767→   767→        if (!this.isPunct(")")) {
+   768→   768→          do {
+   769→   769→            if (this.isPunct(")")) break;
+   770→   770→            args.push(this.parseExpr());
+   771→   771→          } while (this.eatPunct(","));
+   772→   772→        }
+   773→   773→        this.expectPunct(")");
+   774→   774→        e = { kind: "Call", loc: this.locFrom({ start, end: start, file: this.file }), callee: e, args };
+   775→   775→        continue;
+   776→   776→      }
+   777→   777→      if (t.kind === "Punct" && t.value === "[") {
+   778→   778→        const start = e.loc.start;
+   779→   779→        this.advance();
+   780→   780→        const index = this.parseExpr();
+   781→   781→        this.expectPunct("]");
+   782→   782→        e = { kind: "Index", loc: this.locFrom({ start, end: start, file: this.file }), object: e, index };
+   783→   783→        continue;
+   784→   784→      }
+   785→   785→      if (t.kind === "Punct" && t.value === ".") {
+   786→   786→        const start = e.loc.start;
+   787→   787→        this.advance();
+   788→   788→        const next = this.peek();
+   789→   789→        if (next.kind === "Int") {
+   790→   790→          this.advance();
+   791→   791→          e = { kind: "TupleField", loc: this.locFrom({ start, end: start, file: this.file }), object: e, index: parseInt(next.value, 10) };
+   792→   792→          continue;
+   793→   793→        }
+   794→   794→        const name = next.value;
+   795→   795→        if (next.kind !== "Ident" && next.kind !== "Keyword") {
+   796→   796→          this.err(`expected field name, found '${next.value}' at ${locStr(next.loc)}`);
+   797→   797→          break;
+   798→   798→        }
+   799→   799→        this.advance();
+   800→   800→        if (this.isPunct("(")) {
+   801→   801→          this.advance();
+   802→   802→          const args: Expr[] = [];
+   803→   803→          if (!this.isPunct(")")) {
+   804→   804→            do {
+   805→   805→              if (this.isPunct(")")) break;
+   806→   806→              args.push(this.parseExpr());
+   807→   807→            } while (this.eatPunct(","));
+   808→   808→          }
+   809→   809→          this.expectPunct(")");
+   810→   810→          e = { kind: "MethodCall", loc: this.locFrom({ start, end: start, file: this.file }), object: e, name, args };
+   811→   811→        } else {
+   812→   812→          e = { kind: "Field", loc: this.locFrom({ start, end: start, file: this.file }), object: e, name };
+   813→   813→        }
+   814→   814→        continue;
+   815→   815→      }
+   816→   816→      if (t.kind === "Punct" && t.value === "?") {
+   817→   817→        const start = e.loc.start;
+   818→   818→        this.advance();
+   819→   819→        e = { kind: "ErrorProp", loc: this.locFrom({ start, end: start, file: this.file }), expr: e };
+   820→   820→        continue;
+   821→   821→      }
+   822→   822→      if (allowStruct && t.kind === "Punct" && t.value === "{") {
+   823→   823→        // Struct literal — only if followed by `Ident:` or `}` and the callee
+   824→   824→        // is an Ident (not an arbitrary expression).
+   825→   825→        if (e.kind === "Ident") {
+   826→   826→          const save = this.pos;
+   827→   827→          this.advance();
+   828→   828→          if (this.isPunct("}")) {
+   829→   829→            // empty struct literal
+   830→   830→            this.advance();
+   831→   831→            e = { kind: "StructExpr", loc: this.locFrom(e.loc), name: e.name, fields: [], spread: null };
+   832→   832→            continue;
+   833→   833→          }
+   834→   834→          // peek for `Ident :` pattern
+   835→   835→          if (this.peek().kind === "Ident" && this.isPunct(":", 1)) {
+   836→   836→            const fields: StructExprField[] = [];
+   837→   837→            do {
+   838→   838→              if (this.isPunct("}")) break;
+   839→   839→              if (this.isPunct("..")) break; // trailing spread handled below
+   840→   840→              const fname = this.advance().value;
+   841→   841→              this.expectPunct(":");
+   842→   842→              const value = this.parseExpr(false);
+   843→   843→              fields.push({ name: fname, value, loc: this.locFrom({ start: this.peek().loc.start, end: this.peek().loc.start, file: this.file }) });
+   844→   844→            } while (this.eatPunct(","));
+   845→   845→            let spread: Expr | null = null;
+   846→   846→            if (this.isPunct("..")) {
+   847→   847→              this.advance();
+   848→   848→              spread = this.parseExpr(false);
+   849→   849→              // allow optional trailing comma after spread
+   850→   850→              this.eatPunct(",");
+   851→   851→            }
+   852→   852→            this.expectPunct("}");
+   853→   853→            e = { kind: "StructExpr", loc: this.locFrom(e.loc), name: e.name, fields, spread };
+   854→   854→            continue;
+   855→   855→          }
+   856→   856→          // Not a struct literal — restore and bail out
+   857→   857→          this.pos = save;
+   858→   858→          break;
+   859→   859→        }
+   860→   860→      }
+   861→   861→      break;
+   862→   862→    }
+   863→   863→    return e;
+   864→   864→  }
+   865→   865→
+   866→   866→  applyPostfix(e: Expr, allowStruct: boolean): Expr {
+   867→   867→    return this.parsePostfix(e, allowStruct);
+   868→   868→  }
+   869→   869→
+   870→   870→  parseAtom(allowStruct: boolean): Expr {
+   871→   871→    const t = this.peek();
+   872→   872→    const start = t.loc;
+   873→   873→    if (t.kind === "Int") {
+   874→   874→      this.advance();
+   875→   875→      return { kind: "IntLit", loc: this.locFrom(start), value: parseInt(t.value, 10) };
+   876→   876→    }
+   877→   877→    if (t.kind === "Float") {
+   878→   878→      this.advance();
+   879→   879→      return { kind: "FloatLit", loc: this.locFrom(start), value: parseFloat(t.value) };
+   880→   880→    }
+   881→   881→    if (t.kind === "Hex") {
+   882→   882→      this.advance();
+   883→   883→      return { kind: "IntLit", loc: this.locFrom(start), value: parseInt(t.value.slice(2), 16) };
+   884→   884→    }
+   885→   885→    if (t.kind === "Binary") {
+   886→   886→      this.advance();
+   887→   887→      return { kind: "IntLit", loc: this.locFrom(start), value: parseInt(t.value.slice(2), 2) };
+   888→   888→    }
+   889→   889→    if (t.kind === "Octal") {
+   890→   890→      this.advance();
+   891→   891→      return { kind: "IntLit", loc: this.locFrom(start), value: parseInt(t.value.slice(2), 8) };
+   892→   892→    }
+   893→   893→    if (t.kind === "Char") {
+   894→   894→      this.advance();
+   895→   895→      return { kind: "CharLit", loc: this.locFrom(start), value: t.value };
+   896→   896→    }
+   897→   897→    if (t.kind === "String") {
+   898→   898→      this.advance();
+   899→   899→      const segments = this.parseStringSegments(t.segments || []);
+   900→   900→      return { kind: "StringLit", loc: this.locFrom(start), segments };
+   901→   901→    }
+   902→   902→    if (t.kind === "Keyword") {
+   903→   903→      if (t.value === "true") { this.advance(); return { kind: "BoolLit", loc: this.locFrom(start), value: true }; }
+   904→   904→      if (t.value === "false") { this.advance(); return { kind: "BoolLit", loc: this.locFrom(start), value: false }; }
+   905→   905→      if (t.value === "self") { this.advance(); return { kind: "SelfExpr", loc: this.locFrom(start) }; }
+   906→   906→      if (t.value === "unit") { this.advance(); return { kind: "UnitLit", loc: this.locFrom(start) }; }
+   907→   907→      if (t.value === "fn") {
+   908→   908→        // lambda
+   909→   909→        this.advance();
+   910→   910→        const params = this.parseParams();
+   911→   911→        let ret: TypeNode | undefined;
+   912→   912→        if (this.eatPunct("->")) ret = this.parseType();
+   913→   913→        const body = this.parseBlock();
+   914→   914→        return { kind: "Lambda", loc: this.locFrom(start), params, ret, body };
+   915→   915→      }
+   916→   916→      if (t.value === "return") {
+   917→   917→        this.advance();
+   918→   918→        let expr: Expr | null = null;
+   919→   919→        if (!this.isPunct(";") && !this.isPunct("}") && !this.isPunct(")") && !this.atEnd()) {
+   920→   920→          expr = this.parseExpr();
+   921→   921→        }
+   922→   922→        return { kind: "Return", loc: this.locFrom(start), expr };
+   923→   923→      }
+   924→   924→      if (t.value === "if") return this.parseIf();
+   925→   925→      if (t.value === "match") return this.parseMatch();
+   926→   926→      if (t.value === "range") {
+   927→   927→        // could be a function call: range(a, b)
+   928→   928→        this.advance();
+   929→   929→        if (this.isPunct("(")) {
+   930→   930→          this.advance();
+   931→   931→          const args: Expr[] = [];
+   932→   932→          if (!this.isPunct(")")) {
+   933→   933→            do {
+   934→   934→              if (this.isPunct(")")) break;
+   935→   935→              args.push(this.parseExpr());
+   936→   936→            } while (this.eatPunct(","));
+   937→   937→          }
+   938→   938→          this.expectPunct(")");
+   939→   939→          return { kind: "Call", loc: this.locFrom(start), callee: { kind: "Ident", loc: this.locFrom(start), name: "range" }, args };
+   940→   940→        }
+   941→   941→        // bare `range` ident
+   942→   942→        return { kind: "Ident", loc: this.locFrom(start), name: "range" };
+   943→   943→      }
+   944→   944→      // other keywords used as identifiers (rare) — fall through
+   945→   945→    }
+   946→   946→    if (this.isPunct("(")) {
+   947→   947→      this.advance();
+   948→   948→      if (this.eatPunct(")")) return { kind: "UnitLit", loc: this.locFrom(start) };
+   949→   949→      const e = this.parseExpr();
+   950→   950→      if (this.eatPunct(",")) {
+   951→   951→        const elements: Expr[] = [e];
+   952→   952→        do {
+   953→   953→          if (this.isPunct(")")) break;
+   954→   954→          elements.push(this.parseExpr());
+   955→   955→        } while (this.eatPunct(","));
+   956→   956→        this.expectPunct(")");
+   957→   957→        return { kind: "TupleExpr", loc: this.locFrom(start), elements };
+   958→   958→      }
+   959→   959→      this.expectPunct(")");
+   960→   960→      return { kind: "Paren", loc: this.locFrom(start), expr: e };
+   961→   961→    }
+   962→   962→    if (this.isPunct("[")) {
+   963→   963→      this.advance();
+   964→   964→      const elements: Expr[] = [];
+   965→   965→      if (!this.isPunct("]")) {
+   966→   966→        do {
+   967→   967→          if (this.isPunct("]")) break;
+   968→   968→          if (this.isPunct("..")) {
+   969→   969→            this.advance();
+   970→   970→            const spread = this.parseExpr(false);
+   971→   971→            void spread;
+   972→   972→            // for v1 we ignore spread in arrays (would desugar in future)
+   973→   973→            continue;
+   974→   974→          }
+   975→   975→          elements.push(this.parseExpr());
+   976→   976→        } while (this.eatPunct(","));
+   977→   977→      }
+   978→   978→      this.expectPunct("]");
+   979→   979→      return { kind: "ArrayExpr", loc: this.locFrom(start), elements };
+   980→   980→    }
+   981→   981→    if (this.isPunct("{")) {
+   982→   982→      return this.parseBraceExpr();
+   983→   983→    }
+   984→   984→    if (t.kind === "Ident") {
+   985→   985→      const name = this.advance().value;
+   986→   986→      // EnumVariant: Name::Variant
+   987→   987→      if (this.isPunct("::")) {
+   988→   988→        this.advance();
+   989→   989→        const variant = this.advance().value;
+   990→   990→        let args: Expr[] = [];
+   991→   991→        if (this.eatPunct("(")) {
+   992→   992→          if (!this.isPunct(")")) {
+   993→   993→            do {
+   994→   994→              if (this.isPunct(")")) break;
+   995→   995→              args.push(this.parseExpr());
+   996→   996→            } while (this.eatPunct(","));
+   997→   997→          }
+   998→   998→          this.expectPunct(")");
+   999→   999→        }
+  1000→  1000→        return { kind: "EnumVariant", loc: this.locFrom(start), enumName: name, variant, args };
+  1001→  1001→      }
+  1002→  1002→      // Generic instantiation: name<type, ...>(args). Disambiguate from a
+  1003→  1003→      // comparison `name < x` by peeking: the token right after `<` must be a
+  1004→  1004→      // valid type-starting token.
+  1005→  1005→      if (this.isPunct("<") && couldStartType(this.peek(1))) {
+  1006→  1006→        const save = this.pos;
+  1007→  1007→        const saveErrCount = this.errors.length;
+  1008→  1008→        this.advance(); // consume `<`
+  1009→  1009→        const typeArgs: TypeNode[] = [];
+  1010→  1010→        let valid = true;
+  1011→  1011→        try {
+  1012→  1012→          do {
+  1013→  1013→            if (this.isPunct(">")) break;
+  1014→  1014→            typeArgs.push(this.parseType());
+  1015→  1015→          } while (this.eatPunct(","));
+  1016→  1016→          if (!this.eatPunct(">")) valid = false;
+  1017→  1017→        } catch {
+  1018→  1018→          valid = false;
+  1019→  1019→        }
+  1020→  1020→        const errored = this.errors.length !== saveErrCount;
+  1021→  1021→        if (valid && !errored && this.isPunct("(")) {
+  1022→  1022→          this.advance();
+  1023→  1023→          const args: Expr[] = [];
+  1024→  1024→          if (!this.isPunct(")")) {
+  1025→  1025→            do {
+  1026→  1026→              if (this.isPunct(")")) break;
+  1027→  1027→              args.push(this.parseExpr());
+  1028→  1028→            } while (this.eatPunct(","));
+  1029→  1029→          }
+  1030→  1030→          this.expectPunct(")");
+  1031→  1031→          return { kind: "Call", loc: this.locFrom(start), callee: { kind: "Ident", loc: this.locFrom(start), name }, args, typeArgs };
+  1032→  1032→        }
+  1033→  1033→        // not a generic call — restore and treat as plain ident
+  1034→  1034→        this.errors.length = saveErrCount;
+  1035→  1035→        this.pos = save;
+  1036→  1036→      }
+  1037→  1037→      return { kind: "Ident", loc: this.locFrom(start), name };
+  1038→  1038→    }
+  1039→  1039→    if (t.kind === "Eof" || t.kind === "Error") {
+  1040→  1040→      this.err(`unexpected end of input at ${locStr(t.loc)}`);
+  1041→  1041→      return { kind: "UnitLit", loc: this.locFrom(start) };
+  1042→  1042→    }
+  1043→  1043→    this.err(`unexpected token '${t.value}' at ${locStr(t.loc)}`);
+  1044→  1044→    this.advance();
+  1045→  1045→    return { kind: "UnitLit", loc: this.locFrom(start) };
+  1046→  1046→  }
+  1047→  1047→
+  1048→  1048→  parseStringSegments(segments: StringSegment[]): StringSegment[] {
+  1049→  1049→    return segments.map(seg => {
+  1050→  1050→      if (seg.kind === "text") return seg;
+  1051→  1051→      // re-lex and parse the inner expression
+  1052→  1052→      try {
+  1053→  1053→        const innerTokens = lexSource(seg.value, this.file);
+  1054→  1054→        const sub = new Parser(innerTokens, this.file);
+  1055→  1055→        if (sub.tokens.length > 1) {
+  1056→  1056→          const e = sub.parseExpr();
+  1057→  1057→          if (sub.errors.length > 0) {
+  1058→  1058→            for (const err of sub.errors) this.errors.push(err);
+  1059→  1059→          }
+  1060→  1060→          return { kind: "interp", value: seg.value, expr: e };
+  1061→  1061→        }
+  1062→  1062→      } catch (e) {
+  1063→  1063→        this.err(`failed to parse interpolation '${seg.value}': ${(e as Error).message}`);
+  1064→  1064→      }
+  1065→  1065→      return seg;
+  1066→  1066→    });
+  1067→  1067→  }
+  1068→  1068→
+  1069→  1069→  parseIf(): Expr {
+  1070→  1070→    const start = this.peek().loc;
+  1071→  1071→    this.advance(); // if
+  1072→  1072→    const cond = this.parseExpr(false);
+  1073→  1073→    const then = this.parseBlock();
+  1074→  1074→    let els: Expr | null = null;
+  1075→  1075→    if (this.eatKeyword("else")) {
+  1076→  1076→      if (this.isKeyword("if")) els = this.parseIf();
+  1077→  1077→      else els = this.parseBlock();
+  1078→  1078→    }
+  1079→  1079→    return { kind: "If", loc: this.locFrom(start), cond, then, else: els };
+  1080→  1080→  }
+  1081→  1081→
+  1082→  1082→  parseMatch(): Expr {
+  1083→  1083→    const start = this.peek().loc;
+  1084→  1084→    this.advance();
+  1085→  1085→    const scrutinee = this.parseExpr(false);
+  1086→  1086→    this.expectPunct("{");
+  1087→  1087→    const arms: MatchArm[] = [];
+  1088→  1088→    while (!this.isPunct("}") && !this.atEnd()) {
+  1089→  1089→      const aStart = this.peek().loc;
+  1090→  1090→      const pattern = this.parsePattern();
+  1091→  1091→      let guard: Expr | null = null;
+  1092→  1092→      if (this.eatKeyword("if")) guard = this.parseExpr(false);
+  1093→  1093→      this.expectPunct("=>");
+  1094→  1094→      const body = this.parseExpr();
+  1095→  1095→      arms.push({ pattern, guard, body, loc: this.locFrom(aStart) });
+  1096→  1096→      if (!this.eatPunct(",")) {
+  1097→  1097→        // allow trailing without comma if next is `}`
+  1098→  1098→        if (!this.isPunct("}")) {
+  1099→  1099→          this.err(`expected ',' or '}' after match arm at ${locStr(this.peek().loc)}`);
+  1100→  1100→          this.recover();
+  1101→  1101→        }
+  1102→  1102→      }
+  1103→  1103→    }
+  1104→  1104→    this.expectPunct("}");
+  1105→  1105→    return { kind: "Match", loc: this.locFrom(start), scrutinee, arms };
+  1106→  1106→  }
+  1107→  1107→
+  1108→  1108→  parseBlock(): any /* Block */ {
+  1109→  1109→    const start = this.peek().loc;
+  1110→  1110→    this.expectPunct("{");
+  1111→  1111→    const stmts: Stmt[] = [];
+  1112→  1112→    let trailing: Expr | null = null;
+  1113→  1113→    while (!this.isPunct("}") && !this.atEnd()) {
+  1114→  1114→      if (this.isStmtStart()) {
+  1115→  1115→        const s = this.parseStmt();
+  1116→  1116→        if (s) stmts.push(s);
+  1117→  1117→        continue;
+  1118→  1118→      }
+  1119→  1119→      const e = this.parseExpr();
+  1120→  1120→      if (this.isPunct("=")) {
+  1121→  1121→        // assignment statement
+  1122→  1122→        this.advance();
+  1123→  1123→        const value = this.parseExpr();
+  1124→  1124→        this.expectPunct(";");
+  1125→  1125→        stmts.push({ kind: "AssignStmt", loc: this.locFrom(start), target: e, value });
+  1126→  1126→        continue;
+  1127→  1127→      }
+  1128→  1128→      if (this.isPunct("+=") || this.isPunct("-=") || this.isPunct("*=") || this.isPunct("/=") || this.isPunct("%=")) {
+  1129→  1129→        const op = this.advance().value[0];
+  1130→  1130→        const value = this.parseExpr();
+  1131→  1131→        this.expectPunct(";");
+  1132→  1132→        stmts.push({ kind: "AssignStmt", loc: this.locFrom(start), target: e, value: { kind: "CompoundAssign", loc: this.locFrom(start), op, target: e, value } });
+  1133→  1133→        continue;
+  1134→  1134→      }
+  1135→  1135→      if (this.isPunct(";")) {
+  1136→  1136→        this.advance();
+  1137→  1137→        if (isAssignmentExpr(e)) {
+  1138→  1138→          stmts.push({ kind: "AssignStmt", loc: e.loc, target: (e as any).target, value: (e as any).value });
+  1139→  1139→        } else {
+  1140→  1140→          stmts.push({ kind: "ExprStmt", loc: this.locFrom(start), expr: e });
+  1141→  1141→        }
+  1142→  1142→        continue;
+  1143→  1143→      }
+  1144→  1144→      if (this.isPunct("}")) {
+  1145→  1145→        trailing = e;
+  1146→  1146→        break;
+  1147→  1147→      }
+  1148→  1148→      this.err(`expected ';', found '${this.peek().value}' at ${locStr(this.peek().loc)}`);
+  1149→  1149→      this.recover();
+  1150→  1150→    }
+  1151→  1151→    this.expectPunct("}");
+  1152→  1152→    return { kind: "Block", loc: this.locFrom(start), stmts, expr: trailing };
+  1153→  1153→  }
+  1154→  1154→
+  1155→  1155→  parseBraceExpr(): Expr {
+  1156→  1156→    const start = this.peek().loc;
+  1157→  1157→    this.advance(); // `{`
+  1158→  1158→    if (this.isPunct("}")) { this.advance(); return { kind: "Block", loc: this.locFrom(start), stmts: [], expr: null }; }
+  1159→  1159→    if (!this.isStmtStart()) {
+  1160→  1160→      // Could be a map literal: { key: value, ... } or a block.
+  1161→  1161→      const firstExpr = this.parseExpr();
+  1162→  1162→      if (this.isPunct(":")) {
+  1163→  1163→        this.advance();
+  1164→  1164→        const value = this.parseExpr();
+  1165→  1165→        const entries: MapEntry[] = [{ key: firstExpr, value, loc: this.locFrom(start) }];
+  1166→  1166→        while (this.eatPunct(",")) {
+  1167→  1167→          if (this.isPunct("}")) break;
+  1168→  1168→          const k = this.parseExpr();
+  1169→  1169→          this.expectPunct(":");
+  1170→  1170→          const v = this.parseExpr();
+  1171→  1171→          entries.push({ key: k, value: v, loc: this.locFrom(start) });
+  1172→  1172→        }
+  1173→  1173→        this.expectPunct("}");
+  1174→  1174→        return { kind: "MapExpr", loc: this.locFrom(start), entries };
+  1175→  1175→      }
+  1176→  1176→      // It's a block. firstExpr is either ExprStmt or trailing.
+  1177→  1177→      const stmts: Stmt[] = [];
+  1178→  1178→      if (this.isPunct(";")) {
+  1179→  1179→        this.advance();
+  1180→  1180→        if (isAssignmentExpr(firstExpr)) {
+  1181→  1181→          stmts.push({ kind: "AssignStmt", loc: firstExpr.loc, target: (firstExpr as any).target, value: (firstExpr as any).value });
+  1182→  1182→        } else {
+  1183→  1183→          stmts.push({ kind: "ExprStmt", loc: this.locFrom(start), expr: firstExpr });
+  1184→  1184→        }
+  1185→  1185→      } else if (this.isPunct("}")) {
+  1186→  1186→        this.advance();
+  1187→  1187→        return { kind: "Block", loc: this.locFrom(start), stmts, expr: firstExpr };
+  1188→  1188→      } else {
+  1189→  1189→        this.err(`expected ';' or '}' in block at ${locStr(this.peek().loc)}`);
+  1190→  1190→        this.recover();
+  1191→  1191→      }
+  1192→  1192→      // continue parsing rest of block
+  1193→  1193→      let trailing: Expr | null = null;
+  1194→  1194→      while (!this.isPunct("}") && !this.atEnd()) {
+  1195→  1195→        if (this.isStmtStart()) {
+  1196→  1196→          const s = this.parseStmt();
+  1197→  1197→          if (s) stmts.push(s);
+  1198→  1198→          continue;
+  1199→  1199→        }
+  1200→  1200→        const e = this.parseExpr();
+  1201→  1201→        if (this.isPunct(";")) {
+  1202→  1202→          this.advance();
+  1203→  1203→          if (isAssignmentExpr(e)) {
+  1204→  1204→            stmts.push({ kind: "AssignStmt", loc: e.loc, target: (e as any).target, value: (e as any).value });
+  1205→  1205→          } else {
+  1206→  1206→            stmts.push({ kind: "ExprStmt", loc: this.locFrom(start), expr: e });
+  1207→  1207→          }
+  1208→  1208→        } else if (this.isPunct("}")) {
+  1209→  1209→          trailing = e;
+  1210→  1210→          break;
+  1211→  1211→        } else {
+  1212→  1212→          this.err(`expected ';' or '}' in block at ${locStr(this.peek().loc)}`);
+  1213→  1213→          this.recover();
+  1214→  1214→        }
+  1215→  1215→      }
+  1216→  1216→      this.expectPunct("}");
+  1217→  1217→      return { kind: "Block", loc: this.locFrom(start), stmts, expr: trailing };
+  1218→  1218→    }
+  1219→  1219→    // Statement-start: parse statements
+  1220→  1220→    const stmts: Stmt[] = [];
+  1221→  1221→    let trailing: Expr | null = null;
+  1222→  1222→    while (!this.isPunct("}") && !this.atEnd()) {
+  1223→  1223→      if (this.isStmtStart()) {
+  1224→  1224→        const s = this.parseStmt();
+  1225→  1225→        if (s) stmts.push(s);
+  1226→  1226→        continue;
+  1227→  1227→      }
+  1228→  1228→      const e = this.parseExpr();
+  1229→  1229→      if (this.isPunct(";")) {
+  1230→  1230→        this.advance();
+  1231→  1231→        if (isAssignmentExpr(e)) {
+  1232→  1232→          stmts.push({ kind: "AssignStmt", loc: e.loc, target: (e as any).target, value: (e as any).value });
+  1233→  1233→        } else {
+  1234→  1234→          stmts.push({ kind: "ExprStmt", loc: this.locFrom(start), expr: e });
+  1235→  1235→        }
+  1236→  1236→      } else if (this.isPunct("}")) {
+  1237→  1237→        trailing = e;
+  1238→  1238→        break;
+  1239→  1239→      } else {
+  1240→  1240→        this.err(`expected ';' or '}' in block at ${locStr(this.peek().loc)}`);
+  1241→  1241→        this.recover();
+  1242→  1242→      }
+  1243→  1243→    }
+  1244→  1244→    this.expectPunct("}");
+  1245→  1245→    return { kind: "Block", loc: this.locFrom(start), stmts, expr: trailing };
+  1246→  1246→  }
+  1247→  1247→
+  1248→  1248→  isStmtStart(): boolean {
+  1249→  1249→    const t = this.peek();
+  1250→  1250→    if (t.kind !== "Keyword") return false;
+  1251→  1251→    if (t.value === "fn") {
+  1252→  1252→      // `fn name` is a declaration; `fn(` is a lambda expression.
+  1253→  1253→      return this.peek(1).kind === "Ident";
+  1254→  1254→    }
+  1255→  1255→    return [
+  1256→  1256→      "let", "const", "enum", "struct", "type", "return", "break",
+  1257→  1257→      "continue", "while", "for", "import", "pub", "print",
+  1258→  1258→    ].includes(t.value);
+  1259→  1259→  }
+  1260→  1260→}
+  1261→  1261→
+  1262→  1262→function isAssignmentExpr(e: Expr): boolean {
+  1263→  1263→  return e.kind === "Assign" || e.kind === "CompoundAssign";
+  1264→  1264→}
+  1265→  1265→
+  1266→  1266→const PRIMITIVE_TYPES = new Set<string>(["int", "float", "bool", "string", "char"]);
+  1267→  1267→
+  1268→  1268→function locStr(loc: SourceLocation): string {
+  1269→  1269→  return `${loc.start.line}:${loc.start.col}`;
+  1270→  1270→}
+  1271→  1271→
+  1272→  1272→/** Whether a token could plausibly start a type. */
+  1273→  1273→function couldStartType(t: Token): boolean {
+  1274→  1274→  if (t.kind === "Ident") return true;
+  1275→  1275→  if (t.kind === "Keyword" && ["fn", "map", "option", "result", "unit", "self", "true", "false"].includes(t.value)) return t.value === "fn" || t.value === "map" || t.value === "option" || t.value === "result" || t.value === "unit";
+  1276→  1276→  if (t.kind === "Punct" && (t.value === "(" || t.value === "[")) return true;
+  1277→  1277→  return false;
+  1278→  1278→}
+  1279→  1279→
+  1280→  1280→// Thrown to abort a sub-parse for error recovery.
+  1281→  1281→class ParseAbort extends Error {
+  1282→  1282→  loc: SourceLocation;
+  1283→  1283→  constructor(message: string, loc: SourceLocation) {
+  1284→  1284→    super(message);
+  1285→  1285→    this.loc = loc;
+  1286→  1286→  }
+  1287→  1287→}
+  1288→  1288→
+  1289→  1289→// Re-lex a snippet of source (used for string interpolation segments).
+  1290→  1290→function lexSource(source: string, file: string): Token[] {
+  1291→  1291→  return lex(source, file);
+  1292→  1292→}
+  1293→  1293→

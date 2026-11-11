@@ -1,0 +1,1081 @@
+     1→/**
+     2→ * aether/core/eval/eval.ts
+     3→ * ========================
+     4→ * The Aether tree-walking evaluator (v1 runtime).
+     5→ *
+     6→ * `run(program, opts)` walks the AST produced by the parser and executes it,
+     7→ * returning the value of the program's last top-level expression plus the
+     8→ * captured stdout output, any thrown runtime error, and a step counter.
+     9→ *
+    10→ * Simplifications / v1 limitations (documented)
+    11→ * ---------------------------------------------
+    12→ * - Synchronous. There is no scheduler, no green threads. `spawn`/`select`
+    13→ *   and other async primitives live in `aether/stdlib/async` and are callable
+    14→ *   only from host code, not from a sync Aether script.
+    15→ * - Generic type parameters are erased at runtime — they're compile-time only.
+    16→ *   `id<int>(42)` calls the same closure as `id(42)`.
+    17→ * - Int and Float are both JS `number`. `int`-only operators (`&`, `|`, `^`,
+    18→ *   `<<`, `>>`, `%`) truncate to integer via `Math.trunc` before and after.
+    19→ *   Plain `+`/`-`/`*`/`/` keep JS semantics (`/` is float division).
+    20→ * - Strings are JS `string`. Arrays are JS `Array`. Maps are JS `Map`.
+    21→ *   Structs are tagged `{ __struct, fields }`. Enum variants are tagged
+    22→ *   `{ __variant, variant, data }`. Ranges (returned by `range(...)`) are
+    23→ *   `{ __range, start, end, step }`.
+    24→ * - Error propagation `expr?` unwraps an `Ok`/`Some` value, or propagates the
+    25→ *   `Err`/`None` by returning it from the enclosing function. We model this by
+    26→ *   throwing a `ReturnSignal` carrying the `Err`/`None` value.
+    27→ * - `panic(msg)` throws a `PanicSignal`, caught at the top level and reported
+    28→ *   in `RunResult.error`.
+    29→ * - Match arms are evaluated in order; the first matching pattern wins.
+    30→ *   Guard expressions are evaluated with the pattern's bindings in scope.
+    31→ *
+    32→ * Public surface
+    33→ * --------------
+    34→ *   run(program, opts?) -> RunResult
+    35→ *   type Value, RunOptions, RunResult
+    36→ *   class ReturnSignal, BreakSignal, ContinueSignal, PanicSignal
+    37→ */
+    38→import type {
+    39→  Program,
+    40→  Stmt,
+    41→  Expr,
+    42→  Pattern,
+    43→  FnDecl,
+    44→  EnumDecl,
+    45→  StructDecl,
+    46→  Block,
+    47→  MatchArm,
+    48→  StringSegment,
+    49→} from "../ast/ast";
+    50→
+    51→//----------------------------------------------------------------------------
+    52→// Public types
+    53→//----------------------------------------------------------------------------
+    54→
+    55→/**
+    56→ * A runtime Aether value.
+    57→ *
+    58→ * Tagged shapes (`__struct`, `__variant`, `__closure`, `__native`, `__range`)
+    59→ * use a string sentinel field that the evaluator pattern-matches on. The
+    60→ * sentinel doubles as a defensive check against accidental struct/enum name
+    61→ * collisions: a user struct named `__closure` cannot exist because Aether
+    62→ * identifiers can't start with two underscores.
+    63→ */
+    64→export type Value =
+    65→  | number
+    66→  | string
+    67→  | boolean
+    68→  | null
+    69→  | Value[]
+    70→  | Map<Value, Value>
+    71→  | { __struct: string; fields: Record<string, Value> }
+    72→  | { __variant: string; variant: string; data: Value[] }
+    73→  | { __closure: string; fn: FnDecl; env: Env }
+    74→  | { __native: string; fn: (...args: Value[]) => Value }
+    75→  | { __range: string; start: number; end: number; step: number };
+    76→
+    77→export interface RunOptions {
+    78→  /** Sink for `print`/`println` output. Default: push to `output` array. */
+    79→  stdout?: (s: string) => void;
+    80→  /** Hard cap on evaluation steps. Default 1_000_000. */
+    81→  maxSteps?: number;
+    82→  /** Host-supplied builtins, merged with the inline builtins. */
+    83→  builtins?: Record<string, (...args: Value[]) => Value>;
+    84→  /** Optional seed environment (used by tests). */
+    85→  env?: Env;
+    86→}
+    87→
+    88→export interface RunResult {
+    89→  /** Value of the program's last top-level expression, or null. */
+    90→  value: Value;
+    91→  /** Captured output, one entry per `println` (no trailing newline). */
+    92→  output: string[];
+    93→  /** Runtime error if `panic` was thrown or another runtime error occurred. */
+    94→  error?: { message: string; stack?: string };
+    95→  /** Number of evaluation steps performed (for infinite-loop protection). */
+    96→  steps: number;
+    97→}
+    98→
+    99→//----------------------------------------------------------------------------
+   100→// Lexical environment
+   101→//----------------------------------------------------------------------------
+   102→
+   103→export interface Env {
+   104→  vars: Map<string, { value: Value; mut: boolean }>;
+   105→  parent?: Env;
+   106→}
+   107→
+   108→export function newEnv(parent?: Env): Env {
+   109→  return { vars: new Map(), parent };
+   110→}
+   111→
+   112→function envGet(env: Env, name: string): { value: Value; mut: boolean } | undefined {
+   113→  let e: Env | undefined = env;
+   114→  while (e) {
+   115→    const v = e.vars.get(name);
+   116→    if (v !== undefined) return v;
+   117→    e = e.parent;
+   118→  }
+   119→  return undefined;
+   120→}
+   121→
+   122→function envSetMut(env: Env, name: string, value: Value): boolean {
+   123→  let e: Env | undefined = env;
+   124→  while (e) {
+   125→    const existing = e.vars.get(name);
+   126→    if (existing !== undefined) {
+   127→      if (!existing.mut) return false; // immutable
+   128→      existing.value = value;
+   129→      return true;
+   130→    }
+   131→    e = e.parent;
+   132→  }
+   133→  return false;
+   134→}
+   135→
+   136→//----------------------------------------------------------------------------
+   137→// Control-flow signals (carried as JS exceptions)
+   138→//----------------------------------------------------------------------------
+   139→
+   140→class ReturnSignal {
+   141→  readonly __signal = "return";
+   142→  constructor(public value: Value) {}
+   143→}
+   144→class BreakSignal {
+   145→  readonly __signal = "break";
+   146→}
+   147→class ContinueSignal {
+   148→  readonly __signal = "continue";
+   149→}
+   150→class PanicSignal {
+   151→  readonly __signal = "panic";
+   152→  constructor(public message: string, public stack?: string) {}
+   153→}
+   154→
+   155→//----------------------------------------------------------------------------
+   156→// Helpers
+   157→//----------------------------------------------------------------------------
+   158→
+   159→function isStruct(v: Value): v is { __struct: string; fields: Record<string, Value> } {
+   160→  return v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Map) && (v as any).__struct !== undefined;
+   161→}
+   162→function isVariant(v: Value): v is { __variant: string; variant: string; data: Value[] } {
+   163→  return v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Map) && (v as any).__variant !== undefined;
+   164→}
+   165→function isClosure(v: Value): v is { __closure: string; fn: FnDecl; env: Env } {
+   166→  return v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Map) && (v as any).__closure !== undefined;
+   167→}
+   168→function isNative(v: Value): v is { __native: string; fn: (...args: Value[]) => Value } {
+   169→  return v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Map) && (v as any).__native !== undefined;
+   170→}
+   171→function isRange(v: Value): v is { __range: string; start: number; end: number; step: number } {
+   172→  return v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Map) && (v as any).__range !== undefined;
+   173→}
+   174→
+   175→/** Display a value as a string for `print`, interpolation, and `str()`. */
+   176→export function display(v: Value): string {
+   177→  if (v === null || v === undefined) return "null";
+   178→  if (typeof v === "string") return v;
+   179→  if (typeof v === "boolean") return v ? "true" : "false";
+   180→  if (typeof v === "number") {
+   181→    if (Number.isInteger(v)) return String(v);
+   182→    return String(v);
+   183→  }
+   184→  if (Array.isArray(v)) return "[" + v.map(display).join(", ") + "]";
+   185→  if (v instanceof Map) {
+   186→    const parts: string[] = [];
+   187→    for (const [k, val] of v) parts.push(`${display(k)}: ${display(val)}`);
+   188→    return "{" + parts.join(", ") + "}";
+   189→  }
+   190→  if (isStruct(v)) {
+   191→    const parts = Object.keys(v.fields).map((k) => `${k}: ${display(v.fields[k])}`);
+   192→    return `${v.__struct} { ${parts.join(", ")} }`;
+   193→  }
+   194→  if (isVariant(v)) {
+   195→    if (v.data.length === 0) return `${v.__variant}::${v.variant}`;
+   196→    return `${v.__variant}::${v.variant}(${v.data.map(display).join(", ")})`;
+   197→  }
+   198→  if (isClosure(v)) return `<closure ${v.fn.name}>`;
+   199→  if (isNative(v)) return `<native ${v.__native}>`;
+   200→  if (isRange(v)) return `range(${v.start}, ${v.end}${v.step !== 1 ? ", " + v.step : ""})`;
+   201→  return String(v);
+   202→}
+   203→
+   204→/** Deep equality used by `assert_eq` and `==` on arrays/structs/maps. */
+   205→export function valueEq(a: Value, b: Value): boolean {
+   206→  if (a === b) return true;
+   207→  if (a === null || b === null) return a === b;
+   208→  if (typeof a !== typeof b) return false;
+   209→  if (typeof a === "number" || typeof a === "string" || typeof a === "boolean") return a === b;
+   210→  if (Array.isArray(a) && Array.isArray(b)) {
+   211→    if (a.length !== b.length) return false;
+   212→    for (let i = 0; i < a.length; i++) if (!valueEq(a[i], b[i])) return false;
+   213→    return true;
+   214→  }
+   215→  if (a instanceof Map && b instanceof Map) {
+   216→    if (a.size !== b.size) return false;
+   217→    for (const [k, v] of a) {
+   218→      if (!b.has(k)) return false;
+   219→      if (!valueEq(v, b.get(k) as Value)) return false;
+   220→    }
+   221→    return true;
+   222→  }
+   223→  if (isStruct(a) && isStruct(b)) {
+   224→    if (a.__struct !== b.__struct) return false;
+   225→    const ak = Object.keys(a.fields);
+   226→    const bk = Object.keys(b.fields);
+   227→    if (ak.length !== bk.length) return false;
+   228→    for (const k of ak) {
+   229→      if (!(k in b.fields)) return false;
+   230→      if (!valueEq(a.fields[k], b.fields[k])) return false;
+   231→    }
+   232→    return true;
+   233→  }
+   234→  if (isVariant(a) && isVariant(b)) {
+   235→    if (a.__variant !== b.__variant || a.variant !== b.variant) return false;
+   236→    if (a.data.length !== b.data.length) return false;
+   237→    for (let i = 0; i < a.data.length; i++) if (!valueEq(a.data[i], b.data[i])) return false;
+   238→    return true;
+   239→  }
+   240→  return false;
+   241→}
+   242→
+   243→/** Truthiness for `if`/`while`/match guards: empty array/string/null are falsy. */
+   244→function truthy(v: Value): boolean {
+   245→  if (typeof v === "boolean") return v;
+   246→  if (v === null) return false;
+   247→  if (typeof v === "number") return v !== 0;
+   248→  if (typeof v === "string") return v.length > 0;
+   249→  if (Array.isArray(v)) return v.length > 0;
+   250→  if (v instanceof Map) return v.size > 0;
+   251→  return true;
+   252→}
+   253→
+   254→//----------------------------------------------------------------------------
+   255→// Evaluator
+   256→//----------------------------------------------------------------------------
+   257→
+   258→class Evaluator {
+   259→  steps = 0;
+   260→  maxSteps: number;
+   261→  output: string[] = [];
+   262→  stdout: (s: string) => void;
+   263→  root: Env;
+   264→
+   265→  constructor(opts: RunOptions) {
+   266→    this.maxSteps = opts.maxSteps ?? 1_000_000;
+   267→    this.stdout = opts.stdout ?? ((s: string) => { this.output.push(s); });
+   268→    this.root = opts.env ?? newEnv();
+   269→    if (opts.builtins) {
+   270→      for (const [name, fn] of Object.entries(opts.builtins)) {
+   271→        this.root.vars.set(name, { value: { __native: name, fn }, mut: false });
+   272→      }
+   273→    }
+   274→    this.installInlineBuiltins();
+   275→  }
+   276→
+   277→  tick(): void {
+   278→    this.steps++;
+   279→    if (this.steps > this.maxSteps) {
+   280→      throw new PanicSignal(`execution step limit exceeded (${this.maxSteps})`);
+   281→    }
+   282→  }
+   283→
+   284→  run(program: Program): RunResult {
+   285→    try {
+   286→      // Hoist all declarations (fn/enum/struct) so order doesn't matter.
+   287→      for (const s of program.body) this.hoist(s, this.root);
+   288→      let last: Value = null;
+   289→      for (const s of program.body) {
+   290→        last = this.execStmt(s, this.root);
+   291→      }
+   292→      return { value: last, output: this.output, steps: this.steps };
+   293→    } catch (e) {
+   294→      if (e instanceof PanicSignal) {
+   295→        return {
+   296→          value: null,
+   297→          output: this.output,
+   298→          steps: this.steps,
+   299→          error: { message: e.message, stack: e.stack },
+   300→        };
+   301→      }
+   302→      // Unknown error — wrap as panic.
+   303→      const msg = e instanceof Error ? e.message : String(e);
+   304→      return {
+   305→        value: null,
+   306→        output: this.output,
+   307→        steps: this.steps,
+   308→        error: { message: msg, stack: e instanceof Error ? e.stack : undefined },
+   309→      };
+   310→    }
+   311→  }
+   312→
+   313→  // --------------------------------------------------------------------------
+   314→  // Hoisting
+   315→  // --------------------------------------------------------------------------
+   316→  hoist(s: Stmt, env: Env): void {
+   317→    switch (s.kind) {
+   318→      case "FnDecl": {
+   319→        env.vars.set(s.name, { value: { __closure: s.name, fn: s, env }, mut: false });
+   320→        return;
+   321→      }
+   322→      case "EnumDecl":
+   323→      case "StructDecl":
+   324→      case "TypeAlias":
+   325→      case "Import":
+   326→        return;
+   327→    }
+   328→  }
+   329→
+   330→  // --------------------------------------------------------------------------
+   331→  // Statements — returns the value of the last expression in a block-ish stmt
+   332→  // --------------------------------------------------------------------------
+   333→  execStmt(s: Stmt, env: Env): Value {
+   334→    this.tick();
+   335→    switch (s.kind) {
+   336→      case "Let":
+   337→      case "Const": {
+   338→        const v = this.eval(s.init, env);
+   339→        env.vars.set(s.name, { value: v, mut: false });
+   340→        return null;
+   341→      }
+   342→      case "MutLet": {
+   343→        const v = this.eval(s.init, env);
+   344→        env.vars.set(s.name, { value: v, mut: true });
+   345→        return null;
+   346→      }
+   347→      case "FnDecl":
+   348→        // Already hoisted; re-bind in case of shadowing in nested scopes.
+   349→        env.vars.set(s.name, { value: { __closure: s.name, fn: s, env }, mut: false });
+   350→        return null;
+   351→      case "EnumDecl":
+   352→      case "StructDecl":
+   353→      case "TypeAlias":
+   354→      case "Import":
+   355→        return null;
+   356→      case "Return": {
+   357→        const v = s.expr ? this.eval(s.expr, env) : null;
+   358→        throw new ReturnSignal(v);
+   359→      }
+   360→      case "Break":
+   361→        throw new BreakSignal();
+   362→      case "Continue":
+   363→        throw new ContinueSignal();
+   364→      case "While": {
+   365→        let last: Value = null;
+   366→        while (truthy(this.eval(s.cond, env))) {
+   367→          this.tick();
+   368→          try {
+   369→            last = this.execBlock(s.body, env);
+   370→          } catch (sig) {
+   371→            if (sig instanceof BreakSignal) break;
+   372→            if (sig instanceof ContinueSignal) continue;
+   373→            throw sig;
+   374→          }
+   375→        }
+   376→        return last;
+   377→      }
+   378→      case "ForIn": {
+   379→        const iter = this.eval(s.iterable, env);
+   380→        const items: Value[] = iterToItems(iter);
+   381→        let last: Value = null;
+   382→        for (const item of items) {
+   383→          this.tick();
+   384→          const child = newEnv(env);
+   385→          child.vars.set(s.varName, { value: item, mut: false });
+   386→          try {
+   387→            last = this.execBlock(s.body, child);
+   388→          } catch (sig) {
+   389→            if (sig instanceof BreakSignal) break;
+   390→            if (sig instanceof ContinueSignal) continue;
+   391→            throw sig;
+   392→          }
+   393→        }
+   394→        return last;
+   395→      }
+   396→      case "Print": {
+   397→        const v = this.eval(s.expr, env);
+   398→        this.stdout(display(v));
+   399→        return null;
+   400→      }
+   401→      case "ExprStmt": {
+   402→        return this.eval(s.expr, env);
+   403→      }
+   404→      case "AssignStmt": {
+   405→        return this.eval({ kind: "Assign", loc: s.loc, target: s.target, value: s.value }, env);
+   406→      }
+   407→      case "BlockStmt": {
+   408→        const child = newEnv(env);
+   409→        return this.execBlock({ kind: "Block", loc: s.loc, stmts: s.body, expr: null }, child);
+   410→      }
+   411→    }
+   412→    return null;
+   413→  }
+   414→
+   415→  // Execute a Block (statements + optional trailing expr) in `env`.
+   416→  execBlock(b: Block, env: Env): Value {
+   417→    let last: Value = null;
+   418→    for (const s of b.stmts) {
+   419→      last = this.execStmt(s, env);
+   420→    }
+   421→    if (b.expr) {
+   422→      last = this.eval(b.expr, env);
+   423→    }
+   424→    return last;
+   425→  }
+   426→
+   427→  // --------------------------------------------------------------------------
+   428→  // Expressions
+   429→  // --------------------------------------------------------------------------
+   430→  eval(e: Expr, env: Env): Value {
+   431→    this.tick();
+   432→    switch (e.kind) {
+   433→      case "IntLit":
+   434→      case "FloatLit":
+   435→      case "BoolLit":
+   436→        return e.value;
+   437→      case "CharLit":
+   438→        return e.value;
+   439→      case "StringLit":
+   440→        return this.evalStringLit(e.segments, env);
+   441→      case "UnitLit":
+   442→        return null;
+   443→      case "Ident": {
+   444→        const v = envGet(env, e.name);
+   445→        if (v === undefined) throw new PanicSignal(`undefined name '${e.name}'`);
+   446→        return v.value;
+   447→      }
+   448→      case "Paren":
+   449→        return this.eval(e.expr, env);
+   450→      case "Binary":
+   451→        return this.evalBinary(e, env);
+   452→      case "Unary":
+   453→        return this.evalUnary(e, env);
+   454→      case "Assign":
+   455→        return this.evalAssign(e, env);
+   456→      case "CompoundAssign":
+   457→        return this.evalCompoundAssign(e, env);
+   458→      case "Call":
+   459→        return this.evalCall(e, env);
+   460→      case "Index":
+   461→        return this.evalIndex(e, env);
+   462→      case "Field":
+   463→        return this.evalField(e, env);
+   464→      case "MethodCall":
+   465→        return this.evalMethodCall(e, env);
+   466→      case "TupleExpr":
+   467→        return e.elements.map((el) => this.eval(el, env));
+   468→      case "ArrayExpr":
+   469→        return e.elements.map((el) => this.eval(el, env));
+   470→      case "MapExpr": {
+   471→        const m = new Map<Value, Value>();
+   472→        for (const ent of e.entries) {
+   473→          const k = this.eval(ent.key, env);
+   474→          const v = this.eval(ent.value, env);
+   475→          m.set(k, v);
+   476→        }
+   477→        return m;
+   478→      }
+   479→      case "StructExpr":
+   480→        return this.evalStructExpr(e, env);
+   481→      case "EnumVariant":
+   482→        return this.evalEnumVariant(e, env);
+   483→      case "Lambda":
+   484→        return { __closure: "<lambda>", fn: lambdaToFnDecl(e), env };
+   485→      case "If":
+   486→        return this.evalIf(e, env);
+   487→      case "Match":
+   488→        return this.evalMatch(e, env);
+   489→      case "Block": {
+   490→        const child = newEnv(env);
+   491→        return this.execBlock(e, child);
+   492→      }
+   493→      case "Cast":
+   494→      case "As":
+   495→        return this.evalCast(e, env);
+   496→      case "Range":
+   497→        return this.evalRange(e, env);
+   498→      case "ErrorProp":
+   499→        return this.evalErrorProp(e, env);
+   500→      case "TupleField":
+   501→        return this.evalTupleField(e, env);
+   502→      case "SelfExpr":
+   503→        throw new PanicSignal("`self` is not supported outside of a method");
+   504→      case "Spread":
+   505→        throw new PanicSignal("spread `...x` is not a standalone expression");
+   506→      case "Return": {
+   507→        const v = e.expr ? this.eval(e.expr, env) : null;
+   508→        throw new ReturnSignal(v);
+   509→      }
+   510→    }
+   511→  }
+   512→
+   513→  evalStringLit(segments: StringSegment[], env: Env): string {
+   514→    let out = "";
+   515→    for (const seg of segments) {
+   516→      if (seg.kind === "text") {
+   517→        out += seg.value;
+   518→      } else if (seg.expr) {
+   519→        out += display(this.eval(seg.expr, env));
+   520→      } else {
+   521→        // Fallback: literal value (shouldn't happen post-parse).
+   522→        out += seg.value;
+   523→      }
+   524→    }
+   525→    return out;
+   526→  }
+   527→
+   528→  evalBinary(e: Extract<Expr, { kind: "Binary" }>, env: Env): Value {
+   529→    const op = e.op;
+   530→    // Short-circuit boolean operators
+   531→    if (op === "&&") {
+   532→      const l = this.eval(e.left, env);
+   533→      if (!truthy(l)) return false;
+   534→      return truthy(this.eval(e.right, env));
+   535→    }
+   536→    if (op === "||") {
+   537→      const l = this.eval(e.left, env);
+   538→      if (truthy(l)) return true;
+   539→      return truthy(this.eval(e.right, env));
+   540→    }
+   541→    // Python-style `or`: return LHS if truthy, else RHS (preserves type)
+   542→    if (op === "or") {
+   543→      const l = this.eval(e.left, env);
+   544→      if (truthy(l)) return l;
+   545→      return this.eval(e.right, env);
+   546→    }
+   547→    const l = this.eval(e.left, env);
+   548→    const r = this.eval(e.right, env);
+   549→    switch (op) {
+   550→      case "+":
+   551→        if (typeof l === "string" || typeof r === "string") {
+   552→          return display(l) + display(r);
+   553→        }
+   554→        if (Array.isArray(l) && Array.isArray(r)) return [...l, ...r];
+   555→        return (l as number) + (r as number);
+   556→      case "-": return (l as number) - (r as number);
+   557→      case "*": return (l as number) * (r as number);
+   558→      case "/":
+   559→        if ((r as number) === 0) throw new PanicSignal("division by zero");
+   560→        return (l as number) / (r as number);
+   561→      case "%": {
+   562→        const b = (r as number) | 0;
+   563→        if (b === 0) throw new PanicSignal("modulo by zero");
+   564→        const a = Math.trunc(l as number);
+   565→        const m = ((a % b) + b) % b; // Python-style positive modulo
+   566→        return m;
+   567→      }
+   568→      case "==": return valueEq(l, r);
+   569→      case "!=": return !valueEq(l, r);
+   570→      case "<": return (l as number) < (r as number);
+   571→      case "<=": return (l as number) <= (r as number);
+   572→      case ">": return (l as number) > (r as number);
+   573→      case ">=": return (l as number) >= (r as number);
+   574→      case "&": return (Math.trunc(l as number) & Math.trunc(r as number)) | 0;
+   575→      case "|": return (Math.trunc(l as number) | Math.trunc(r as number)) | 0;
+   576→      case "^": return (Math.trunc(l as number) ^ Math.trunc(r as number)) | 0;
+   577→      case "<<": return (Math.trunc(l as number) << Math.trunc(r as number)) | 0;
+   578→      case ">>": return (Math.trunc(l as number) >> Math.trunc(r as number)) | 0;
+   579→    }
+   580→    throw new PanicSignal(`unknown binary operator '${op}'`);
+   581→  }
+   582→
+   583→  evalUnary(e: Extract<Expr, { kind: "Unary" }>, env: Env): Value {
+   584→    const v = this.eval(e.operand, env);
+   585→    switch (e.op) {
+   586→      case "-": return -(v as number);
+   587→      case "!": return !truthy(v);
+   588→      case "~": return ~Math.trunc(v as number);
+   589→    }
+   590→    throw new PanicSignal(`unknown unary operator '${e.op}'`);
+   591→  }
+   592→
+   593→  evalAssign(e: Extract<Expr, { kind: "Assign" }>, env: Env): Value {
+   594→    const v = this.eval(e.value, env);
+   595→    this.assignTo(e.target, v, env);
+   596→    return v;
+   597→  }
+   598→
+   599→  evalCompoundAssign(e: Extract<Expr, { kind: "CompoundAssign" }>, env: Env): Value {
+   600→    const cur = this.eval(e.target, env);
+   601→    const rhs = this.eval(e.value, env);
+   602→    let nv: Value;
+   603→    switch (e.op) {
+   604→      case "+": nv = (cur as number) + (rhs as number); break;
+   605→      case "-": nv = (cur as number) - (rhs as number); break;
+   606→      case "*": nv = (cur as number) * (rhs as number); break;
+   607→      case "/":
+   608→        if ((rhs as number) === 0) throw new PanicSignal("division by zero");
+   609→        nv = (cur as number) / (rhs as number); break;
+   610→      case "%": {
+   611→        const b = (rhs as number) | 0;
+   612→        if (b === 0) throw new PanicSignal("modulo by zero");
+   613→        nv = ((Math.trunc(cur as number) % b) + b) % b; break;
+   614→      }
+   615→      default: throw new PanicSignal(`unknown compound assign '${e.op}='`);
+   616→    }
+   617→    this.assignTo(e.target, nv, env);
+   618→    return nv;
+   619→  }
+   620→
+   621→  assignTo(target: Expr, value: Value, env: Env): void {
+   622→    if (target.kind === "Ident") {
+   623→      const ok = envSetMut(env, target.name, value);
+   624→      if (!ok) {
+   625→        const info = envGet(env, target.name);
+   626→        if (info === undefined) throw new PanicSignal(`undefined name '${target.name}'`);
+   627→        throw new PanicSignal(`cannot assign to immutable variable '${target.name}'`);
+   628→      }
+   629→      return;
+   630→    }
+   631→    if (target.kind === "Index") {
+   632→      const obj = this.eval(target.object, env);
+   633→      const idx = this.eval(target.index, env);
+   634→      if (Array.isArray(obj)) {
+   635→        const i = idx as number;
+   636→        if (i < 0 || i >= obj.length) throw new PanicSignal(`array index out of bounds: ${i}`);
+   637→        obj[i] = value;
+   638→        return;
+   639→      }
+   640→      if (obj instanceof Map) {
+   641→        obj.set(idx, value);
+   642→        return;
+   643→      }
+   644→      throw new PanicSignal("cannot index-assign into non-array/map");
+   645→    }
+   646→    if (target.kind === "Field") {
+   647→      const obj = this.eval(target.object, env);
+   648→      if (isStruct(obj)) {
+   649→        obj.fields[target.name] = value;
+   650→        return;
+   651→      }
+   652→      throw new PanicSignal(`cannot assign field '${target.name}' on non-struct`);
+   653→    }
+   654→    throw new PanicSignal(`invalid assignment target: ${target.kind}`);
+   655→  }
+   656→
+   657→  evalCall(e: Extract<Expr, { kind: "Call" }>, env: Env): Value {
+   658→    const callee = this.eval(e.callee, env);
+   659→    const args = e.args.map((a) => this.eval(a, env));
+   660→    return this.callValue(callee, args, e.callee);
+   661→  }
+   662→
+   663→  callValue(callee: Value, args: Value[], calleeNode?: Expr): Value {
+   664→    if (isClosure(callee)) {
+   665→      const fn = callee.fn;
+   666→      const child = newEnv(callee.env);
+   667→      for (let i = 0; i < fn.params.length; i++) {
+   668→        const p = fn.params[i];
+   669→        const a = i < args.length ? args[i] : null;
+   670→        child.vars.set(p.name, { value: a, mut: p.name === "self" });
+   671→      }
+   672→      try {
+   673→        return this.execBlock(fn.body, child);
+   674→      } catch (sig) {
+   675→        if (sig instanceof ReturnSignal) return sig.value;
+   676→        throw sig;
+   677→      }
+   678→    }
+   679→    if (isNative(callee)) {
+   680→      return callee.fn(...args);
+   681→    }
+   682→    throw new PanicSignal(`cannot call non-function value${calleeNode ? ` '${describeCallee(calleeNode)}'` : ""}`);
+   683→  }
+   684→
+   685→  evalIndex(e: Extract<Expr, { kind: "Index" }>, env: Env): Value {
+   686→    const obj = this.eval(e.object, env);
+   687→    const idx = this.eval(e.index, env);
+   688→    if (Array.isArray(obj)) {
+   689→      const i = idx as number;
+   690→      if (i < 0 || i >= obj.length) throw new PanicSignal(`array index out of bounds: ${i}`);
+   691→      return obj[i];
+   692→    }
+   693→    if (typeof obj === "string") {
+   694→      const i = idx as number;
+   695→      if (i < 0 || i >= obj.length) throw new PanicSignal(`string index out of bounds: ${i}`);
+   696→      return obj[i];
+   697→    }
+   698→    if (obj instanceof Map) {
+   699→      if (!obj.has(idx)) throw new PanicSignal(`map key not found: ${display(idx)}`);
+   700→      return obj.get(idx) as Value;
+   701→    }
+   702→    throw new PanicSignal(`cannot index into ${typeof obj}`);
+   703→  }
+   704→
+   705→  evalField(e: Extract<Expr, { kind: "Field" }>, env: Env): Value {
+   706→    const obj = this.eval(e.object, env);
+   707→    if (isStruct(obj)) {
+   708→      if (!(e.name in obj.fields)) throw new PanicSignal(`struct ${obj.__struct} has no field '${e.name}'`);
+   709→      return obj.fields[e.name];
+   710→    }
+   711→    // Allow field-style access on enum variants? Not in v1.
+   712→    throw new PanicSignal(`cannot access field '${e.name}' on ${typeof obj}`);
+   713→  }
+   714→
+   715→  evalMethodCall(e: Extract<Expr, { kind: "MethodCall" }>, env: Env): Value {
+   716→    // v1: method calls are syntactic sugar for free-function calls on the
+   717→    // receiver, e.g. `arr.push(v)` → `push(arr, v)`. We try the builtin scope
+   718→    // first; if found, call it with [receiver, ...args]. If not found, fall
+   719→    // back to throwing a "no method" error.
+   720→    const recv = this.eval(e.object, env);
+   721→    const args = [recv, ...e.args.map((a) => this.eval(a, env))];
+   722→    const fn = envGet(env, e.name);
+   723→    if (fn && (isNative(fn.value) || isClosure(fn.value))) {
+   724→      return this.callValue(fn.value, args);
+   725→    }
+   726→    throw new PanicSignal(`no method '${e.name}' on ${typeof recv}`);
+   727→  }
+   728→
+   729→  evalStructExpr(e: Extract<Expr, { kind: "StructExpr" }>, env: Env): Value {
+   730→    const fields: Record<string, Value> = {};
+   731→    if (e.spread) {
+   732→      const base = this.eval(e.spread, env);
+   733→      if (isStruct(base)) {
+   734→        for (const [k, v] of Object.entries(base.fields)) fields[k] = v;
+   735→      } else {
+   736→        throw new PanicSignal(`spread base is not a struct`);
+   737→      }
+   738→    }
+   739→    for (const f of e.fields) {
+   740→      fields[f.name] = this.eval(f.value, env);
+   741→    }
+   742→    return { __struct: e.name, fields };
+   743→  }
+   744→
+   745→  evalEnumVariant(e: Extract<Expr, { kind: "EnumVariant" }>, env: Env): Value {
+   746→    const data = e.args.map((a) => this.eval(a, env));
+   747→    return { __variant: e.enumName, variant: e.variant, data };
+   748→  }
+   749→
+   750→  evalIf(e: Extract<Expr, { kind: "If" }>, env: Env): Value {
+   751→    if (truthy(this.eval(e.cond, env))) {
+   752→      return this.eval(e.then, env);
+   753→    }
+   754→    if (e.else) return this.eval(e.else, env);
+   755→    return null;
+   756→  }
+   757→
+   758→  evalMatch(e: Extract<Expr, { kind: "Match" }>, env: Env): Value {
+   759→    const v = this.eval(e.scrutinee, env);
+   760→    for (const arm of e.arms) {
+   761→      this.tick();
+   762→      const child = newEnv(env);
+   763→      if (this.matchPattern(arm.pattern, v, child)) {
+   764→        if (arm.guard) {
+   765→          if (!truthy(this.eval(arm.guard, child))) continue;
+   766→        }
+   767→        return this.eval(arm.body, child);
+   768→      }
+   769→    }
+   770→    throw new PanicSignal("no match arm matched");
+   771→  }
+   772→
+   773→  evalCast(e: Extract<Expr, { kind: "As" | "Cast" }>, env: Env): Value {
+   774→    const v = this.eval(e.expr, env);
+   775→    const ty = e.type;
+   776→    switch (ty.kind) {
+   777→      case "PrimitiveType":
+   778→        switch (ty.name) {
+   779→          case "int": return Math.trunc(v as number);
+   780→          case "float": return v as number;
+   781→          case "bool": return truthy(v);
+   782→          case "string": return display(v);
+   783→          case "char": return display(v)[0] ?? "";
+   784→        }
+   785→        break;
+   786→      case "NamedType":
+   787→        // No-op cast to user type (erased at runtime).
+   788→        return v;
+   789→      case "UnitType":
+   790→        return null;
+   791→    }
+   792→    return v;
+   793→  }
+   794→
+   795→  evalRange(e: Extract<Expr, { kind: "Range" }>, env: Env): Value {
+   796→    const start = this.eval(e.start, env) as number;
+   797→    const end = this.eval(e.end, env) as number;
+   798→    const step = 1;
+   799→    // inclusive ranges have end+1 as the JS upper bound.
+   800→    const adjEnd = e.inclusive ? end + 1 : end;
+   801→    return { __range: "range", start, end: adjEnd, step };
+   802→  }
+   803→
+   804→  evalErrorProp(e: Extract<Expr, { kind: "ErrorProp" }>, env: Env): Value {
+   805→    const v = this.eval(e.expr, env);
+   806→    // Option/Result: success = Some/Ok; failure = None/Err (propagate).
+   807→    if (isVariant(v)) {
+   808→      if (v.variant === "Ok" || v.variant === "Some") {
+   809→        return v.data.length > 0 ? v.data[0] : null;
+   810→      }
+   811→      if (v.variant === "Err" || v.variant === "None") {
+   812→        // Propagate by returning from the enclosing function.
+   813→        throw new ReturnSignal(v);
+   814→      }
+   815→    }
+   816→    throw new PanicSignal(`? operator applied to non-Result/Option: ${display(v)}`);
+   817→  }
+   818→
+   819→  evalTupleField(e: Extract<Expr, { kind: "TupleField" }>, env: Env): Value {
+   820→    const obj = this.eval(e.object, env);
+   821→    if (Array.isArray(obj)) {
+   822→      if (e.index < 0 || e.index >= obj.length) throw new PanicSignal(`tuple index out of bounds: ${e.index}`);
+   823→      return obj[e.index];
+   824→    }
+   825→    throw new PanicSignal(`cannot apply tuple field .${e.index} to non-tuple`);
+   826→  }
+   827→
+   828→  // --------------------------------------------------------------------------
+   829→  // Pattern matching — returns true on match, with bindings added to `env`.
+   830→  // --------------------------------------------------------------------------
+   831→  matchPattern(p: Pattern, v: Value, env: Env): boolean {
+   832→    this.tick();
+   833→    switch (p.kind) {
+   834→      case "WildcardPat":
+   835→        return true;
+   836→      case "BindPat":
+   837→        env.vars.set(p.name, { value: v, mut: !!p.mut });
+   838→        return true;
+   839→      case "LitPat": {
+   840→        const lit = this.eval(p.value, env);
+   841→        return valueEq(lit, v);
+   842→      }
+   843→      case "TuplePat": {
+   844→        if (!Array.isArray(v)) return false;
+   845→        if (p.elements.length !== v.length) return false;
+   846→        for (let i = 0; i < p.elements.length; i++) {
+   847→          if (!this.matchPattern(p.elements[i], v[i], env)) return false;
+   848→        }
+   849→        return true;
+   850→      }
+   851→      case "ArrayPat": {
+   852→        if (!Array.isArray(v)) return false;
+   853→        const nprefix = p.elements.length;
+   854→        if (p.rest === null || p.rest === undefined) {
+   855→          if (v.length !== nprefix) return false;
+   856→          for (let i = 0; i < nprefix; i++) {
+   857→            if (!this.matchPattern(p.elements[i], v[i], env)) return false;
+   858→          }
+   859→          return true;
+   860→        }
+   861→        // rest present: prefix matches first n, the rest is captured by `..`.
+   862→        if (v.length < nprefix) return false;
+   863→        for (let i = 0; i < nprefix; i++) {
+   864→          if (!this.matchPattern(p.elements[i], v[i], env)) return false;
+   865→        }
+   866→        return true;
+   867→      }
+   868→      case "StructPat": {
+   869→        if (!isStruct(v)) return false;
+   870→        if (v.__struct !== p.name) return false;
+   871→        for (const f of p.fields) {
+   872→          if (!(f.name in v.fields)) return false;
+   873→          if (!this.matchPattern(f.pattern, v.fields[f.name], env)) return false;
+   874→        }
+   875→        return true;
+   876→      }
+   877→      case "EnumPat": {
+   878→        if (!isVariant(v)) return false;
+   879→        if (v.__variant !== p.enumName) return false;
+   880→        if (v.variant !== p.variant) return false;
+   881→        if (p.subpatterns.length !== v.data.length) {
+   882→          // Allow unit variant with 0 subpatterns to match a 0-arg variant.
+   883→          if (p.subpatterns.length === 0 && v.data.length === 0) return true;
+   884→          return false;
+   885→        }
+   886→        for (let i = 0; i < p.subpatterns.length; i++) {
+   887→          if (!this.matchPattern(p.subpatterns[i], v.data[i], env)) return false;
+   888→        }
+   889→        return true;
+   890→      }
+   891→      case "OrPat": {
+   892→        for (const sub of p.patterns) {
+   893→          const subEnv = newEnv(env.parent);
+   894→          // Copy parent's vars (each OrPat branch must not leak bindings to
+   895→          // siblings, but bindings from earlier scopes remain visible).
+   896→          for (const [k, val] of env.vars) subEnv.vars.set(k, val);
+   897→          if (this.matchPattern(sub, v, subEnv)) {
+   898→            // Promote successful branch's bindings into env.
+   899→            for (const [k, val] of subEnv.vars) {
+   900→              if (!env.vars.has(k)) env.vars.set(k, val);
+   901→            }
+   902→            return true;
+   903→          }
+   904→        }
+   905→        return false;
+   906→      }
+   907→      case "RestPat":
+   908→        // Handled inside ArrayPat.
+   909→        return true;
+   910→    }
+   911→  }
+   912→
+   913→  // --------------------------------------------------------------------------
+   914→  // Inline builtins — always available, plus whatever the host passes.
+   915→  // --------------------------------------------------------------------------
+   916→  installInlineBuiltins(): void {
+   917→    const set = (name: string, fn: (...args: Value[]) => Value) => {
+   918→      this.root.vars.set(name, { value: { __native: name, fn }, mut: false });
+   919→    };
+   920→
+   921→    set("print", (s) => { this.stdout(display(s)); return null; });
+   922→    set("println", (s) => { this.stdout(display(s)); return null; });
+   923→    set("range", (...args) => {
+   924→      let start = 0, end = 0, step = 1;
+   925→      if (args.length === 1) end = args[0] as number;
+   926→      else if (args.length === 2) { start = args[0] as number; end = args[1] as number; }
+   927→      else if (args.length >= 3) { start = args[0] as number; end = args[1] as number; step = args[2] as number; }
+   928→      return { __range: "range", start, end, step };
+   929→    });
+   930→    set("len", (v) => {
+   931→      if (typeof v === "string" || Array.isArray(v)) return v.length;
+   932→      if (v instanceof Map) return v.size;
+   933→      if (isStruct(v)) return Object.keys(v.fields).length;
+   934→      throw new Error(`len: unsupported value ${typeof v}`);
+   935→    });
+   936→    set("type_of", (v) => {
+   937→      if (v === null) return "unit";
+   938→      if (typeof v === "number") return Number.isInteger(v) ? "int" : "float";
+   939→      if (typeof v === "string") return "string";
+   940→      if (typeof v === "boolean") return "bool";
+   941→      if (Array.isArray(v)) return "array";
+   942→      if (v instanceof Map) return "map";
+   943→      if (isStruct(v)) return v.__struct;
+   944→      if (isVariant(v)) return v.__variant;
+   945→      if (isClosure(v)) return "fn";
+   946→      if (isNative(v)) return "fn";
+   947→      if (isRange(v)) return "range";
+   948→      return typeof v;
+   949→    });
+   950→    set("assert", (cond, msg) => {
+   951→      if (!truthy(cond)) throw new PanicSignal(`assertion failed${msg ? ": " + display(msg) : ""}`);
+   952→      return null;
+   953→    });
+   954→    set("assert_eq", (a, b) => {
+   955→      if (!valueEq(a, b)) throw new PanicSignal(`assertion failed: ${display(a)} != ${display(b)}`);
+   956→      return null;
+   957→    });
+   958→    set("panic", (msg) => { throw new PanicSignal(display(msg)); });
+   959→    set("str", (v) => display(v));
+   960→    set("int", (v) => {
+   961→      if (typeof v === "string") {
+   962→        const n = parseInt(v, 10);
+   963→        if (Number.isNaN(n)) throw new Error(`int: cannot parse '${v}'`);
+   964→        return n;
+   965→      }
+   966→      return Math.trunc(v as number);
+   967→    });
+   968→    set("float", (v) => {
+   969→      if (typeof v === "string") {
+   970→        const n = parseFloat(v);
+   971→        if (Number.isNaN(n)) throw new Error(`float: cannot parse '${v}'`);
+   972→        return n;
+   973→      }
+   974→      return v as number;
+   975→    });
+   976→    set("min", (...args) => {
+   977→      if (args.length === 0) return 0;
+   978→      if (args.length === 1 && Array.isArray(args[0])) return Math.min(...(args[0] as number[]));
+   979→      return Math.min(...(args as number[]));
+   980→    });
+   981→    set("max", (...args) => {
+   982→      if (args.length === 0) return 0;
+   983→      if (args.length === 1 && Array.isArray(args[0])) return Math.max(...(args[0] as number[]));
+   984→      return Math.max(...(args as number[]));
+   985→    });
+   986→    set("abs", (n) => Math.abs(n as number));
+   987→    set("sqrt", (n) => Math.sqrt(n as number));
+   988→    set("push", (arr, v) => {
+   989→      if (!Array.isArray(arr)) throw new Error("push: expected array");
+   990→      arr.push(v);
+   991→      return arr;
+   992→    });
+   993→    set("pop", (arr) => {
+   994→      if (!Array.isArray(arr)) throw new Error("pop: expected array");
+   995→      return arr.pop() ?? null;
+   996→    });
+   997→    // Higher-order builtins — use this.callValue so Aether closures work too.
+   998→    const self = this;
+   999→    set("map", (arr, fn) => {
+  1000→      if (!Array.isArray(arr)) throw new Error("map: expected array");
+  1001→      const out: Value[] = [];
+  1002→      for (let i = 0; i < arr.length; i++) out.push(self.callValue(fn, [arr[i], i]));
+  1003→      return out;
+  1004→    });
+  1005→    set("filter", (arr, fn) => {
+  1006→      if (!Array.isArray(arr)) throw new Error("filter: expected array");
+  1007→      const out: Value[] = [];
+  1008→      for (let i = 0; i < arr.length; i++) {
+  1009→        if (truthy(self.callValue(fn, [arr[i], i]))) out.push(arr[i]);
+  1010→      }
+  1011→      return out;
+  1012→    });
+  1013→    set("reduce", (arr, fn, init) => {
+  1014→      if (!Array.isArray(arr)) throw new Error("reduce: expected array");
+  1015→      let acc = init;
+  1016→      for (let i = 0; i < arr.length; i++) acc = self.callValue(fn, [acc, arr[i], i]);
+  1017→      return acc;
+  1018→    });
+  1019→  }
+  1020→}
+  1021→
+  1022→// Convert a Value used as a `for in` iterable into a flat list of items.
+  1023→function iterToItems(v: Value): Value[] {
+  1024→  if (Array.isArray(v)) return v;
+  1025→  if (isRange(v)) {
+  1026→    const out: Value[] = [];
+  1027→    if (v.step > 0) {
+  1028→      for (let i = v.start; i < v.end; i += v.step) out.push(i);
+  1029→    } else if (v.step < 0) {
+  1030→      for (let i = v.start; i > v.end; i += v.step) out.push(i);
+  1031→    }
+  1032→    return out;
+  1033→  }
+  1034→  if (typeof v === "string") {
+  1035→    return Array.from(v) as Value[];
+  1036→  }
+  1037→  if (v instanceof Map) {
+  1038→    return Array.from(v.keys());
+  1039→  }
+  1040→  throw new PanicSignal(`cannot iterate over ${typeof v}`);
+  1041→}
+  1042→
+  1043→// Convert a Lambda Expr into a FnDecl so the closure-calling code path is
+  1044→// shared. The synthesized FnDecl has the lambda's params, no name, and a
+  1045→// body whose single stmt is the lambda's body expression.
+  1046→function lambdaToFnDecl(e: Extract<Expr, { kind: "Lambda" }>): FnDecl {
+  1047→  const body: Block = {
+  1048→    kind: "Block",
+  1049→    loc: e.body.kind === "Block" ? e.body.loc : e.loc,
+  1050→    stmts: [],
+  1051→    expr: e.body.kind === "Block" ? null : e.body,
+  1052→  };
+  1053→  if (e.body.kind === "Block") {
+  1054→    body.stmts = (e.body as Block).stmts;
+  1055→    body.expr = (e.body as Block).expr ?? null;
+  1056→  }
+  1057→  return {
+  1058→    kind: "FnDecl",
+  1059→    loc: e.loc,
+  1060→    name: "<lambda>",
+  1061→    generics: [],
+  1062→    params: e.params,
+  1063→    ret: e.ret,
+  1064→    body,
+  1065→  };
+  1066→}
+  1067→
+  1068→function describeCallee(e: Expr): string {
+  1069→  if (e.kind === "Ident") return e.name;
+  1070→  return "<expression>";
+  1071→}
+  1072→
+  1073→//----------------------------------------------------------------------------
+  1074→// Public entry point
+  1075→//----------------------------------------------------------------------------
+  1076→
+  1077→export function run(program: Program, opts: RunOptions = {}): RunResult {
+  1078→  const ev = new Evaluator(opts);
+  1079→  return ev.run(program);
+  1080→}
+  1081→
