@@ -1,0 +1,140 @@
+// state_machine.ae
+// =================
+// A finite state machine modeling a turnstile (the classic FSM
+// teaching example). The turnstile has two states — Locked and
+// Unlocked — and two events — Coin and Push. Behavior:
+//
+//   Locked   + Coin  -> Unlocked   (coin unlocks)
+//   Locked   + Push  -> Locked     (locked turnstile doesn't budge)
+//   Unlocked + Coin  -> Unlocked   (extra coin, no change)
+//   Unlocked + Push  -> Locked     (pass through, then lock again)
+//
+// We model this as an enum for states, an enum for events, and a
+// transition function that maps (state, event) -> state. Running a
+// sequence of events is just a `reduce` over the event list, threading
+// the state forward.
+//
+// We track each step for printing: build an array of (state, event,
+// next_state) tuples and print them at the end. This avoids the
+// for-loop-scope quirk (no `let` before `for` referenced after).
+
+enum State {
+  Locked,
+  Unlocked,
+}
+
+enum Event {
+  Coin,
+  Push,
+}
+
+// Single-step transition: (state, event) -> next state.
+fn step(s: State, e: Event) -> State {
+  match s {
+    State::Locked => match e {
+      Event::Coin  => State::Unlocked,
+      Event::Push  => State::Locked,
+    },
+    State::Unlocked => match e {
+      Event::Coin  => State::Unlocked,
+      Event::Push  => State::Locked,
+    },
+  }
+}
+
+// Render a state as a human-readable label.
+fn state_name(s: State) -> string {
+  match s {
+    State::Locked   => "Locked",
+    State::Unlocked => "Unlocked",
+  }
+}
+
+// Render an event as a label.
+fn event_name(e: Event) -> string {
+  match e {
+    Event::Coin => "Coin",
+    Event::Push => "Push",
+  }
+}
+
+// Run a list of events from a starting state, returning the final state
+// AND an array of (before, event, after) tuples for the trace. We
+// build the trace via reduce: each step appends a tuple to the
+// accumulator.
+fn run_events(start: State, events: [Event]) -> (State, [(State, Event, State)]) {
+  fn helper(i: int, s: State, trace: [(State, Event, State)]) -> (State, [(State, Event, State)]) {
+    if i >= len(events) {
+      (s, trace)
+    } else {
+      let e = events[i];
+      let next = step(s, e);
+      helper(i + 1, next, trace + [(s, e, next)])
+    }
+  }
+  helper(0, start, [])
+}
+
+// Run and print the trace + final state.
+fn print_run(start: State, events: [Event]) {
+  let result = run_events(start, events);
+  let final_state = result.0;
+  let trace = result.1;
+  let mut i = 0;
+  while i < len(trace) {
+    let step_tuple = trace[i];
+    let before = step_tuple.0;
+    let e = step_tuple.1;
+    let after = step_tuple.2;
+    print(f"  {state_name(before):10} + {event_name(e):5} -> {state_name(after)}");
+    i = i + 1;
+  }
+  print(f"  final state: {state_name(final_state)}");
+}
+
+print("== Finite state machine: turnstile ==");
+print("");
+
+// Scenario 1: someone tries to push without paying.
+print("Scenario 1: push without coin (locked, locked):");
+let s1_events = [Event::Push, Event::Push, Event::Push];
+print_run(State::Locked, s1_events);
+print("");
+
+// Scenario 2: pay once, push through, then it's locked again.
+print("Scenario 2: coin, push (unlocked, then locked):");
+let s2_events = [Event::Coin, Event::Push];
+print_run(State::Locked, s2_events);
+print("");
+
+// Scenario 3: someone tries to push, then pays and goes.
+print("Scenario 3: push (no-op), coin, push:");
+let s3_events = [Event::Push, Event::Coin, Event::Push];
+print_run(State::Locked, s3_events);
+print("");
+
+// Scenario 4: drop two coins, then push (extra coin is wasted).
+print("Scenario 4: two coins, one push:");
+let s4_events = [Event::Coin, Event::Coin, Event::Push];
+print_run(State::Locked, s4_events);
+print("");
+
+// Sanity assertions on the transition function.
+assert_eq(step(State::Locked, Event::Coin),  State::Unlocked);
+assert_eq(step(State::Locked, Event::Push),  State::Locked);
+assert_eq(step(State::Unlocked, Event::Coin), State::Unlocked);
+assert_eq(step(State::Unlocked, Event::Push), State::Locked);
+
+// Sanity assertion on a run: 3 pushes from Locked stays Locked.
+let r1 = run_events(State::Locked, [Event::Push, Event::Push, Event::Push]);
+assert_eq(r1.0, State::Locked);
+
+// Sanity assertion: coin + push from Locked ends Locked.
+let r2 = run_events(State::Locked, [Event::Coin, Event::Push]);
+assert_eq(r2.0, State::Locked);
+
+// Sanity assertion: coin from Locked ends Unlocked.
+let r3 = run_events(State::Locked, [Event::Coin]);
+assert_eq(r3.0, State::Unlocked);
+
+print("All assertions passed.");

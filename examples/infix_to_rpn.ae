@@ -1,0 +1,224 @@
+// infix_to_rpn.ae
+// ===============
+// Convert infix arithmetic expressions to RPN (reverse Polish
+// notation) using Dijkstra's shunting-yard algorithm. This is the
+// parsing half of `expression_eval.ae` — it doesn't evaluate the
+// result, it just produces the post-order token list.
+//
+//   input:  "( 3 + 4 ) * 2"
+//   output: "3 4 + 2 *"
+//
+// We support +, -, *, /, parentheses, and integer operands.
+// Operator precedence (low to high):
+//   + -       (1)
+//   * /       (2)
+// Parentheses override everything.
+//
+// The v1 evaluator's tree-walker has subtle quirks with deeply
+// nested if/else if/else chains inside while loops. To dodge them,
+// we order the dispatch branches lparen → rparen → operator →
+// number, so the inner `let mut keep_going` is only declared in
+// mutually exclusive branches, and we use `;` after the closing
+// `}` of the dispatch chain (a subtle quirk).
+
+// --- Tokenizer --------------------------------------------------------
+
+fn is_digit(c: string) -> bool {
+  c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+    || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+}
+
+fn is_ws(c: string) -> bool {
+  c == " " || c == "\t" || c == "\n" || c == "\r"
+}
+
+fn is_op_char(c: string) -> bool {
+  c == "+" || c == "-" || c == "*" || c == "/" || c == "(" || c == ")"
+}
+
+fn is_op(t: string) -> bool {
+  t == "+" || t == "-" || t == "*" || t == "/"
+}
+
+fn is_lparen(t: string) -> bool { t == "(" }
+fn is_rparen(t: string) -> bool { t == ")" }
+
+fn prec(t: string) -> int {
+  if t == "+" { 1 } else {
+  if t == "-" { 1 } else {
+  if t == "*" { 2 } else {
+  if t == "/" { 2 } else { 0 } } } }
+}
+
+fn left_assoc(t: string) -> bool {
+  t == "+" || t == "-" || t == "*" || t == "/"
+}
+
+// Tokenize the input string into a list of string tokens.
+fn tokenize(s: string) -> [string] {
+  let mut tokens = [];
+  let mut i = 0;
+  let n = len(s);
+  while i < n {
+    let c = str(s[i]);
+    if is_ws(c) {
+      i = i + 1;
+    } else {
+      if is_op_char(c) {
+        push(tokens, c);
+        i = i + 1;
+      } else {
+        if is_digit(c) {
+          let mut num = "";
+          while i < n && is_digit(str(s[i])) {
+            num = num + str(s[i]);
+            i = i + 1;
+          }
+          push(tokens, num);
+        } else {
+          panic("unexpected character: " + c);
+        };
+      };
+    };
+  }
+  tokens
+}
+
+// --- Shunting-yard (infix → RPN) ------------------------------------
+
+fn to_rpn(tokens: [string]) -> [string] {
+  let mut output = [];
+  let mut stack = [];
+  let mut i = 0;
+  while i < len(tokens) {
+    let t = tokens[i];
+    if is_lparen(t) {
+      push(stack, t);
+    } else {
+      if is_rparen(t) {
+        // Pop until we hit the matching left paren.
+        let mut keep_going = true;
+        while keep_going && len(stack) > 0 {
+          let top = stack[len(stack) - 1];
+          if is_lparen(top) {
+            keep_going = false;
+          } else {
+            push(output, top);
+            let mut new_stack = [];
+            let mut j = 0;
+            while j < len(stack) - 1 {
+              push(new_stack, stack[j]);
+              j = j + 1;
+            }
+            stack = new_stack;
+          };
+        }
+        // Pop the left paren itself.
+        let mut new_stack = [];
+        let mut j = 0;
+        while j < len(stack) - 1 {
+          push(new_stack, stack[j]);
+          j = j + 1;
+        }
+        stack = new_stack;
+      } else {
+        if is_op(t) {
+          // Pop higher-or-equal precedence operators to the output.
+          let mut keep_going = true;
+          while keep_going && len(stack) > 0 {
+            let top = stack[len(stack) - 1];
+            let should_pop = is_op(top) && (prec(top) > prec(t) || (prec(top) == prec(t) && left_assoc(t)));
+            if should_pop {
+              push(output, top);
+              let mut new_stack = [];
+              let mut j = 0;
+              while j < len(stack) - 1 {
+                push(new_stack, stack[j]);
+                j = j + 1;
+              }
+              stack = new_stack;
+            } else {
+              keep_going = false;
+            };
+          }
+          push(stack, t);
+        } else {
+          // A number — push to output.
+          push(output, t);
+        };
+      };
+    };
+    i = i + 1;
+  }
+  // Drain the operator stack to the output.
+  while len(stack) > 0 {
+    let top = stack[len(stack) - 1];
+    if is_lparen(top) { panic("unmatched left paren"); };
+    push(output, top);
+    let mut new_stack = [];
+    let mut j = 0;
+    while j < len(stack) - 1 {
+      push(new_stack, stack[j]);
+      j = j + 1;
+    }
+    stack = new_stack;
+  }
+  output
+}
+
+// Render an array of tokens as a space-joined string.
+fn join_tokens(arr: [string]) -> string {
+  reduce(arr, fn(acc: string, t: string) -> string {
+    if acc == "" { t } else { acc + " " + t }
+  }, "")
+}
+
+// Convenience: tokenize + convert + render in one call.
+fn infix_to_rpn(s: string) -> string {
+  join_tokens(to_rpn(tokenize(s)))
+}
+
+print("== Infix → RPN (shunting-yard) ==");
+print("");
+print("Converts infix arithmetic expressions to reverse Polish");
+print("notation. Operator precedence:  * /  >  + -");
+print("");
+
+let cases = [
+  "3 + 4 * 2",            // 3 4 2 * +
+  "( 3 + 4 ) * 2",        // 3 4 + 2 *
+  "10 - 2 - 3",           // 10 2 - 3 -
+  "( 1 + 2 ) * ( 3 + 4 )",// 1 2 + 3 4 + *
+  "2 * 2 * 2 * 2",        // 2 2 * 2 * 2 *
+  "100 / 7",              // 100 7 /
+  "(( 5 ))",              // 5
+  "1 + 2 + 3 + 4 + 5",    // 1 2 + 3 + 4 + 5 +
+  "20 - 3 * 4",           // 20 3 4 * -
+  "7",                    // 7
+  "1 + 2 * 3 - 4 / 5",    // 1 2 3 * + 4 5 / -
+  "( ( 1 + 2 ) * ( 3 + 4 ) ) * 5", // 1 2 + 3 4 + * 5 *
+];
+
+let mut i = 0;
+while i < len(cases) {
+  let e = cases[i];
+  let rpn = infix_to_rpn(e);
+  print("  " + e + "   →   " + rpn);
+  i = i + 1;
+}
+print("");
+
+// Sanity assertions on known conversions.
+assert_eq(infix_to_rpn("3 + 4 * 2"),            "3 4 2 * +");
+assert_eq(infix_to_rpn("( 3 + 4 ) * 2"),         "3 4 + 2 *");
+assert_eq(infix_to_rpn("10 - 2 - 3"),           "10 2 - 3 -");
+assert_eq(infix_to_rpn("( 1 + 2 ) * ( 3 + 4 )"), "1 2 + 3 4 + *");
+assert_eq(infix_to_rpn("2 * 2 * 2 * 2"),         "2 2 * 2 * 2 *");
+assert_eq(infix_to_rpn("100 / 7"),              "100 7 /");
+assert_eq(infix_to_rpn("(( 5 ))"),              "5");
+assert_eq(infix_to_rpn("1 + 2 + 3 + 4 + 5"),    "1 2 + 3 + 4 + 5 +");
+assert_eq(infix_to_rpn("20 - 3 * 4"),           "20 3 4 * -");
+assert_eq(infix_to_rpn("7"),                    "7");
+assert_eq(infix_to_rpn("1 + 2 * 3 - 4 / 5"),    "1 2 3 * + 4 5 / -");
+
+print("All assertions passed.");

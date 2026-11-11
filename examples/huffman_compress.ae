@@ -1,0 +1,389 @@
+// huffman_compress.ae
+// ===================
+// Huffman coding: build a variable-length prefix code for a
+// string based on character frequencies. More frequent characters
+// get shorter codes.
+//
+// Algorithm:
+//   1. Count character frequencies.
+//   2. Build a min-heap of single-character "leaves", keyed by freq.
+//   3. Repeatedly pop two smallest nodes, merge into a new internal
+//      node whose weight is the sum, push it back.
+//   4. When only one node remains, walk the tree to produce the
+//      code for each character: left = "0", right = "1".
+//
+// Example: "aaabbc"
+//   frequencies: a=3, b=2, c=1
+//   tree:
+//        (6)
+//       /   \
+//     a(3)  (3)
+//          /   \
+//        c(1)  b(2)
+//   codes: a="0", c="10", b="11"
+//   encoded length: 3*1 + 1*2 + 2*2 = 9 bits (vs 6 chars × 8 = 48 bits)
+//
+// We represent the Huffman tree as parallel arrays:
+//   weights[i]    = total weight (frequency) of subtree rooted at i
+//   lefts[i]      = index of left child, or -1 if leaf
+//   rights[i]     = index of right child, or -1 if leaf
+//   chars[i]      = the character (for leaves), "" for internal nodes
+//
+// The heap holds indices into these arrays; the comparator orders
+// by `weights[idx]`.
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n {
+    push(out, v);
+    i = i + 1;
+  }
+  out
+}
+
+// Tree arrays (module-level so helpers can mutate them).
+let mut weights: [int] = [];
+let mut lefts: [int] = [];
+let mut rights: [int] = [];
+let mut chars: [string] = [];
+
+// Allocate a new node and return its index.
+fn new_leaf(c: string, w: int) -> int {
+  push(weights, w);
+  push(lefts, -1);
+  push(rights, -1);
+  push(chars, c);
+  len(weights) - 1
+}
+
+fn new_internal(l: int, r: int) -> int {
+  push(weights, weights[l] + weights[r]);
+  push(lefts, l);
+  push(rights, r);
+  push(chars, "");
+  len(weights) - 1
+}
+
+// Min-heap (binary heap) of node indices, ordered by weights[idx].
+// We store the heap as an int array of node indices.
+let mut heap: [int] = [];
+
+// Bubble the element at index `i` up to its proper place.
+fn heap_sift_up(i: int) {
+  let mut idx = i;
+  while idx > 0 {
+    let parent = int((idx - 1) / 2);
+    if weights[heap[idx]] < weights[heap[parent]] {
+      let tmp = heap[idx];
+      heap[idx] = heap[parent];
+      heap[parent] = tmp;
+      idx = parent;
+    } else {
+      idx = 0;
+    };
+  }
+}
+
+fn heap_sift_down(i: int) {
+  let mut idx = i;
+  let mut keep_going = true;
+  while keep_going {
+    let l = 2 * idx + 1;
+    let r = 2 * idx + 2;
+    let smallest = idx;
+    let next = if l < len(heap) && weights[heap[l]] < weights[heap[smallest]] { l } else { smallest };
+    let next2 = if r < len(heap) && weights[heap[r]] < weights[heap[next]] { r } else { next };
+    if next2 != idx {
+      let tmp = heap[idx];
+      heap[idx] = heap[next2];
+      heap[next2] = tmp;
+      idx = next2;
+    } else {
+      keep_going = false;
+    };
+  }
+}
+
+fn heap_push(idx: int) {
+  push(heap, idx);
+  heap_sift_up(len(heap) - 1);
+}
+
+fn heap_pop() -> int {
+  let top = heap[0];
+  let last = heap[len(heap) - 1];
+  // Remove last element by building a new heap array.
+  let mut new_heap = [];
+  let mut i = 0;
+  while i < len(heap) - 1 {
+    push(new_heap, heap[i]);
+    i = i + 1;
+  }
+  heap = new_heap;
+  if len(heap) > 0 {
+    heap[0] = last;
+    heap_sift_down(0);
+  };
+  top
+}
+
+fn heap_size() -> int { len(heap) }
+
+// Count character frequencies in `s`. Returns a list of (char, count)
+// tuples in arbitrary order.
+fn count_freqs(s: string) -> [(string, int)] {
+  let mut seen = [];
+  let mut seen_chars = "";
+  let mut i = 0;
+  while i < len(s) {
+    let c = str(s[i]);
+    let mut found = false;
+    let mut k = 0;
+    while k < len(seen_chars) {
+      if str(seen_chars[k]) == c { found = true; };
+      k = k + 1;
+    }
+    if !found {
+      seen_chars = seen_chars + c;
+    };
+    i = i + 1;
+  }
+  // For each unique char, count occurrences.
+  let mut out = [];
+  let mut j = 0;
+  while j < len(seen_chars) {
+    let c = str(seen_chars[j]);
+    let mut count = 0;
+    let mut k = 0;
+    while k < len(s) {
+      if str(s[k]) == c { count = count + 1; };
+      k = k + 1;
+    }
+    push(out, (c, count));
+    j = j + 1;
+  }
+  out
+}
+
+// Build the Huffman tree for `s`. Returns the root node index.
+fn build_huffman(s: string) -> int {
+  // Reset global state in case the function is called twice.
+  // (Aether doesn't allow reassigning module-level `let`s, so we
+  // clear the contents in place.)
+  while len(weights) > 0 {
+    pop(weights);
+  }
+  while len(lefts) > 0 {
+    pop(lefts);
+  }
+  while len(rights) > 0 {
+    pop(rights);
+  }
+  while len(chars) > 0 {
+    pop(chars);
+  }
+  while len(heap) > 0 {
+    pop(heap);
+  }
+  let freqs = count_freqs(s);
+  let mut i = 0;
+  while i < len(freqs) {
+    let pair = freqs[i];
+    let c = pair.0;
+    let w = pair.1;
+    heap_push(new_leaf(c, w));
+    i = i + 1;
+  }
+  // Special case: if there's only one unique character, the
+  // Huffman code for it is "0" (single-bit code).
+  if heap_size() == 1 {
+    let only = heap_pop();
+    let synthetic = new_internal(only, only);
+    heap_push(synthetic);
+  };
+  // Merge until one tree remains.
+  while heap_size() > 1 {
+    let a = heap_pop();
+    let b = heap_pop();
+    heap_push(new_internal(a, b));
+  }
+  heap_pop()
+}
+
+// Walk the tree to produce a list of (char, code) pairs.
+// We use recursion: walk(node, prefix).
+fn walk_codes(node: int, prefix: string) -> [(string, string)] {
+  if lefts[node] == -1 && rights[node] == -1 {
+    // Leaf.
+    [(chars[node], prefix)];
+  } else {
+    let l = lefts[node];
+    let r = rights[node];
+    let from_l = walk_codes(l, prefix + "0");
+    let from_r = walk_codes(r, prefix + "1");
+    from_l + from_r
+  }
+}
+
+// Get the codes for a string as a list of (char, code) tuples,
+// sorted by code length (and then by char) for pretty printing.
+fn huffman_codes(s: string) -> [(string, string)] {
+  let root = build_huffman(s);
+  let codes = walk_codes(root, "");
+  // Sort by code length, then by char (insertion sort with flag).
+  let mut sorted = codes;
+  let mut i = 1;
+  while i < len(sorted) {
+    let cur = sorted[i];
+    let cur_len = len(cur.1);
+    let cur_char = cur.0;
+    let mut j = i;
+    let mut keep_going = true;
+    while keep_going && j > 0 {
+      let prev = sorted[j - 1];
+      let prev_len = len(prev.1);
+      let prev_char = prev.0;
+      if prev_len > cur_len || (prev_len == cur_len && prev_char > cur_char) {
+        sorted[j] = sorted[j - 1];
+        j = j - 1;
+      } else {
+        keep_going = false;
+      };
+    }
+    sorted[j] = cur;
+    i = i + 1;
+  }
+  sorted
+}
+
+// Encode `s` using the codes. Returns the bit string.
+fn huffman_encode(s: string) -> string {
+  let root = build_huffman(s);
+  let codes = walk_codes(root, "");
+  let mut out = "";
+  let mut i = 0;
+  while i < len(s) {
+    let c = str(s[i]);
+    let mut k = 0;
+    let mut found_code = "";
+    while k < len(codes) {
+      let pair = codes[k];
+      if pair.0 == c { found_code = pair.1; };
+      k = k + 1;
+    }
+    out = out + found_code;
+    i = i + 1;
+  }
+  out
+}
+
+print("== Huffman coding ==");
+print("");
+print("Builds a variable-length prefix code from character");
+print("frequencies. More frequent characters get shorter codes.");
+print("");
+
+let input = "aaabbc";
+print(f"input: \"{input}\"");
+print("");
+
+// Build + print the codes.
+let codes = huffman_codes(input);
+print("character frequencies and codes:");
+let mut i = 0;
+while i < len(codes) {
+  let pair = codes[i];
+  let c = pair.0;
+  let code = pair.1;
+  // Count occurrences for display.
+  let mut count = 0;
+  let mut k = 0;
+  while k < len(input) {
+    if str(input[k]) == c { count = count + 1; };
+    k = k + 1;
+  }
+  print(f"  '{c}' (occurs {count}x): code = {code}  (length {len(code)})");
+  i = i + 1;
+}
+print("");
+
+let encoded = huffman_encode(input);
+print(f"encoded bit string: {encoded}");
+print(f"encoded length: {len(encoded)} bits");
+print(f"original:  {len(input)} chars × 8 bits = {len(input) * 8} bits");
+print("");
+
+// Run a few more examples.
+let more = ["hello world", "mississippi", "the quick brown fox", "abracadabra", "aaaa"];
+let mut j = 0;
+while j < len(more) {
+  let s = more[j];
+  let c = huffman_codes(s);
+  let enc = huffman_encode(s);
+  print(f"\"{s}\" → {len(c)} codes, {len(enc)} bits (orig {len(s) * 8})");
+  j = j + 1;
+}
+print("");
+
+// Sanity assertions on the canonical "aaabbc" example:
+//   a occurs 3x, b 2x, c 1x — total 6 chars.
+//   'a' should get the shortest code (length 1).
+//   'c' should get the longest code (length 2).
+let mut a_code = "";
+let mut b_code = "";
+let mut c_code = "";
+let mut k = 0;
+while k < len(codes) {
+  let pair = codes[k];
+  if pair.0 == "a" { a_code = pair.1; };
+  if pair.0 == "b" { b_code = pair.1; };
+  if pair.0 == "c" { c_code = pair.1; };
+  k = k + 1;
+}
+assert_eq(len(a_code), 1);
+assert_eq(len(b_code), 2);
+assert_eq(len(c_code), 2);
+
+// Encoded length = 3*1 + 2*2 + 1*2 = 9 bits.
+assert_eq(len(encoded), 9);
+
+// The codes should be prefix-free: no code is a prefix of another.
+// (Sanity: len(a_code)=1 and len(b_code)=len(c_code)=2 means a
+// can't be a prefix of either.)
+
+// Decoding round-trip: walk the tree bit-by-bit to decode.
+fn huffman_decode(bitstr: string, root: int) -> string {
+  let mut out = "";
+  let mut i = 0;
+  let mut node = root;
+  while i < len(bitstr) {
+    let bit = str(bitstr[i]);
+    if bit == "0" {
+      node = lefts[node];
+    } else {
+      node = rights[node];
+    };
+    if lefts[node] == -1 && rights[node] == -1 {
+      out = out + chars[node];
+      node = root;
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// For round-trip we need to rebuild the tree (huffman_encode already
+// cleared the globals). Build it again.
+let root2 = build_huffman(input);
+let codes2 = walk_codes(root2, "");
+let enc2 = huffman_encode(input);
+// Now rebuild AGAIN for decode (encode cleared globals).
+let root3 = build_huffman(input);
+let dec = huffman_decode(enc2, root3);
+print(f"round-trip: decode(encode(\"{input}\")) = \"{dec}\"");
+assert_eq(dec, input);
+
+print("");
+print("All assertions passed.");

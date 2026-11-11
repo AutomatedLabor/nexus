@@ -1,0 +1,224 @@
+// base64_codec.ae
+// =================
+// A Base64 encoder and decoder implemented from scratch in Aether.
+// Base64 converts arbitrary binary bytes into a printable ASCII
+// string using a 64-character alphabet:
+//
+//   ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
+//
+// Each 3 input bytes (24 bits) become 4 base64 characters (each
+// representing 6 bits, so 24 bits). If the input isn't a multiple
+// of 3 bytes, we pad with '=' to a multiple of 4 chars (one '='
+// for one missing byte, two '==' for two missing bytes).
+//
+// Since Aether's v1 evaluator doesn't expose `charCodeAt` to
+// scripts, we use a hand-written ASCII table and per-character
+// lookups. We support the printable ASCII range (32..126), which
+// covers all of the inputs used in this demo.
+
+// The base64 alphabet (chars 0..63 → ALPHABET[i]).
+let ALPHABET: string =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+// Convert a value 0..63 to its base64 character.
+fn val_to_b64(v: int) -> string {
+  str(ALPHABET[v])
+}
+
+// Convert a base64 character to its 0..63 value, or -1 if the
+// character is not in the alphabet.
+fn b64_to_val(c: string) -> int {
+  let mut i = 0;
+  let mut result = -1;
+  while i < 64 {
+    if str(ALPHABET[i]) == c {
+      result = i;
+    };
+    i = i + 1;
+  }
+  result
+}
+
+// Convert a single printable ASCII character to its byte value
+// (0..127). Returns -1 for chars outside the supported range.
+// We use a 95-character lookup table (ASCII 32..126).
+fn char_to_byte(c: string) -> int {
+  let table: string =
+    " !\"#$%&'()*+,-./0123456789:;<=>?@" +
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
+    "[\\]^_`" +
+    "abcdefghijklmnopqrstuvwxyz" +
+    "{|}~";
+  let mut i = 0;
+  let mut result = -1;
+  while i < 95 {
+    if str(table[i]) == c {
+      result = i + 32;
+    };
+    i = i + 1;
+  }
+  result
+}
+
+// Convert a byte 0..127 back to an ASCII character. Returns "?"
+// for values outside the supported range.
+fn byte_to_char(b: int) -> string {
+  let table: string =
+    " !\"#$%&'()*+,-./0123456789:;<=>?@" +
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
+    "[\\]^_`" +
+    "abcdefghijklmnopqrstuvwxyz" +
+    "{|}~";
+  if b >= 32 && b <= 126 {
+    str(table[b - 32])
+  } else {
+    "?"
+  }
+}
+
+// Encode a string into Base64.
+fn b64_encode(s: string) -> string {
+  // 1. Convert string to list of bytes (ASCII values).
+  let mut bytes = [];
+  let mut i = 0;
+  while i < len(s) {
+    push(bytes, char_to_byte(str(s[i])));
+    i = i + 1;
+  }
+  // 2. Encode bytes in groups of 3 → 4 base64 chars.
+  let mut out = "";
+  let mut j = 0;
+  while j + 3 <= len(bytes) {
+    let b0 = bytes[j];
+    let b1 = bytes[j + 1];
+    let b2 = bytes[j + 2];
+    // 24-bit triple: b0 << 16 | b1 << 8 | b2.
+    let triple = b0 * 65536 + b1 * 256 + b2;
+    // Extract 4 × 6-bit values (top first).
+    let c0 = int(triple / 262144) % 64;          // (triple >> 18) & 63
+    let c1 = int(triple / 4096) % 64;            // (triple >> 12) & 63
+    let c2 = int(triple / 64) % 64;              // (triple >> 6)  & 63
+    let c3 = triple % 64;                         // (triple >> 0)  & 63
+    out = out + val_to_b64(c0) + val_to_b64(c1) + val_to_b64(c2) + val_to_b64(c3);
+    j = j + 3;
+  }
+  // Handle the trailing 1 or 2 leftover bytes.
+  let rem = len(bytes) - j;
+  if rem == 1 {
+    let b0 = bytes[j];
+    let triple = b0 * 65536;
+    let c0 = int(triple / 262144) % 64;
+    let c1 = int(triple / 4096) % 64;
+    out = out + val_to_b64(c0) + val_to_b64(c1) + "==";
+  } else {
+    if rem == 2 {
+      let b0 = bytes[j];
+      let b1 = bytes[j + 1];
+      let triple = b0 * 65536 + b1 * 256;
+      let c0 = int(triple / 262144) % 64;
+      let c1 = int(triple / 4096) % 64;
+      let c2 = int(triple / 64) % 64;
+      out = out + val_to_b64(c0) + val_to_b64(c1) + val_to_b64(c2) + "=";
+    };
+  };
+  out
+}
+
+// Decode a Base64 string back to a string. Ignores '=' padding.
+fn b64_decode(s: string) -> string {
+  let mut bytes = [];
+  let mut i = 0;
+  while i < len(s) {
+    let c = str(s[i]);
+    if c != "=" && c != "\n" && c != "\r" && c != " " {
+      let v = b64_to_val(c);
+      if v >= 0 {
+        push(bytes, v);
+      };
+    };
+    i = i + 1;
+  }
+  // Decode 4 × 6-bit values → 3 bytes.
+  let mut out = "";
+  let mut j = 0;
+  while j + 4 <= len(bytes) {
+    let v0 = bytes[j];
+    let v1 = bytes[j + 1];
+    let v2 = bytes[j + 2];
+    let v3 = bytes[j + 3];
+    let triple = v0 * 262144 + v1 * 4096 + v2 * 64 + v3;
+    let b0 = int(triple / 65536) % 256;
+    let b1 = int(triple / 256) % 256;
+    let b2 = triple % 256;
+    out = out + byte_to_char(b0) + byte_to_char(b1) + byte_to_char(b2);
+    j = j + 4;
+  }
+  // Handle trailing 2 or 3 leftover values (1 or 2 bytes output).
+  let rem = len(bytes) - j;
+  if rem == 2 {
+    let v0 = bytes[j];
+    let v1 = bytes[j + 1];
+    let triple = v0 * 262144 + v1 * 4096;
+    let b0 = int(triple / 65536) % 256;
+    out = out + byte_to_char(b0);
+  } else {
+    if rem == 3 {
+      let v0 = bytes[j];
+      let v1 = bytes[j + 1];
+      let v2 = bytes[j + 2];
+      let triple = v0 * 262144 + v1 * 4096 + v2 * 64;
+      let b0 = int(triple / 65536) % 256;
+      let b1 = int(triple / 256) % 256;
+      out = out + byte_to_char(b0) + byte_to_char(b1);
+    };
+  };
+  out
+}
+
+print("== Base64 encode/decode (from scratch) ==");
+print("");
+print("Implements RFC 4648 base64 by hand: 3 bytes → 4 chars,");
+print("with '=' padding. ASCII table is built in Aether (no");
+print("charCodeAt or String.fromCharCode needed).");
+print("");
+
+let tests = [
+  "A",                 // 1 byte  → "QQ==" with 2 padding
+  "AB",                // 2 bytes → "QUI=" with 1 padding
+  "ABC",               // 3 bytes → "QUJD"
+  "Hello",             // 5 bytes
+  "Hello, World!",    // 13 bytes
+  "Aether language",  // 15 bytes
+  "abc 123 xyz",      // 11 bytes
+  "The quick brown fox", // 19 bytes
+];
+
+let mut i = 0;
+while i < len(tests) {
+  let s = tests[i];
+  let enc = b64_encode(s);
+  let dec = b64_decode(enc);
+  let roundtrip_ok = if s == dec { "ok" } else { "MISMATCH" };
+  print("  input:    '" + s + "'");
+  print("  encoded:  " + enc);
+  print("  decoded:  '" + dec + "'  (" + roundtrip_ok + ")");
+  print("");
+  i = i + 1;
+}
+
+// Sanity assertions on known vectors from RFC 4648.
+assert_eq(b64_encode("A"),       "QQ==");
+assert_eq(b64_encode("AB"),      "QUI=");
+assert_eq(b64_encode("ABC"),     "QUJD");
+assert_eq(b64_encode("Hello"),   "SGVsbG8=");
+assert_eq(b64_encode("Hello, World!"), "SGVsbG8sIFdvcmxkIQ==");
+
+// Round-trip property: decode(encode(s)) == s.
+let mut j = 0;
+while j < len(tests) {
+  let s = tests[j];
+  assert_eq(b64_decode(b64_encode(s)), s);
+  j = j + 1;
+}
+
+print("All assertions passed.");

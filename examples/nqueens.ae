@@ -1,0 +1,149 @@
+// nqueens.ae
+// ==========
+// N-queens puzzle via recursive backtracking. The goal: place N queens
+// on an N×N chessboard such that no two queens attack each other (no
+// two queens share a row, column, or diagonal).
+//
+// We model the board as a 1D array `board` where `board[r] = c` means
+// "the queen in row r is in column c". This representation makes the
+// conflict check trivial:
+//   - same column:        board[r1] == board[r2]
+//   - same diagonal:      abs(board[r1] - board[r2]) == abs(r1 - r2)
+//
+// The recursion: place a queen in row 0, then recursively place in row
+// 1, etc. When we reach row N, we have a valid solution. The number of
+// valid solutions for N=6 is 4.
+//
+// We use recursion + a backtracking helper. Aether's `enum` and
+// `match` aren't needed here — the board is just an int array.
+
+// True when placing a queen in (row, col) is safe given the queens
+// already placed in `board` for rows 0..row-1.
+fn is_safe(board: [int], row: int, col: int) -> bool {
+  let mut r = 0;
+  let mut ok = true;
+  while r < row && ok {
+    let bc = board[r];
+    // Same column?
+    if bc == col {
+      ok = false;
+    } else {
+      // Same diagonal? (the row difference equals the col difference)
+      let dr = row - r;
+      let dc = col - bc;
+      if dc < 0 {
+        if 0 - dc == dr { ok = false; };
+      } else {
+        if dc == dr { ok = false; };
+      };
+    };
+    r = r + 1;
+  }
+  ok
+}
+
+// Recursive solver. Tries to place a queen in `row`, recursing to row+1.
+// Returns the number of solutions found, and writes one solution
+// (the first found) into `first_solution` (mutated by reference).
+// We return a tuple: (count, first_solution_or_empty_array).
+fn solve(board: [int], row: int, n: int, first: [int]) -> (int, [int]) {
+  if row == n {
+    // Found a solution. Record it as the first if not already recorded.
+    let recorded = if len(first) == 0 { board } else { first };
+    (1, recorded)
+  } else {
+    let mut total = 0;
+    let mut found_first = first;
+    let mut col = 0;
+    while col < n {
+      if is_safe(board, row, col) {
+        // Place the queen and recurse.
+        let mut new_board = board + [];
+        push(new_board, col);
+        let result = solve(new_board, row + 1, n, found_first);
+        let count = result.0;
+        let first_sol = result.1;
+        total = total + count;
+        if len(found_first) == 0 && len(first_sol) > 0 {
+          found_first = first_sol;
+        };
+      };
+      col = col + 1;
+    }
+    (total, found_first)
+  }
+}
+
+// Render a board as an N×N grid of '.' (empty) and 'Q' (queen).
+fn show_board(board: [int], n: int) -> string {
+  let mut out = "";
+  let mut r = 0;
+  while r < n {
+    let mut row_str = "";
+    let mut c = 0;
+    while c < n {
+      let cell = if c == board[r] { "Q " } else { ". " };
+      row_str = row_str + cell;
+      c = c + 1;
+    }
+    out = out + row_str + "\n";
+    r = r + 1;
+  }
+  out
+}
+
+print("== N-queens via recursive backtracking ==");
+print("");
+
+let n = 6;
+print(f"Solving {n}-queens...");
+print("");
+
+let result = solve([], 0, n, []);
+let count = result.0;
+let first = result.1;
+
+print(f"Number of solutions: {count}");
+print("");
+print("First solution found:");
+print(show_board(first, n));
+
+// Sanity assertions.
+assert_eq(n, 6);
+assert_eq(count, 4);  // 6-queens has 4 solutions
+assert_eq(len(first), 6);
+
+// Verify the first solution is actually valid: no two queens attack.
+let mut r = 0;
+let mut all_safe = true;
+while r < n && all_safe {
+  let c = first[r];
+  let mut r2 = 0;
+  while r2 < n && all_safe {
+    if r2 != r {
+      let c2 = first[r2];
+      if c2 == c {
+        all_safe = false;
+      } else {
+        let dr = if r > r2 { r - r2 } else { r2 - r };
+        let dc = if c > c2 { c - c2 } else { c2 - c };
+        if dr == dc { all_safe = false; };
+      };
+    };
+    r2 = r2 + 1;
+  }
+  r = r + 1;
+}
+assert_eq(all_safe, true);
+
+// Try a smaller N to make sure the algorithm is correct.
+let r4 = solve([], 0, 4, []);
+assert_eq(r4.0, 2);   // 4-queens has 2 solutions
+
+let r3 = solve([], 0, 3, []);
+assert_eq(r3.0, 0);   // 3-queens has 0 solutions
+
+let r1 = solve([], 0, 1, []);
+assert_eq(r1.0, 1);   // 1-queen has 1 solution
+
+print("All assertions passed.");

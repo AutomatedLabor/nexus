@@ -44,6 +44,13 @@ import * as Bits from "./bits";
 import * as Val from "./validate";
 import * as Tree from "./tree";
 import * as Uuid from "./uuid";
+// New modules (W11-EXPAND):
+import * as Graph from "./graph";
+import * as Heap from "./heap";
+import * as Sort from "./sort";
+import * as Matrix from "./matrix";
+import * as Parser from "./parser";
+import * as Random from "./random";
 
 export interface StdlibFn {
   name: string;
@@ -86,6 +93,13 @@ export function registerAll(register: (name: string, fn: any) => void): void {
   Val.register(register);
   Tree.register(register);
   Uuid.register(register);
+  // New modules (W11-EXPAND):
+  Graph.register(register);
+  Heap.register(register);
+  Sort.register(register);
+  Matrix.register(register);
+  Parser.register(register);
+  Random.register(register);
 }
 
 /** Build a {name -> fn} map (used by the evaluator's `opts.builtins`). */
@@ -119,6 +133,13 @@ export const STDLIB_MANIFEST: StdlibModuleManifest[] = [
   Val.MANIFEST as StdlibModuleManifest,
   Tree.MANIFEST as StdlibModuleManifest,
   Uuid.MANIFEST as StdlibModuleManifest,
+  // New modules (W11-EXPAND):
+  Graph.MANIFEST as StdlibModuleManifest,
+  Heap.MANIFEST as StdlibModuleManifest,
+  Sort.MANIFEST as StdlibModuleManifest,
+  Matrix.MANIFEST as StdlibModuleManifest,
+  Parser.MANIFEST as StdlibModuleManifest,
+  Random.MANIFEST as StdlibModuleManifest,
 ];
 
 /** Total function count across all modules (excluding async — not callable). */

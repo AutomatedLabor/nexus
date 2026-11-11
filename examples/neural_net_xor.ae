@@ -1,0 +1,271 @@
+// neural_net_xor.ae
+// ==================
+// A tiny 2-2-1 feed-forward neural network that learns the XOR
+// function via stochastic gradient descent (backpropagation).
+//
+//   inputs: 2 (x1, x2 ∈ {0, 1})
+//   hidden: 2 units, sigmoid activation
+//   output: 1 unit, sigmoid activation
+//
+//   Truth table:
+//     (0, 0) -> 0
+//     (0, 1) -> 1
+//     (1, 0) -> 1
+//     (1, 1) -> 0
+//
+// XOR is the canonical "linear-separability fails, you need a
+// hidden layer" toy problem. A 2-2-1 network with sigmoid
+// activation can learn XOR, though it takes many epochs and the
+// result is sensitive to initialization.
+//
+// Implementation notes:
+//   - We use a seeded LCG (linear congruential generator) so
+//     the run is deterministic. No global random-state in v1.
+//   - Weights are flat arrays. w_hidden[0..2] = input->hidden[0],
+//     w_hidden[2..4] = input->hidden[1], b_hidden[0..1] = biases.
+//     Same for output layer (w_out[0..2], b_out[0]).
+//   - Sigmoid: 1 / (1 + exp(-x)). We implement exp() via a Taylor
+//     series (since the v1 stdlib doesn't expose it to scripts).
+//   - Loss: mean squared error across the 4 patterns.
+
+// --- PRNG (LCG: Park-Miller minimum standard) -----------------------
+// A small linear congruential generator with modulus 2^31 - 1
+// (a Mersenne prime). The state stays below 2^31, so the modulus
+// fits in Aether's int32-modulo operator. (Aether's `%` coerces
+// both operands to int32 before computing, so a modulus of 2^32
+// would be treated as 0 — we deliberately use 2^31 - 1 to avoid that.)
+
+// LCG state. We use a single mutable record.
+let mut lcg_state = 1;
+
+fn lcg_next() -> int {
+  lcg_state = (lcg_state * 16807) % 2147483647;
+  lcg_state
+}
+
+// Return a deterministic float in [0, 1).
+fn rand01() -> float {
+  let v = lcg_next();
+  int(v) / 2147483647.0
+}
+
+// Seed the LCG.
+fn lcg_seed(seed: int) {
+  lcg_state = seed;
+  if lcg_state == 0 { lcg_state = 1; };
+}
+
+// --- Math helpers (Taylor series) -----------------------------------
+
+// exp(x) via Taylor series (with range reduction to keep convergence
+// fast). We split x = k + r where k is an integer and r ∈ [-0.5, 0.5],
+// then exp(x) = exp(k) * exp(r). exp(k) = e^k via repeated multiplication.
+// For our small network, |x| is rarely larger than ~5, so the series
+// converges quickly.
+
+fn exp_small(r: float) -> float {
+  // Series: 1 + r + r^2/2! + r^3/3! + ... + r^10/10!
+  let mut sum = 1.0;
+  let mut term = 1.0;
+  let mut i = 1;
+  while i <= 10 {
+    term = term * r / float(i);
+    sum = sum + term;
+    i = i + 1;
+  }
+  sum
+}
+
+fn exp_full(x: float) -> float {
+  // Reduce: x = k + r, with r in [-0.5, 0.5].
+  let mut k = int(x);
+  let mut r = x - float(k);
+  if r > 0.5 {
+    k = k + 1;
+    r = x - float(k);
+  };
+  if r < -0.5 {
+    k = k - 1;
+    r = x - float(k);
+  };
+  let er = exp_small(r);
+  // exp(k) = e^k. Multiply e by itself k times for positive k,
+  // and use 1 / exp(-k) for negative k.
+  let mut result = 1.0;
+  let abs_k = if k < 0 { 0 - k } else { k };
+  let mut i = 0;
+  while i < abs_k {
+    result = result * 2.718281828459045;
+    i = i + 1;
+  }
+  if k < 0 {
+    1.0 / (result * er)
+  } else {
+    result * er
+  }
+}
+
+// Sigmoid: 1 / (1 + exp(-x)).
+fn sigmoid(x: float) -> float {
+  1.0 / (1.0 + exp_full(0.0 - x))
+}
+
+// --- Network ---------------------------------------------------------
+// Weights and biases. Layout:
+//   w_hidden[0..2] -> weights from x1, x2 to hidden unit 0
+//   w_hidden[2..4] -> weights from x1, x2 to hidden unit 1
+//   b_hidden[0..1] -> biases for hidden units
+//   w_out[0..2]    -> weights from hidden unit 0, 1 to output
+//   b_out[0]       -> bias for output
+
+let mut w_hidden: [float] = [];
+let mut b_hidden: [float] = [];
+let mut w_out: [float] = [];
+let mut b_out: [float] = [];
+
+// Initialize the weights with small random values in [-0.5, 0.5].
+fn init_weights() {
+  // Reset global arrays.
+  while len(w_hidden) > 0 { pop(w_hidden); }
+  while len(b_hidden) > 0 { pop(b_hidden); }
+  while len(w_out) > 0 { pop(w_out); }
+  while len(b_out) > 0 { pop(b_out); }
+  // w_hidden: 4 weights (2 inputs × 2 hidden units).
+  let mut i = 0;
+  while i < 4 {
+    push(w_hidden, rand01() - 0.5);
+    i = i + 1;
+  }
+  // b_hidden: 2 biases.
+  let mut j = 0;
+  while j < 2 {
+    push(b_hidden, rand01() - 0.5);
+    j = j + 1;
+  }
+  // w_out: 2 weights (2 hidden × 1 output).
+  let mut k = 0;
+  while k < 2 {
+    push(w_out, rand01() - 0.5);
+    k = k + 1;
+  }
+  // b_out: 1 bias.
+  push(b_out, rand01() - 0.5);
+}
+
+// Forward pass: given inputs (x1, x2), compute hidden activations
+// and the output. Returns (hidden[0], hidden[1], output).
+fn forward(x1: float, x2: float) -> (float, float, float) {
+  // Hidden unit 0: w_hidden[0]*x1 + w_hidden[1]*x2 + b_hidden[0]
+  let h0_pre = w_hidden[0] * x1 + w_hidden[1] * x2 + b_hidden[0];
+  let h0 = sigmoid(h0_pre);
+  // Hidden unit 1: w_hidden[2]*x1 + w_hidden[3]*x2 + b_hidden[1]
+  let h1_pre = w_hidden[2] * x1 + w_hidden[3] * x2 + b_hidden[1];
+  let h1 = sigmoid(h1_pre);
+  // Output: w_out[0]*h0 + w_out[1]*h1 + b_out[0]
+  let o_pre = w_out[0] * h0 + w_out[1] * h1 + b_out[0];
+  let o = sigmoid(o_pre);
+  (h0, h1, o)
+}
+
+// --- Training (stochastic gradient descent) ------------------------
+// For each pattern (x1, x2, target):
+//   1. Forward pass to get h0, h1, o.
+//   2. Output error: e_o = o - target; delta_o = e_o * o * (1 - o)
+//      (sigmoid derivative).
+//   3. Hidden error: delta_h0 = (w_out[0] * delta_o) * h0 * (1 - h0)
+//                    delta_h1 = (w_out[1] * delta_o) * h1 * (1 - h1)
+//   4. Update weights: w_out[i]  -= lr * delta_o * h_i
+//                     b_out[0]  -= lr * delta_o
+//                     w_hidden[i] -= lr * delta_h_{i/2} * x_{i%2}
+//                     b_hidden[i] -= lr * delta_h_i
+fn train_step(x1: float, x2: float, target: float, lr: float) -> float {
+  let fwd = forward(x1, x2);
+  let h0 = fwd.0;
+  let h1 = fwd.1;
+  let o = fwd.2;
+  // Mean squared error for this pattern.
+  let err = o - target;
+  let loss = 0.5 * err * err;
+  // Backprop.
+  let d_o = err * o * (1.0 - o);
+  let d_h0 = (w_out[0] * d_o) * h0 * (1.0 - h0);
+  let d_h1 = (w_out[1] * d_o) * h1 * (1.0 - h1);
+  // Gradient descent update.
+  w_out[0] = w_out[0] - lr * d_o * h0;
+  w_out[1] = w_out[1] - lr * d_o * h1;
+  b_out[0] = b_out[0] - lr * d_o;
+  w_hidden[0] = w_hidden[0] - lr * d_h0 * x1;
+  w_hidden[1] = w_hidden[1] - lr * d_h0 * x2;
+  w_hidden[2] = w_hidden[2] - lr * d_h1 * x1;
+  w_hidden[3] = w_hidden[3] - lr * d_h1 * x2;
+  b_hidden[0] = b_hidden[0] - lr * d_h0;
+  b_hidden[1] = b_hidden[1] - lr * d_h1;
+  loss
+}
+
+// Average loss across the 4 XOR patterns.
+fn epoch_loss() -> float {
+  let p1 = forward(0.0, 0.0).2 - 0.0;
+  let p2 = forward(0.0, 1.0).2 - 1.0;
+  let p3 = forward(1.0, 0.0).2 - 1.0;
+  let p4 = forward(1.0, 1.0).2 - 0.0;
+  (p1 * p1 + p2 * p2 + p3 * p3 + p4 * p4) / 4.0
+}
+
+print("== Tiny neural network learns XOR ==");
+print("");
+print("A 2-2-1 feed-forward network with sigmoid activation.");
+print("Trained with SGD + backprop for 1000 epochs (lr = 1.5).");
+print("");
+
+// Initialize.
+lcg_seed(42);
+init_weights();
+print(f"Initial loss: {epoch_loss()}");
+print("");
+
+// Training loop (single pass with milestone logging).
+let lr = 1.5;
+let epochs = 1000;
+print("Loss at milestones (every 100 epochs):");
+let mut e = 0;
+while e < epochs {
+  let _l1 = train_step(0.0, 0.0, 0.0, lr);
+  let _l2 = train_step(0.0, 1.0, 1.0, lr);
+  let _l3 = train_step(1.0, 0.0, 1.0, lr);
+  let _l4 = train_step(1.0, 1.0, 0.0, lr);
+  e = e + 1;
+  let m = e % 100;
+  if m == 0 {
+    let loss = epoch_loss();
+    print(f"  epoch {e}: loss = {loss}");
+  };
+}
+print("");
+
+// Final predictions.
+print("Final predictions:");
+let r1 = forward(0.0, 0.0).2;
+let r2 = forward(0.0, 1.0).2;
+let r3 = forward(1.0, 0.0).2;
+let r4 = forward(1.0, 1.0).2;
+print(f"  XOR(0, 0) = {r1}  (target 0)");
+print(f"  XOR(0, 1) = {r2}  (target 1)");
+print(f"  XOR(1, 0) = {r3}  (target 1)");
+print(f"  XOR(1, 1) = {r4}  (target 0)");
+print("");
+
+// Verify the network learned: predictions should be close to targets.
+let final_loss = epoch_loss();
+print(f"Final average loss: {final_loss}");
+print("");
+
+// Sanity assertions: the loss should be small (less than 0.1).
+assert(final_loss < 0.1, "loss too high — network didn't converge");
+// Predictions should round to the correct XOR truth table.
+assert(r1 < 0.1, "XOR(0,0) should be ~0");
+assert(r2 > 0.9, "XOR(0,1) should be ~1");
+assert(r3 > 0.9, "XOR(1,0) should be ~1");
+assert(r4 < 0.1, "XOR(1,1) should be ~0");
+
+print("All assertions passed.");

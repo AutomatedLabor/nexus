@@ -1,0 +1,160 @@
+// coin_change.ae
+// ==============
+// Coin change via dynamic programming: given a set of coin denominations
+// and a target amount, find the minimum number of coins needed to make
+// that amount. We also reconstruct which coins were used (a common
+// follow-up question).
+//
+//   coins   = [1, 5, 10, 25]
+//   amount  = 27
+//   answer  = 3 (25 + 1 + 1)
+//
+// Standard 1D DP: dp[a] = min coins to make `a`. For each amount a
+// from 1 to amount, dp[a] = 1 + min(dp[a - c] for c in coins if c <= a).
+// We track a `prev` array so we can reconstruct the chosen coins.
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n {
+    push(out, v);
+    i = i + 1;
+  }
+  out
+}
+
+// Solve coin change. Returns (dp array, prev array) where:
+//   dp[a]   = minimum coins to make amount a (or a large sentinel if impossible)
+//   prev[a] = the coin used last (or -1 if dp[a] == 0 or impossible)
+fn coin_change(coins: [int], amount: int) -> ([int], [int]) {
+  let INF = 1000000;
+  let mut dp = repeat(amount + 1, INF);
+  let mut prev = repeat(amount + 1, -1);
+  dp[0] = 0;
+  let mut a = 1;
+  while a <= amount {
+    let mut best = INF;
+    let mut best_coin = -1;
+    let mut i = 0;
+    while i < len(coins) {
+      let c = coins[i];
+      if c <= a {
+        let candidate = dp[a - c] + 1;
+        if candidate < best {
+          best = candidate;
+          best_coin = c;
+        };
+      };
+      i = i + 1;
+    }
+    if best < INF {
+      dp[a] = best;
+      prev[a] = best_coin;
+    };
+    a = a + 1;
+  }
+  (dp, prev)
+}
+
+// Reconstruct the multiset of coins used to make `amount` by walking
+// backward through prev. Returns the coins in descending order.
+fn reconstruct(prev: [int], amount: int) -> [int] {
+  if prev[amount] == -1 {
+    if amount == 0 {
+      []
+    } else {
+      []
+    }
+  } else {
+    let mut out = [];
+    let mut cur = amount;
+    let mut safety = 0;
+    while cur > 0 && safety < 100000 {
+      let coin = prev[cur];
+      push(out, coin);
+      cur = cur - coin;
+      safety = safety + 1;
+    }
+    out
+  }
+}
+
+// Render an int array as "[1, 2, 3]".
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Coin change (DP) ==");
+print("");
+
+let coins = [1, 5, 10, 25];
+let amount = 27;
+print(f"coins:   {show_ints(coins)}");
+print(f"amount:  {amount}");
+print("");
+
+let result = coin_change(coins, amount);
+let dp = result.0;
+let prev = result.1;
+print("dp table (amount -> min coins):");
+let mut a = 0;
+while a <= amount {
+  if dp[a] >= 1000000 {
+    print(f"  a={a}: impossible");
+  } else {
+    print(f"  a={a}: {dp[a]} coins");
+  };
+  a = a + 1;
+}
+print("");
+
+print(f"min coins to make {amount}: {dp[amount]}");
+let chosen = reconstruct(prev, amount);
+print(f"coins used: {show_ints(chosen)}");
+print("");
+
+// Verify a few sub-cases.
+print("Spot-checks:");
+print(f"  amount 0  -> {dp[0]} coins  (always 0)");
+print(f"  amount 1  -> {dp[1]} coin   (must use a 1-cent)");
+print(f"  amount 5  -> {dp[5]} coin   (use one 5-cent)");
+print(f"  amount 10 -> {dp[10]} coin  (use one 10-cent)");
+print(f"  amount 25 -> {dp[25]} coin  (use one 25-cent)");
+print("");
+
+// Run a second example with a larger amount to show the algorithm scales.
+let coins2 = [1, 5, 10, 25];
+let amount2 = 30;
+let r2 = coin_change(coins2, amount2);
+let dp2 = r2.0;
+print(f"Larger amount: {amount2} from {show_ints(coins2)}");
+print(f"  min coins: {dp2[amount2]}  (e.g. 25 + 5)");
+let chosen30 = reconstruct(r2.1, amount2);
+print(f"  coins used: {show_ints(chosen30)}");
+print("");
+
+// Sanity assertions.
+assert_eq(dp[0], 0);
+assert_eq(dp[1], 1);
+assert_eq(dp[5], 1);
+assert_eq(dp[10], 1);
+assert_eq(dp[25], 1);
+assert_eq(dp[27], 3);
+assert_eq(dp2[30], 2);
+
+// Reconstruct: should give 25 + 1 + 1 = 27 (3 coins).
+let chosen27 = reconstruct(prev, 27);
+assert_eq(len(chosen27), 3);
+let mut sum = 0;
+let mut i = 0;
+while i < len(chosen27) {
+  sum = sum + chosen27[i];
+  i = i + 1;
+}
+assert_eq(sum, 27);
+
+print("All assertions passed.");

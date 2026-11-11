@@ -1,0 +1,196 @@
+// lru_cache.ae
+// ============
+// A simple LRU (Least Recently Used) cache implementation. The cache
+// has a fixed capacity and remembers the last `capacity` items that
+// were inserted or accessed. When a new item is added beyond capacity,
+// the least recently used item is evicted.
+//
+// Operations:
+//   lru_new(cap)            -> (cap, keys, vals)  — an empty cache
+//   lru_get(cache, key)     -> returns the value if present (and marks
+//                              it most-recently-used), else -9999
+//   lru_put(cache, key, v)  -> inserts (key, v); if at capacity, evicts
+//                              the least recently used entry first
+//
+// We represent the cache as a 3-tuple `(cap, keys, vals)` where `keys`
+// and `vals` are parallel arrays ordered from least-recently-used
+// (index 0) to most-recently-used (index n-1). `get` searches the keys;
+// on hit, the entry is moved to the end. `put` either updates an
+// existing entry (moving it to the end) or appends, evicting from the
+// front if needed.
+//
+// We use arrays rather than a doubly-linked-list+hash-map (the
+// textbook O(1) LRU) because:
+//   - The code is much shorter (no pointer juggling).
+//   - For small capacities (the typical LRU use case), O(n) get/put
+//     is fine.
+//   - Aether v1 has no built-in hash map type.
+
+// The cache tuple: (cap, keys, vals).
+//   - cap is an int
+//   - keys is [int] in LRU order (LRU at index 0, MRU at end)
+//   - vals is [int] parallel to keys
+
+// Find the index of `key` in `arr`, or -1 if absent.
+fn index_of(arr: [int], key: int) -> int {
+  let mut i = 0;
+  let mut found = -1;
+  while i < len(arr) {
+    if arr[i] == key { found = i; };
+    i = i + 1;
+  }
+  found
+}
+
+// Move the entry at index `i` to the end of both parallel arrays.
+fn move_to_end(keys: [int], vals: [int], i: int) -> ([int], [int]) {
+  let k = keys[i];
+  let v = vals[i];
+  let mut new_keys = [];
+  let mut new_vals = [];
+  let mut j = 0;
+  while j < len(keys) {
+    if j != i {
+      push(new_keys, keys[j]);
+      push(new_vals, vals[j]);
+    };
+    j = j + 1;
+  }
+  push(new_keys, k);
+  push(new_vals, v);
+  (new_keys, new_vals)
+}
+
+// Create a fresh cache with capacity `cap`.
+fn lru_new(cap: int) -> (int, [int], [int]) {
+  (cap, [], [])
+}
+
+// Get a value by key. Returns the value if present (and marks it most
+// recently used), or -9999 if not present (sentinel — Aether v1 has no
+// Option type for builtins).
+fn lru_get(cache: (int, [int], [int]), key: int) -> (int, (int, [int], [int])) {
+  let cap = cache.0;
+  let keys = cache.1;
+  let vals = cache.2;
+  let i = index_of(keys, key);
+  if i == -1 {
+    (-9999, cache)
+  } else {
+    let moved = move_to_end(keys, vals, i);
+    let new_keys = moved.0;
+    let new_vals = moved.1;
+    (new_vals[len(new_vals) - 1], (cap, new_keys, new_vals))
+  }
+}
+
+// Put a (key, v) into the cache. If the key exists, update the value
+// and mark it most-recently-used. Otherwise insert; if at capacity,
+// evict the least recently used (index 0) first.
+fn lru_put(cache: (int, [int], [int]), key: int, v: int) -> (int, [int], [int]) {
+  let cap = cache.0;
+  let keys = cache.1;
+  let vals = cache.2;
+  let i = index_of(keys, key);
+  if i != -1 {
+    // Key exists: update and move to end.
+    let moved = move_to_end(keys, vals, i);
+    let mut new_keys = moved.0;
+    let mut new_vals = moved.1;
+    new_vals[len(new_vals) - 1] = v;
+    (cap, new_keys, new_vals)
+  } else {
+    // New entry.
+    let mut new_keys = keys;
+    let mut new_vals = vals;
+    if len(new_keys) >= cap {
+      // Evict LRU: drop index 0.
+      let mut trimmed_keys = [];
+      let mut trimmed_vals = [];
+      let mut j = 1;
+      while j < len(new_keys) {
+        push(trimmed_keys, new_keys[j]);
+        push(trimmed_vals, new_vals[j]);
+        j = j + 1;
+      }
+      new_keys = trimmed_keys;
+      new_vals = trimmed_vals;
+    };
+    push(new_keys, key);
+    push(new_vals, v);
+    (cap, new_keys, new_vals)
+  }
+}
+
+// Render the cache state as "key=val | key=val | ..." (LRU on left, MRU on right).
+fn show_cache(cache: (int, [int], [int])) -> string {
+  let keys = cache.1;
+  let vals = cache.2;
+  let cap = cache.0;
+  let mut out = "";
+  let mut i = 0;
+  while i < len(keys) {
+    let s = if i == 0 { "" } else { " | " };
+    out = out + s + str(keys[i]) + "=" + str(vals[i]);
+    i = i + 1;
+  }
+  "[" + out + "] (cap=" + str(cap) + ", size=" + str(len(keys)) + ")"
+}
+
+print("== LRU cache ==");
+print("");
+
+let cache = lru_new(3);
+print(f"new cache: {show_cache(cache)}");
+print("");
+
+print("Insert 1=100, 2=200, 3=300 (fills the cache to capacity):");
+let c1 = lru_put(cache, 1, 100);
+let c2 = lru_put(c1, 2, 200);
+let c3 = lru_put(c2, 3, 300);
+print(f"  cache: {show_cache(c3)}");
+print("");
+
+print("Get key 1 (hits, marks it most-recently-used):");
+let g1 = lru_get(c3, 1);
+let v1 = g1.0;
+let c4 = g1.1;
+print(f"  get(1) = {v1}");
+print(f"  cache: {show_cache(c4)}");
+print("");
+
+print("Insert 4=400 (evicts LRU = key 2):");
+let c5 = lru_put(c4, 4, 400);
+print(f"  cache: {show_cache(c5)}");
+print("");
+
+print("Get key 2 (miss after eviction):");
+let g2 = lru_get(c5, 2);
+let v2 = g2.0;
+print(f"  get(2) = {v2}  (-9999 = miss)");
+print("");
+
+print("Insert 5=500 (evicts LRU = key 3):");
+let c6 = lru_put(c5, 5, 500);
+print(f"  cache: {show_cache(c6)}");
+print("");
+
+print("Update key 1 to 999 (marks it MRU):");
+let c7 = lru_put(c6, 1, 999);
+print(f"  cache: {show_cache(c7)}");
+print("");
+
+print("Final state:");
+print(f"  cache: {show_cache(c7)}");
+print("");
+
+// Sanity assertions.
+assert_eq(v1, 100);     // get(1) returned the original value.
+assert_eq(v2, -9999);   // get(2) missed after eviction.
+assert_eq(len(c7.1), 3);
+assert_eq(c7.1[0], 4);    // LRU
+assert_eq(c7.1[1], 5);
+assert_eq(c7.1[2], 1);    // MRU
+assert_eq(c7.2[2], 999);  // updated value
+
+print("All assertions passed.");
