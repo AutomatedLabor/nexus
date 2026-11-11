@@ -3,7 +3,6 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/lib/theme-provider";
-import { QueryProvider } from "@/lib/query-provider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -17,37 +16,36 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "ATLAS · Autonomous Technical Limit Assessment System",
-    template: "%s · ATLAS",
+    default: "Aether · Project Nexus",
+    template: "%s · Aether",
   },
   description:
-    "ATLAS is a real-time dashboard that visualizes AI agent capability, limits, and benchmark performance for the registered runtime environment.",
+    "An interactive playground for the Aether programming language. Write, run, and explore Aether code in your browser — powered by a real in-browser lexer, parser, type-checker, and tree-walking evaluator.",
   keywords: [
-    "ATLAS",
-    "AI agent",
-    "benchmark",
-    "capability",
-    "limits",
-    "telemetry",
-    "Next.js",
+    "Aether",
+    "Project Nexus",
+    "programming language",
+    "playground",
+    "compiler",
     "TypeScript",
+    "Next.js",
   ],
-  authors: [{ name: "ATLAS Team" }],
+  authors: [{ name: "Project Nexus" }],
   icons: {
     icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
   },
   openGraph: {
-    title: "ATLAS · Autonomous Technical Limit Assessment System",
+    title: "Aether · Project Nexus",
     description:
-      "Real-time dashboard for AI agent capability, limits, and benchmark performance.",
-    siteName: "ATLAS",
+      "An interactive playground for the Aether programming language — write, run, and explore code in your browser.",
+    siteName: "Aether",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "ATLAS · Autonomous Technical Limit Assessment System",
+    title: "Aether · Project Nexus",
     description:
-      "Real-time dashboard for AI agent capability, limits, and benchmark performance.",
+      "An interactive playground for the Aether programming language — write, run, and explore code in your browser.",
   },
 };
 
@@ -62,10 +60,8 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >
         <ThemeProvider>
-          <QueryProvider>
-            {children}
-            <SonnerToaster position="bottom-right" richColors closeButton />
-          </QueryProvider>
+          {children}
+          <SonnerToaster position="bottom-right" richColors closeButton />
         </ThemeProvider>
       </body>
     </html>

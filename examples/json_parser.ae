@@ -1,0 +1,348 @@
+// json_parser.ae
+// ===============
+// A small recursive-descent JSON parser written in pure Aether.
+//
+// Supported subset of JSON:
+//   - objects   { "key": value, ... }
+//   - arrays    [ value, value, ... ]
+//   - strings   "..."   (escapes: \\ \" \n \t)
+//   - integers  42, -7
+//   - booleans  true / false
+//   - null
+//
+// Parsed values are wrapped in a tagged enum:
+//
+//   enum JV {
+//     Nul,
+//     Bool(bool),
+//     Int(int),
+//     Str(string),
+//     Arr([JV]),
+//     Obj([(string, JV)]),     // array of (key, value) tuples
+//   }
+//
+// Objects are stored as an array of `(string, JV)` tuples (insertion order
+// preserved). We can't use a `{string: JV}` map type as an enum payload —
+// Aether's parser doesn't accept map-typed enum payloads — but tuples do.
+//
+// The parser is a single recursive function `parse_json(s)` that uses
+// nested closure helpers sharing a `mut pos` index. To avoid forward-
+// reference issues at the type-checker, the value-dispatch closure is
+// stored in a `mut` variable and assigned after the per-type parsers
+// are defined.
+
+enum JV {
+  Nul,
+  Bool(bool),
+  Int(int),
+  Str(string),
+  Arr([JV]),
+  Obj([(string, JV)]),
+}
+
+fn is_digit(c: string) -> bool {
+  c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+    || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+}
+
+fn is_ws(c: string) -> bool {
+  c == " " || c == "\t" || c == "\n" || c == "\r"
+}
+
+fn digit_val(c: string) -> int {
+  if c == "0" { 0 } else {
+  if c == "1" { 1 } else {
+  if c == "2" { 2 } else {
+  if c == "3" { 3 } else {
+  if c == "4" { 4 } else {
+  if c == "5" { 5 } else {
+  if c == "6" { 6 } else {
+  if c == "7" { 7 } else {
+  if c == "8" { 8 } else {
+  9 } } } } } } } } }
+}
+
+fn parse_json(s: string) -> JV {
+  let mut pos = 0;
+
+  fn at_end() -> bool { pos >= len(s) }
+  fn peek() -> string {
+    if pos < len(s) { str(s[pos]) } else { "" }
+  }
+  fn advance() -> string {
+    let c = peek();
+    pos = pos + 1;
+    c
+  }
+  fn skip_ws() {
+    while !at_end() && is_ws(peek()) {
+      let _ = advance();
+    }
+  }
+
+  // ---- STRING ----
+  fn parse_string() -> string {
+    let _ = advance();  // consume opening quote
+    let mut out = "";
+    let mut done = false;
+    while !done && !at_end() {
+      let c = peek();
+      if c == "\"" {
+        let _ = advance();
+        done = true;
+      } else {
+        if c == "\\" {
+          let _ = advance();
+          let esc = peek();
+          let _ = advance();
+          if esc == "n" {
+            out = out + "\n";
+          } else {
+            if esc == "t" {
+              out = out + "\t";
+            } else {
+              out = out + esc;
+            };
+          };
+        } else {
+          out = out + c;
+          let _ = advance();
+        };
+      };
+    }
+    out
+  }
+
+  // ---- NUMBER (integers only, optional leading -) ----
+  fn parse_number() -> JV {
+    let mut neg = false;
+    if peek() == "-" {
+      neg = true;
+      let _ = advance();
+    };
+    let mut n = 0;
+    while !at_end() && is_digit(peek()) {
+      n = n * 10 + digit_val(peek());
+      let _ = advance();
+    }
+    if neg {
+      JV::Int(-n)
+    } else {
+      JV::Int(n)
+    }
+  }
+
+  // ---- ARRAY ----
+  fn parse_array() -> JV {
+    let _ = advance();  // consume [
+    let mut out = [];
+    skip_ws();
+    if peek() == "]" {
+      let _ = advance();
+    } else {
+      let mut done = false;
+      while !done {
+        skip_ws();
+        let v = dispatch_value();
+        push(out, v);
+        skip_ws();
+        let c = peek();
+        if c == "," {
+          let _ = advance();
+        } else {
+          if c == "]" {
+            let _ = advance();
+            done = true;
+          } else {
+            done = true;
+          };
+        };
+      }
+    };
+    JV::Arr(out)
+  }
+
+  // ---- OBJECT ----
+  fn parse_object() -> JV {
+    let _ = advance();  // consume {
+    let mut entries = [];
+    skip_ws();
+    if peek() == "}" {
+      let _ = advance();
+    } else {
+      let mut done = false;
+      while !done {
+        skip_ws();
+        let k = parse_string();
+        skip_ws();
+        if peek() == ":" {
+          let _ = advance();
+          skip_ws();
+          let v = dispatch_value();
+          push(entries, (k, v));
+          skip_ws();
+          let c = peek();
+          if c == "," {
+            let _ = advance();
+          } else {
+            if c == "}" {
+              let _ = advance();
+              done = true;
+            } else {
+              done = true;
+            };
+          };
+        } else {
+          done = true;
+        };
+      }
+    };
+    JV::Obj(entries)
+  }
+
+  // ---- LITERAL: true / false / null ----
+  fn parse_literal() -> JV {
+    if peek() == "t" {
+      // "true"
+      let _ = advance(); let _ = advance(); let _ = advance(); let _ = advance();
+      JV::Bool(true)
+    } else {
+      if peek() == "f" {
+        let _ = advance(); let _ = advance(); let _ = advance(); let _ = advance(); let _ = advance();
+        JV::Bool(false)
+      } else {
+        // "null"
+        let _ = advance(); let _ = advance(); let _ = advance(); let _ = advance();
+        JV::Nul
+      }
+    }
+  }
+
+  // ---- DISPATCH ----
+  // We use an indirection so the per-type parsers above can reference
+  // dispatch_value before it's defined: a `mut` closure slot.
+  let mut dispatch_value = fn() -> JV { JV::Nul };
+  dispatch_value = fn() -> JV {
+    skip_ws();
+    let c = peek();
+    if c == "{" {
+      parse_object()
+    } else {
+      if c == "[" {
+        parse_array()
+      } else {
+        if c == "\"" {
+          JV::Str(parse_string())
+        } else {
+          if is_digit(c) || c == "-" {
+            parse_number()
+          } else {
+            parse_literal()
+          }
+        }
+      }
+    }
+  };
+
+  dispatch_value()
+}
+
+// --- Helpers for reading objects/arrays by key/index -------------------
+
+fn obj_get(o: JV, key: string) -> JV {
+  match o {
+    JV::Obj(entries) => {
+      let mut found = false;
+      let mut result = JV::Nul;
+      for kv in entries {
+        let k = kv.0;
+        let v = kv.1;
+        if k == key {
+          found = true;
+          result = v;
+        };
+      }
+      result
+    },
+    _ => JV::Nul,
+  }
+}
+
+// --- JSON pretty-printing ---------------------------------------------
+
+fn json_string(v: JV) -> string {
+  match v {
+    JV::Nul => "null",
+    JV::Bool(b) => if b { "true" } else { "false" },
+    JV::Int(n) => str(n),
+    JV::Str(s) => "\"" + s + "\"",
+    JV::Arr(items) => {
+      let mut out = "[";
+      let mut first = true;
+      for x in items {
+        if first { first = false; } else { out = out + ", "; };
+        out = out + json_string(x);
+      }
+      out + "]"
+    },
+    JV::Obj(entries) => {
+      let mut out = "{";
+      let mut first = true;
+      for kv in entries {
+        let k = kv.0;
+        let v = kv.1;
+        if first { first = false; } else { out = out + ", "; };
+        out = out + "\"" + k + "\": " + json_string(v);
+      }
+      out + "}"
+    },
+  }
+}
+
+// --- Demonstration ------------------------------------------------------
+
+print("== Tiny JSON parser in Aether ==");
+print("");
+
+let sample1 = "{\"name\":\"Aether\",\"year\":2026}";
+print(f"Input:    {sample1}");
+let p1 = parse_json(sample1);
+print(f"Parsed:   {json_string(p1)}");
+let n1 = obj_get(p1, "name");
+let y1 = obj_get(p1, "year");
+print(f"  .name = {json_string(n1)}");
+print(f"  .year = {json_string(y1)}");
+print("");
+
+let sample2 = "{\"user\":\"ada\",\"age\":36,\"admin\":true,\"tags\":[\"a\",\"b\"],\"address\":{\"city\":\"London\",\"zip\":\"NW1\"},\"deleted\":null}";
+print(f"Input:    {sample2}");
+let p2 = parse_json(sample2);
+print(f"Parsed:   {json_string(p2)}");
+print("");
+print("Field access via obj_get:");
+let u2 = obj_get(p2, "user");
+let a2 = obj_get(p2, "age");
+let ad2 = obj_get(p2, "admin");
+let t2 = obj_get(p2, "tags");
+let addr = obj_get(p2, "address");
+let city = obj_get(addr, "city");
+let zip = obj_get(addr, "zip");
+let del = obj_get(p2, "deleted");
+print(f"  .user    = {json_string(u2)}");
+print(f"  .age     = {json_string(a2)}");
+print(f"  .admin   = {json_string(ad2)}");
+print(f"  .tags    = {json_string(t2)}");
+print(f"  .address = {json_string(addr)}");
+print(f"  .address.city = {json_string(city)}");
+print(f"  .address.zip  = {json_string(zip)}");
+print(f"  .deleted  = {json_string(del)}");
+print("");
+
+// Sanity assertions.
+assert_eq(n1, JV::Str("Aether"));
+assert_eq(y1, JV::Int(2026));
+assert_eq(u2, JV::Str("ada"));
+assert_eq(a2, JV::Int(36));
+assert_eq(ad2, JV::Bool(true));
+assert_eq(del, JV::Nul);
+print("All assertions passed.");

@@ -1,0 +1,28 @@
+// fizzbuzz.ae
+// ===========
+// Classic FizzBuzz from 1 to 100. For each integer i in that range, print:
+//   "Fizz"        if i is divisible by 3 only,
+//   "Buzz"        if i is divisible by 5 only,
+//   "FizzBuzz"    if i is divisible by both 3 and 5,
+//   the number itself otherwise.
+//
+// Demonstrates for-in over a range, modulo, comparison operators,
+// if / else if / else chains, and string interpolation.
+
+for i in range(1, 101, 1) {
+  let by3 = i % 3 == 0;
+  let by5 = i % 5 == 0;
+  if by3 && by5 {
+    print("FizzBuzz");
+  } else {
+    if by3 {
+      print("Fizz");
+    } else {
+      if by5 {
+        print("Buzz");
+      } else {
+        print(f"{i}");
+      }
+    }
+  };
+}

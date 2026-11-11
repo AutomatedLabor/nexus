@@ -1,0 +1,74 @@
+// primes.ae
+// =========
+// Sieve of Eratosthenes: find every prime in [2, N] and print them
+// comma-separated. We also report the count.
+//
+// The algorithm: start with an array `sieve` of length N+1 where
+// sieve[k] is true iff k is still a prime candidate. Mark 0 and 1 as
+// composite. Then for each p starting at 2, if sieve[p] is still true,
+// mark every multiple of p (2p, 3p, ...) as composite. Whatever is left
+// flagged true is prime.
+
+fn sieve_of_eratosthenes(n: int) -> [int] {
+  // Build a length-(n+1) array of `true` flags. We start with all true
+  // and clear composites. Index 0 and 1 are not primes.
+  let mut flags = [];
+  let mut i = 0;
+  while i <= n {
+    push(flags, true);
+    i = i + 1;
+  }
+  flags[0] = false;
+  if n >= 1 {
+    flags[1] = false;
+  };
+
+  // For each candidate p, if it is still flagged true, clear its multiples.
+  let mut p = 2;
+  while p * p <= n {
+    if flags[p] {
+      let mut multiple = p * p;
+      while multiple <= n {
+        flags[multiple] = false;
+        multiple = multiple + p;
+      }
+    };
+    p = p + 1;
+  }
+
+  // Collect surviving indices into the result array.
+  let mut result = [];
+  let mut k = 2;
+  while k <= n {
+    if flags[k] {
+      push(result, k);
+    };
+    k = k + 1;
+  }
+  result
+}
+
+fn print_primes(up_to: int) {
+  let primes = sieve_of_eratosthenes(up_to);
+  print(f"Primes up to {up_to}:");
+  // Render as a single comma-separated line.
+  let mut line = "  ";
+  let mut first = true;
+  for p in primes {
+    if first {
+      line = line + str(p);
+      first = false;
+    } else {
+      line = line + ", " + str(p);
+    };
+  }
+  print(line);
+  print(f"  (count = {len(primes)})");
+  print("");
+}
+
+print("== Sieve of Eratosthenes ==");
+print("");
+print_primes(50);
+print_primes(100);
+print_primes(200);

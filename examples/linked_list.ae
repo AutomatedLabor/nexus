@@ -1,0 +1,93 @@
+// linked_list.ae
+// ===============
+// A singly-linked list of integers built from a recursive enum:
+//   enum List { Node(int, List), Nil }
+//
+// The "next" pointer is just another List value stored inside the
+// Node variant. All operations are pure: they return new lists rather
+// than mutating in place. We implement length, to_string, prepend
+// (cons), append (push to end), and reverse.
+
+enum List {
+  Node(int, List),
+  Nil,
+}
+
+// Number of nodes. The wildcard `_` ignores the int payload.
+fn list_length(l: List) -> int {
+  match l {
+    List::Node(_, rest) => 1 + list_length(rest),
+    List::Nil => 0,
+  }
+}
+
+// Render as "[1, 2, 3]" style.
+fn list_to_string(l: List) -> string {
+  fn helper(l: List, first: bool) -> string {
+    match l {
+      List::Node(v, rest) => {
+        let sep = if first { "" } else { ", " };
+        sep + str(v) + helper(rest, false)
+      },
+      List::Nil => "",
+    }
+  }
+  "[" + helper(l, true) + "]"
+}
+
+// Prepend (cons) — O(1), returns a new list with x at the front.
+fn list_prepend(l: List, x: int) -> List {
+  List::Node(x, l)
+}
+
+// Append (push to end) — O(n), returns a new list with x at the back.
+fn list_append(l: List, x: int) -> List {
+  match l {
+    List::Node(v, rest) => List::Node(v, list_append(rest, x)),
+    List::Nil => List::Node(x, List::Nil),
+  }
+}
+
+// Reverse — O(n) with an accumulator. Walks the list, prepending each
+// element onto `acc`. When we hit Nil, `acc` holds the reversed list.
+fn list_reverse(l: List) -> List {
+  fn helper(l: List, acc: List) -> List {
+    match l {
+      List::Node(v, rest) => helper(rest, List::Node(v, acc)),
+      List::Nil => acc,
+    }
+  }
+  helper(l, List::Nil)
+}
+
+// --- Demonstration ----------------------------------------------------
+
+print("== Singly-linked list (recursive enum) ==");
+print("");
+
+// Build [10, 20, 30] from Nil using append.
+let mut l = List::Nil;
+l = list_append(l, 10);
+l = list_append(l, 20);
+l = list_append(l, 30);
+print(f"after appends:   {list_to_string(l)}  (len = {list_length(l)})");
+
+// Prepend 5: now [5, 10, 20, 30].
+l = list_prepend(l, 5);
+print(f"after prepend 5:  {list_to_string(l)}  (len = {list_length(l)})");
+
+// Reverse: now [30, 20, 10, 5].
+let r = list_reverse(l);
+print(f"reversed:        {list_to_string(r)}  (len = {list_length(r)})");
+
+// Reverse of reverse should give back the original.
+let rr = list_reverse(r);
+print(f"reverse twice:   {list_to_string(rr)}  (len = {list_length(rr)})");
+
+print("");
+
+// A few assertions to make the behavior explicit.
+assert_eq(list_length(l), 4);
+assert_eq(list_length(List::Nil), 0);
+assert_eq(list_to_string(List::Nil), "[]");
+print("All assertions passed.");

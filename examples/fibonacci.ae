@@ -1,0 +1,87 @@
+// fibonacci.ae
+// ============
+// Three implementations of the Fibonacci sequence:
+//   1. Naive recursion            fib_rec(n)
+//   2. Iterative (loop-based)    fib_iter(n)
+//   3. Memoized (array cache)    fib_memo(n)
+// We print a table for n = 15, 20, 30. The naive recursion is O(2^n) and
+// blows past the playground's step budget for n=30 (~2.7M calls), so for
+// n=30 we run only the iterative and memoized versions and report the
+// naive result as "skip" with a note.
+
+// --- 1. Naive recursion ----------------------------------------------
+fn fib_rec(n: int) -> int {
+  if n < 2 { n } else { fib_rec(n - 1) + fib_rec(n - 2) }
+}
+
+// --- 2. Iterative -----------------------------------------------------
+fn fib_iter(n: int) -> int {
+  if n < 2 { n } else {
+    let mut a = 0;
+    let mut b = 1;
+    let mut i = 2;
+    while i <= n {
+      let c = a + b;
+      a = b;
+      b = c;
+      i = i + 1;
+    }
+    b
+  }
+}
+
+// --- 3. Memoized ------------------------------------------------------
+// Top-down recursion with an array cache captured by the closure.
+fn fib_memo(n: int) -> int {
+  let mut cache = [0, 1];
+  fn helper(k: int) -> int {
+    if k < len(cache) {
+      cache[k]
+    } else {
+      let v = helper(k - 1) + helper(k - 2);
+      push(cache, v);
+      v
+    }
+  }
+  helper(n)
+}
+
+// --- Driver -----------------------------------------------------------
+print("== Fibonacci implementations ==");
+print("");
+print("  n  |  recursive  |  iterative  |  memoized");
+print("-----+-------------+-------------+-------------");
+
+let ns = [15, 20, 30];
+for n in ns {
+  let b = fib_iter(n);
+  let c = fib_memo(n);
+  // Naive recursion is fine for small n; skip for large n to stay inside
+  // the playground's step budget.
+  let mut a_str = "";
+  if n <= 20 {
+    let a = fib_rec(n);
+    a_str = str(a);
+  } else {
+    a_str = "skip (O(2^n))";
+  };
+  print(f"  {n}  |  {a_str}        |  {b}        |  {c}");
+}
+
+print("");
+print("== Sanity check: iter == memo for all n, rec == iter for n <= 20 ==");
+let mut ok = true;
+for n in ns {
+  let i = fib_iter(n);
+  let m = fib_memo(n);
+  if i != m { ok = false; };
+  if n <= 20 {
+    let r = fib_rec(n);
+    if r != i { ok = false; };
+  };
+}
+if ok {
+  print("ALL OK — all implementations agree where computed.");
+} else {
+  print("MISMATCH — see table above.");
+};
