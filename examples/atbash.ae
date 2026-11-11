@@ -1,0 +1,94 @@
+// atbash.ae
+// =========
+// Atbash cipher: replace each letter with its mirror in the
+// alphabet. So 'a' <-> 'z', 'b' <-> 'y', ..., 'z' <-> 'a' (and the
+// same for uppercase). Non-letters pass through unchanged.
+//
+//   "ABCXYZ"  ->  "ZYXCBA"
+//
+// Like the other cipher examples we use two 26-char lookup strings
+// and `str(ALPHABET[i])`-style indexing. The Atbash map is just
+// `pos -> 25 - pos` — no shift, no wrap-around edge cases.
+
+let UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+let LOWER = "abcdefghijklmnopqrstuvwxyz";
+
+// Find index of c in alphabet, or -1 if not found.
+fn find_pos(c: string, alphabet: string) -> int {
+  let mut found = -1;
+  let mut i = 0;
+  while i < len(alphabet) {
+    if str(alphabet[i]) == c {
+      found = i;
+    };
+    i = i + 1;
+  }
+  found
+}
+
+// Atbash a single character. The mirror position is `25 - pos`.
+fn atbash_char(c: string) -> string {
+  let up_pos = find_pos(c, UPPER);
+  if up_pos >= 0 {
+    let p = 25 - up_pos;
+    return str(UPPER[p]);
+  };
+  let lo_pos = find_pos(c, LOWER);
+  if lo_pos >= 0 {
+    let p = 25 - lo_pos;
+    return str(LOWER[p]);
+  };
+  c
+}
+
+// Atbash a whole string by folding each char via reduce.
+fn atbash(s: string) -> string {
+  let mut chars = [];
+  let mut i = 0;
+  while i < len(s) {
+    push(chars, str(s[i]));
+    i = i + 1;
+  }
+  reduce(chars, fn(acc: string, c: string) -> string {
+    acc + atbash_char(c)
+  }, "")
+}
+
+print("== Atbash cipher ==");
+print("");
+
+let input = "ABCXYZ";
+let out = atbash(input);
+print(f"input:    \"{input}\"");
+print(f"atbash:   \"{out}\"");
+print("");
+
+// More samples.
+let samples = [
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  "abcdefghijklmnopqrstuvwxyz",
+  "Hello, World!",
+  "Aether",
+  "the quick brown fox jumps over the lazy dog"
+];
+let mut k = 0;
+while k < len(samples) {
+  let s = samples[k];
+  let e = atbash(s);
+  let back = atbash(e);
+  let mark = if back == s { "ok" } else { "MISMATCH" };
+  print(f"  \"{s}\"");
+  print(f"    -> \"{e}\"");
+  print(f"    -> \"{back}\"  [{mark}]");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(atbash("ABCXYZ"), "ZYXCBA");
+assert_eq(atbash("ZYXCBA"), "ABCXYZ");
+assert_eq(atbash("abcdefghijklmnopqrstuvwxyz"), "zyxwvutsrqponmlkjihgfedcba");
+assert_eq(atbash("Hello"), "Svool");
+assert_eq(atbash(atbash("anything")), "anything");
+assert_eq(atbash("123!"), "123!");
+print("All assertions passed.");

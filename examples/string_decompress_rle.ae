@@ -1,0 +1,118 @@
+// string_decompress_rle.ae
+// ========================
+// Run-length decoding: the inverse of string_compress_rle.ae.
+// Expand a string of the form "count char count char ..." back
+// into the original run of characters.
+//
+//   "3a2b1c"  ->  "aaabbc"
+//   "2a3b2a"  ->  "aabbbaa"
+//
+// We parse the count as a multi-digit integer (so "12a" decodes
+// to twelve 'a's) and the following character as the run character.
+// This is the canonical RLE decoder; it round-trips with the
+// encoder in string_compress_rle.ae.
+
+// Convert a single digit char to its integer value via chained
+// if/else (Aether v1 has no `switch`).
+fn digit_value(c: string) -> int {
+  if c == "0" { 0 } else {
+  if c == "1" { 1 } else {
+  if c == "2" { 2 } else {
+  if c == "3" { 3 } else {
+  if c == "4" { 4 } else {
+  if c == "5" { 5 } else {
+  if c == "6" { 6 } else {
+  if c == "7" { 7 } else {
+  if c == "8" { 8 } else {
+  if c == "9" { 9 } else {
+  -1 } } } } } } } } } }
+}
+
+// Return true if c is one of "0".."9".
+fn is_digit(c: string) -> bool {
+  digit_value(c) >= 0
+}
+
+// Repeat a single-char string `n` times. We build it with a
+// while loop rather than rely on a `repeat` builtin.
+fn repeat_char(c: string, n: int) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < n {
+    out = out + c;
+    i = i + 1;
+  }
+  out
+}
+
+// RLE decode. Walks the input with an index `i`:
+//   - read all consecutive digits forming the count
+//   - the next character is the run char
+//   - emit run_char count times, advance i
+// Returns the decoded string. Empty input -> empty output.
+fn rle_decode(s: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(s) {
+    // Parse the count.
+    let mut count = 0;
+    let mut has_digit = false;
+    while (i < len(s)) && is_digit(str(s[i])) {
+      count = count * 10 + digit_value(str(s[i]));
+      has_digit = true;
+      i = i + 1;
+    }
+    // If we parsed at least one digit, the next char is the run.
+    if has_digit && (i < len(s)) {
+      let run_char = str(s[i]);
+      out = out + repeat_char(run_char, count);
+      i = i + 1;
+    } else {
+      // Malformed input — bail to avoid an infinite loop.
+      i = i + 1;
+    }
+  }
+  out
+}
+
+print("== String decompression (RLE) ==");
+print("");
+
+let cases = [
+  "3a2b1c",
+  "2a3b2a",
+  "1a1b1c",
+  "7z",
+  "12a",                // multi-digit count
+  "3a10b2c",            // mixed counts
+  ""
+];
+let mut k = 0;
+while k < len(cases) {
+  let e = cases[k];
+  let d = rle_decode(e);
+  print(f"  \"{e}\"  ({len(e)} chars) -> \"{d}\"  ({len(d)} chars)");
+  k = k + 1;
+}
+print("");
+
+// Round-trip with the encoder, conceptually: re-decoding a known
+// encoding should give back the original. We can't directly call
+// the encoder (it lives in another file), but we hand-verify a
+// round-trip here.
+let original = "aaabbc";
+let encoded = "3a2b1c";
+let decoded = rle_decode(encoded);
+let mark = if decoded == original { "ok" } else { "MISMATCH" };
+print(f"round-trip: rle_decode(\"{encoded}\") = \"{decoded}\" (expected \"{original}\") [{mark}]");
+print("");
+
+// Sanity assertions.
+assert_eq(rle_decode("3a2b1c"), "aaabbc");
+assert_eq(rle_decode("2a3b2a"), "aabbbaa");
+assert_eq(rle_decode("1a1b1c"), "abc");
+assert_eq(rle_decode("7z"), "zzzzzzz");
+assert_eq(rle_decode("12a"), "aaaaaaaaaaaa");
+assert_eq(rle_decode("3a10b2c"), "aaabbbbbbbbbbcc");
+assert_eq(rle_decode(""), "");
+print("All assertions passed.");

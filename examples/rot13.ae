@@ -1,0 +1,101 @@
+// rot13.ae
+// ========
+// ROT13 — shift each letter by 13 positions in the alphabet. Since
+// 13 is half of 26, ROT13 is its own inverse: applying it twice
+// returns the original text. That makes it a no-key cipher: useful
+// only for hiding spoilers / puzzle answers from casual reading.
+//
+//   "Hello, World!"  ->  "Uryyb, Jbeyq!"
+//
+// We use two lookup strings (UPPER / LOWER) and `str(UPPER[i])`
+// style indexing, since Aether v1 has no `char(int)` builtin. The
+// shift `(pos + 13) % 26` works cleanly because 13 < 26 — no need
+// for the negative-mod workaround used in caesar_cipher.
+
+let UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+let LOWER = "abcdefghijklmnopqrstuvwxyz";
+
+// Find index of c in ALPHABET, or -1 if not found.
+fn find_pos(c: string, alphabet: string) -> int {
+  let mut found = -1;
+  let mut i = 0;
+  while i < len(alphabet) {
+    if str(alphabet[i]) == c {
+      found = i;
+    };
+    i = i + 1;
+  }
+  found
+}
+
+// ROT13 a single character. Uppercase letters map within UPPER,
+// lowercase within LOWER; other characters pass through unchanged.
+fn rot13_char(c: string) -> string {
+  let up_pos = find_pos(c, UPPER);
+  if up_pos >= 0 {
+    let p = (up_pos + 13) % 26;
+    return str(UPPER[p]);
+  };
+  let lo_pos = find_pos(c, LOWER);
+  if lo_pos >= 0 {
+    let p = (lo_pos + 13) % 26;
+    return str(LOWER[p]);
+  };
+  c
+}
+
+// ROT13 a whole string by folding each char via reduce.
+fn rot13(s: string) -> string {
+  // Build a [string] of single chars.
+  let mut chars = [];
+  let mut i = 0;
+  while i < len(s) {
+    push(chars, str(s[i]));
+    i = i + 1;
+  }
+  reduce(chars, fn(acc: string, c: string) -> string {
+    acc + rot13_char(c)
+  }, "")
+}
+
+print("== ROT13 ==");
+print("");
+
+let input = "Hello, World!";
+let encoded = rot13(input);
+let decoded = rot13(encoded);
+print(f"input:    \"{input}\"");
+print(f"encoded:  \"{encoded}\"");
+print(f"decoded:  \"{decoded}\"  (should equal input)");
+print("");
+
+// More samples, including alphabet-coverage strings.
+let samples = [
+  "AETHER",
+  "attack at dawn",
+  "the quick brown fox jumps over the lazy dog",
+  "rot13 is its own inverse",
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  "abcdefghijklmnopqrstuvwxyz"
+];
+let mut k = 0;
+while k < len(samples) {
+  let s = samples[k];
+  let e = rot13(s);
+  let back = rot13(e);
+  let mark = if back == s { "ok" } else { "MISMATCH" };
+  print(f"  \"{s}\"");
+  print(f"    -> \"{e}\"");
+  print(f"    -> \"{back}\"  [{mark}]");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(rot13("Hello, World!"), "Uryyb, Jbeyq!");
+assert_eq(rot13("AETHER"), "NRGURE");
+assert_eq(rot13(rot13("anything")), "anything");
+assert_eq(rot13("ABC"), "NOP");
+assert_eq(rot13("NOP"), "ABC");
+assert_eq(rot13("xyz"), "klm");
+print("All assertions passed.");

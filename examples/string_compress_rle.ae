@@ -1,0 +1,80 @@
+// string_compress_rle.ae
+// =======================
+// Run-length encoding (RLE): compress a string by replacing each
+// run of identical characters with the count followed by the
+// character. So
+//
+//   "aaabbc"  ->  "3a2b1c"
+//   "aabbbaa" ->  "a2b3a2"
+//
+// Walk the input with a while loop, tracking the current run's
+// character and length. When the character changes (or we hit the
+// end), append the count + char to the output and reset. The
+// output encoding always includes a count (even for runs of length
+// 1), so the decoder is unambiguous.
+
+// Run-length encode s as "count char count char ...". Returns the
+// encoded string. Empty input -> empty output.
+fn rle_encode(s: string) -> string {
+  if len(s) == 0 {
+    return "";
+  };
+  let mut out = "";
+  let mut run_char = str(s[0]);
+  let mut run_len = 1;
+  let mut i = 1;
+  while i < len(s) {
+    let c = str(s[i]);
+    if c == run_char {
+      run_len = run_len + 1;
+    } else {
+      out = out + str(run_len) + run_char;
+      run_char = c;
+      run_len = 1;
+    };
+    i = i + 1;
+  }
+  // Flush the final run.
+  out + str(run_len) + run_char
+}
+
+print("== String compression (RLE) ==");
+print("");
+
+let cases = [
+  "aaabbc",
+  "aabbbaa",
+  "abc",
+  "",
+  "zzzzzzz",
+  "AAAAAaaaaBBBBcccc",
+  "Hello, World!"
+];
+let mut k = 0;
+while k < len(cases) {
+  let s = cases[k];
+  let e = rle_encode(s);
+  let ratio = if len(s) == 0 { 0 } else { int((float(len(e)) / float(len(s))) * 100) };
+  print(f"  \"{s}\"  ({len(s)} chars) -> \"{e}\"  ({len(e)} chars, ~{ratio}% of original)");
+  k = k + 1;
+}
+print("");
+
+// Show the decoder-equivalent (next file, string_decompress_rle.ae)
+// round-trips: we re-encode the already-encoded string to
+// demonstrate idempotence on a "fully run-length" input (each run
+// is length 1, since the digits and chars alternate).
+let s = "aaabbc";
+let e = rle_encode(s);
+let ee = rle_encode(e);
+print(f"re-encoding the encoding: rle(\"{e}\") = \"{ee}\"");
+print("");
+
+// Sanity assertions.
+assert_eq(rle_encode("aaabbc"), "3a2b1c");
+assert_eq(rle_encode("aabbbaa"), "2a3b2a");
+assert_eq(rle_encode("abc"), "1a1b1c");
+assert_eq(rle_encode(""), "");
+assert_eq(rle_encode("zzzzzzz"), "7z");
+assert_eq(rle_encode("Hello, World!"), "1H1e2l1o1,1 1W1o1r1l1d1!");
+print("All assertions passed.");

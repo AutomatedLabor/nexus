@@ -1,0 +1,81 @@
+// e_series.ae
+// ===========
+// Approximate Euler's number e via its Taylor series:
+//
+//   e = sum_{k=0}^{infinity}  1 / k! = 1 + 1/1! + 1/2! + 1/3! + ...
+//
+// The series converges extremely fast (factorials grow quickly),
+// so summing 20 terms already gives double-precision accuracy:
+//
+//   e ~ 2.7182818284590455
+//
+// We use `let mut acc` referenced after a while loop (the while
+// variant is unaffected by the for-loop-scope quirk), and compute
+// the running factorial incrementally so we never recompute k!
+
+print("== Series approximation of e ==");
+print("");
+
+let terms = 20;
+let mut acc = 1.0;       // 1/0! = 1
+let mut fact = 1.0;     // running k!
+let mut k = 1;
+while k < terms {
+  fact = fact * float(k);
+  let term = 1.0 / fact;
+  acc = acc + term;
+  k = k + 1;
+}
+
+print(f"terms summed:  {terms}");
+print(f"e approx:      {acc}");
+print(f"reference:     2.718281828459045");
+print(f"abs error:     {abs(acc - 2.718281828459045)}");
+print("");
+
+// Convergence table — print the partial sum after N terms.
+print("partial sums after N terms:");
+let checkpoints = [1, 3, 5, 8, 12, 20];
+let mut ci = 0;
+while ci < len(checkpoints) {
+  let n = checkpoints[ci];
+  let mut a = 1.0;
+  let mut f = 1.0;
+  let mut j = 1;
+  while j < n {
+    f = f * float(j);
+    a = a + 1.0 / f;
+    j = j + 1;
+  }
+  let err = abs(a - 2.718281828459045);
+  print(f"  N = {n:2}: e ~ {a}  (err = {err})");
+  ci = ci + 1;
+}
+print("");
+
+// Helper wrapped as a function for sanity assertions.
+fn e_approx(terms: int) -> float {
+  let mut acc = 1.0;
+  let mut fact = 1.0;
+  let mut k = 1;
+  while k < terms {
+    fact = fact * float(k);
+    acc = acc + 1.0 / fact;
+    k = k + 1;
+  }
+  acc
+}
+
+// Loose tolerance: the series is monotone decreasing in error.
+fn approx(a: float, b: float) -> bool {
+  abs(a - b) < 0.0001
+}
+
+// Sanity assertions.
+assert(approx(e_approx(20), 2.71828));
+assert(approx(e_approx(15), 2.718281828459045));
+assert(e_approx(1) == 1.0);
+assert(e_approx(3) >= 2.5);
+assert(e_approx(4) > 2.5);
+assert(e_approx(5) < 2.72);
+print("All assertions passed.");

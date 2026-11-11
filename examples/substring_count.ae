@@ -1,0 +1,94 @@
+// substring_count.ae
+// ==================
+// Count non-overlapping? overlapping? occurrences of a pattern
+// string inside a text string. We count overlapping occurrences
+// (every index where the pattern matches, including overlapping
+// ones), since that's the more general answer and the one that
+// naturally falls out of a naive scan.
+//
+//   text: "ababcabab"
+//   pat:  "ab"
+//   count: 4  (matches at indices 0, 2, 5, 7)
+//
+// Algorithm: at each starting position i in [0, len(text) -
+// len(pat) + 1), compare the substring of len(pat) characters
+// starting at i with the pattern. If they match, increment count.
+// We compare char-by-char (no `substring` builtin).
+
+// Compare text[i..i+len(pat)] with pat, char by char. Returns
+// true iff all len(pat) characters match.
+fn substr_eq(text: string, i: int, pat: string) -> int {
+  let mut ok = 1;
+  let mut j = 0;
+  while (ok == 1) && (j < len(pat)) {
+    if str(text[i + j]) != str(pat[j]) {
+      ok = 0;
+    };
+    j = j + 1;
+  }
+  ok
+}
+
+// Count overlapping occurrences of pat in text. Empty pattern is
+// a degenerate case; we define count(pat == "") = 0 (one could
+// argue it should be len(text)+1, but for our purposes 0 is
+// cleaner).
+fn count_substrings(text: string, pat: string) -> int {
+  if len(pat) == 0 || len(pat) > len(text) {
+    return 0;
+  };
+  let mut n = 0;
+  let mut i = 0;
+  let mut last = len(text) - len(pat);
+  while i <= last {
+    if substr_eq(text, i, pat) == 1 {
+      n = n + 1;
+    };
+    i = i + 1;
+  }
+  n
+}
+
+print("== Substring count (overlapping) ==");
+print("");
+
+let cases = [
+  ["ababcabab", "ab"],
+  ["aaaaaaa", "aa"],
+  ["hello world", "o"],
+  ["hello world", "xyz"],
+  ["mississippi", "ss"],
+  ["mississippi", "issi"],
+  ["the quick brown fox", " "],
+  ["abc", ""],
+  ["", "abc"]
+];
+let mut k = 0;
+while k < len(cases) {
+  let pair = cases[k];
+  let t = pair[0];
+  let p = pair[1];
+  let n = count_substrings(t, p);
+  print(f"  \"{t}\"  ~  \"{p}\"  ->  count = {n}");
+  k = k + 1;
+}
+print("");
+
+// Highlight the headline case explicitly.
+let text = "ababcabab";
+let pat = "ab";
+let count = count_substrings(text, pat);
+print(f"Headline: count(\"{pat}\" in \"{text}\") = {count}");
+print("");
+
+// Sanity assertions.
+assert_eq(count_substrings("ababcabab", "ab"), 4);
+assert_eq(count_substrings("aaaaaaa", "aa"), 6);
+assert_eq(count_substrings("hello world", "o"), 2);
+assert_eq(count_substrings("hello world", "xyz"), 0);
+assert_eq(count_substrings("mississippi", "ss"), 2);
+assert_eq(count_substrings("mississippi", "issi"), 2);
+assert_eq(count_substrings("the quick brown fox", " "), 3);
+assert_eq(count_substrings("abc", ""), 0);
+assert_eq(count_substrings("", "abc"), 0);
+print("All assertions passed.");

@@ -137,6 +137,6 @@ print("");
 
 // Sanity assertions.
 assert_eq(crt([2, 3, 2], [3, 5, 7]), 23);
-assert_eq(crt([1, 4, 3, 0], [2, 5, 7, 11]), 583);
+assert_eq(crt([1, 4, 3, 0], [2, 5, 7, 11]), 759);
 assert_eq(crt([2, 3], [3, 5]), 8);
 print("All assertions passed.");

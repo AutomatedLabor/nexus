@@ -1,0 +1,108 @@
+// title_case.ae
+// =============
+// Convert a string to title case: every whitespace-separated word
+// starts with an uppercase letter, and the remaining letters are
+// lowercase. Punctuation and digits pass through; only letters are
+// re-cased.
+//
+//   "hello world foo"  ->  "Hello World Foo"
+//   "the QUICK brown"  ->  "The Quick Brown"
+//
+// We use a state machine: a `mut at_start` flag tracks whether the
+// next character is the first of a word. After whitespace, we set
+// `at_start = true`; after any other character, we set it to false.
+// Uppercase / lowercase conversion is done via lookup strings
+// (Aether v1 has no `to_upper` builtin).
+
+let UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+let LOWER = "abcdefghijklmnopqrstuvwxyz";
+
+// Find index of c in alphabet, or -1 if not found.
+fn find_pos(c: string, alphabet: string) -> int {
+  let mut found = -1;
+  let mut i = 0;
+  while i < len(alphabet) {
+    if str(alphabet[i]) == c {
+      found = i;
+    };
+    i = i + 1;
+  }
+  found
+}
+
+// Uppercase a single ASCII letter; non-letters pass through.
+fn to_upper_char(c: string) -> string {
+  let lo = find_pos(c, LOWER);
+  if lo >= 0 {
+    return str(UPPER[lo]);
+  };
+  c
+}
+
+// Lowercase a single ASCII letter; non-letters pass through.
+fn to_lower_char(c: string) -> string {
+  let up = find_pos(c, UPPER);
+  if up >= 0 {
+    return str(LOWER[up]);
+  };
+  c
+}
+
+// Title-case the whole string. We split on whitespace runs and
+// re-case each non-whitespace char. Aether v1 has no `is_alpha`
+// builtin; the to_upper_char / to_lower_char helpers already
+// discriminate (they pass through non-letters), so we just call
+// the appropriate one based on the at_start flag.
+fn title_case(s: string) -> string {
+  let mut out = "";
+  let mut at_start = true;  // start of a word
+  let mut i = 0;
+  while i < len(s) {
+    let c = str(s[i]);
+    if c == " " || c == "\t" || c == "\n" {
+      out = out + c;
+      at_start = true;
+    } else {
+      if at_start {
+        out = out + to_upper_char(c);
+      } else {
+        out = out + to_lower_char(c);
+      };
+      at_start = false;
+    };
+    i = i + 1;
+  }
+  out
+}
+
+print("== Title case ==");
+print("");
+
+let cases = [
+  "hello world foo",
+  "the QUICK brown FOX",
+  "a",
+  "",
+  "ALLCAPS",
+  "snake_case_string",
+  "  leading and trailing  ",
+  "the quick brown fox jumps over the lazy dog"
+];
+let mut k = 0;
+while k < len(cases) {
+  let s = cases[k];
+  let t = title_case(s);
+  print(f"  \"{s}\"");
+  print(f"    -> \"{t}\"");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(title_case("hello world foo"), "Hello World Foo");
+assert_eq(title_case("the QUICK brown FOX"), "The Quick Brown Fox");
+assert_eq(title_case("a"), "A");
+assert_eq(title_case(""), "");
+assert_eq(title_case("ALLCAPS"), "Allcaps");
+assert_eq(title_case("  leading and trailing  "), "  Leading And Trailing  ");
+print("All assertions passed.");

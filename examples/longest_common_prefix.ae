@@ -1,0 +1,108 @@
+// longest_common_prefix.ae
+// ========================
+// Longest common prefix of a list of strings: the longest string
+// `p` such that every input string starts with `p`. If the input
+// list is empty, the prefix is the empty string.
+//
+//   ["flower", "flow", "flight"]  ->  "fl"
+//   ["abc", "abc", "abc"]         ->  "abc"
+//   ["dog", "cat", "fish"]        ->  ""
+//
+// Algorithm: start with the first string as the candidate, then
+// for each subsequent string, truncate the candidate from the
+// right as long as the next string doesn't begin with it. We
+// compare character-by-character since Aether v1 has no
+// `startswith` builtin.
+
+// Test whether s starts with `prefix`. We compare up to
+// min(len(s), len(prefix)) characters; if all match, return true.
+// (If prefix is longer than s, this returns false.) We avoid the
+// early-`return` after a block — instead, structure the function
+// as a single expression that returns 0 (false) when the length
+// check fails, or the comparison's outcome otherwise.
+fn starts_with(s: string, prefix: string) -> int {
+  let too_long = len(prefix) > len(s);
+  if too_long {
+    0
+  } else {
+    let mut ok = 1;
+    let mut i = 0;
+    while (ok == 1) && (i < len(prefix)) {
+      if str(s[i]) != str(prefix[i]) {
+        ok = 0;
+      };
+      i = i + 1;
+    }
+    ok
+  }
+}
+
+// Compute the longest common prefix across all strings in arr.
+// Walks the array, narrowing the candidate prefix at each step.
+fn lcp(arr: [string]) -> string {
+  if len(arr) == 0 {
+    return "";
+  };
+  let mut cand = arr[0];
+  let mut i = 1;
+  while (i < len(arr)) && (len(cand) > 0) {
+    let s = arr[i];
+    // Truncate cand from the right as long as it doesn't prefix s.
+    while (len(cand) > 0) && (starts_with(s, cand) == 0) {
+      // Strip the last char from cand by rebuilding the string.
+      let mut shorter = "";
+      let mut j = 0;
+      while j < len(cand) - 1 {
+        shorter = shorter + str(cand[j]);
+        j = j + 1;
+      }
+      cand = shorter;
+    }
+    i = i + 1;
+  }
+  cand
+}
+
+print("== Longest common prefix ==");
+print("");
+
+let cases = [
+  ["flower", "flow", "flight"],
+  ["abc", "abc", "abc"],
+  ["dog", "cat", "fish"],
+  ["interspecies", "interstellar", "interstate"],
+  ["a"],
+  ["", "abc"],
+  ["abc", ""],
+  ["prefix", "pref", "pre", "pr"]
+];
+let mut k = 0;
+while k < len(cases) {
+  let arr = cases[k];
+  let p = lcp(arr);
+  // Print the array as ["a", "b", "c"] via reduce.
+  let arr_str = reduce(arr, fn(acc: string, s: string) -> string {
+    if acc == "" { "\"" + s + "\"" } else { acc + ", \"" + s + "\"" }
+  }, "");
+  print(f"  [{arr_str}]  ->  \"{p}\"");
+  k = k + 1;
+}
+print("");
+
+// Headline case.
+let input = ["flower", "flow", "flight"];
+let prefix = lcp(input);
+print(f"Headline: lcp(...) = \"{prefix}\"");
+print("");
+
+// Sanity assertions.
+assert_eq(lcp(["flower", "flow", "flight"]), "fl");
+assert_eq(lcp(["abc", "abc", "abc"]), "abc");
+assert_eq(lcp(["dog", "cat", "fish"]), "");
+assert_eq(lcp(["interspecies", "interstellar", "interstate"]), "inters");
+assert_eq(lcp(["a"]), "a");
+assert_eq(lcp(["", "abc"]), "");
+assert_eq(lcp(["abc", ""]), "");
+assert_eq(lcp(["prefix", "pref", "pre", "pr"]), "pr");
+assert_eq(lcp([]), "");
+print("All assertions passed.");
