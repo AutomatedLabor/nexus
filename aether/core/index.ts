@@ -43,6 +43,10 @@ export { Op } from "../vm/bytecode/bytecode";
 export { assemble, disassemble, verifyBytecode } from "../vm/bytecode/bytecode";
 export type { Instr, BytecodeFunc, Constant } from "../vm/bytecode/bytecode";
 
+// --- v3: WebAssembly backend ---
+export { compileIrToWasm, emitWasmText, emitWasmBinary, compileAndRunWasm, createHost, createWasmImports } from "../vm/wasm/wasm";
+export type { WasmModule, WasmFunc, WasmInstr, WasmValType, WasmHost, WasmRunResult } from "../vm/wasm/wasm";
+
 export interface CompileResult {
   /** Lexed tokens (empty if lexer hit a fatal error). */
   tokens: Token[];

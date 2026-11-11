@@ -19,6 +19,19 @@
 // `assert(condition)`; any failure throws and halts the run.
 // =====================================================================
 
+// --- Module imports ---
+// When this file is run individually (via the CLI's `aether test` command,
+// which routes files containing RFC-003 imports through the module loader),
+// we import the parser under test from `./parser.ae`. When the file is
+// concatenated with `parser.ae` and run via the simple `compileAndRun`
+// runner, the import statement is parsed as a no-op (the parser native
+// `import "path" { names };` form, which leaves `parse` and `toks` already
+// defined in scope from the preceding parser.ae text). The import line
+// itself generates non-fatal parse errors in the concatenated case but
+// does not block execution; `parse` and `toks` resolve to the parser.ae
+// bindings in either case.
+import { parse, toks } from "./parser.ae";
+
 // --- Test driver ---
 // Tracks pass/fail counts. We avoid the for-loop-scope bug by mutating
 // struct fields through a passed struct reference (the `Stats` struct
@@ -26,7 +39,7 @@
 struct Stats { passed: int, failed: int }
 
 fn check(st: Stats, cond: int, msg: string) -> int {
-  if cond == 1 {
+  if cond {
     st.passed = st.passed + 1;
   } else {
     st.failed = st.failed + 1;

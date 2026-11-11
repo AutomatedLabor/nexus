@@ -379,16 +379,47 @@ class Parser {
     const start = this.peek().loc;
     this.advance();
     let path = "";
-    if (this.peek().kind === "String") { path = (this.peek().segments || []).map(s => s.value).join(""); this.advance(); }
-    else { this.err(`expected string after import, found '${this.peek().value}'`); }
     const names: string[] = [];
-    if (this.eatPunct("{")) {
+    // RFC-003 form: `import { names } from "path";` — names first, then
+    // `from` (an Ident, not a keyword), then path. We support this form
+    // because the module loader (`aether/core/modules/modules.ts`) and
+    // the CLI test runner's `isMultiFile` regex match it, and bootstrap
+    // test files (e.g. `parser.test.ae`) use it. The parser produces an
+    // `Import` AST node for either form; the runtime treats `Import` as
+    // a no-op (the module loader is responsible for wiring imports).
+    if (this.isPunct("{")) {
+      this.advance();
       do {
         if (this.isPunct("}")) break;
         const n = this.expectIdent();
         if (n) names.push(n);
       } while (this.eatPunct(","));
       this.expectPunct("}");
+      // Optional `from` Ident (RFC-003 form). `from` is lexed as an Ident
+      // (not a keyword), so we check kind + value.
+      if (this.peek().kind === "Ident" && this.peek().value === "from") {
+        this.advance();
+        if (this.peek().kind === "String") {
+          path = (this.peek().segments || []).map(s => s.value).join("");
+          this.advance();
+        } else {
+          this.err(`expected string after from, found '${this.peek().value}'`);
+        }
+      } else {
+        this.err(`expected 'from' after import names, found '${this.peek().value}'`);
+      }
+    } else {
+      // Native form: `import "path" { names };` — path first, then optional names.
+      if (this.peek().kind === "String") { path = (this.peek().segments || []).map(s => s.value).join(""); this.advance(); }
+      else { this.err(`expected string after import, found '${this.peek().value}'`); }
+      if (this.eatPunct("{")) {
+        do {
+          if (this.isPunct("}")) break;
+          const n = this.expectIdent();
+          if (n) names.push(n);
+        } while (this.eatPunct(","));
+        this.expectPunct("}");
+      }
     }
     this.eatPunct(";");
     return { kind: "Import", loc: this.locFrom(start), path, names };

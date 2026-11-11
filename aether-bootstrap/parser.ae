@@ -733,14 +733,10 @@ fn parseImport(p: Parser) -> Node {
   let start = tokLoc(peekTok(p));
   advanceTok(p);
   let mut path = "";
-  let t = peekTok(p);
-  if t.kind == "String" {
-    path = t.text;
-    advanceTok(p);
-  } else {
-    errHere(p, "expected string after import, found '" + t.text + "'");
-  };
   let names = [];
+  // RFC-003 form: `import { names } from "path";` — names first, then `from`,
+  // then path. `from` is not a keyword (it's an Ident), so we check the
+  // token kind + text explicitly.
   if eatPunct(p, "{") == 1 {
     let mut stop = 0;
     while stop == 0 {
@@ -754,6 +750,42 @@ fn parseImport(p: Parser) -> Node {
       }
     }
     expectPunct(p, "}");
+    let ft = peekTok(p);
+    if ft.kind == "Ident" && ft.text == "from" {
+      advanceTok(p);
+      let pt = peekTok(p);
+      if pt.kind == "String" {
+        path = pt.text;
+        advanceTok(p);
+      } else {
+        errHere(p, "expected string after from, found '" + pt.text + "'");
+      };
+    } else {
+      errHere(p, "expected 'from' after import names, found '" + ft.text + "'");
+    };
+  } else {
+    // Native form: `import "path" { names };` — path first, then optional names.
+    let t = peekTok(p);
+    if t.kind == "String" {
+      path = t.text;
+      advanceTok(p);
+    } else {
+      errHere(p, "expected string after import, found '" + t.text + "'");
+    };
+    if eatPunct(p, "{") == 1 {
+      let mut stop = 0;
+      while stop == 0 {
+        if isPunct(p, "}") == 1 { stop = 1; };
+        if stop == 0 {
+          let n = expectIdent(p);
+          if n != "" {
+            push(names, mkIdent(n, ZERO_LOC));
+          };
+          if eatPunct(p, ",") == 0 { stop = 1; }
+        }
+      }
+      expectPunct(p, "}");
+    };
   };
   eatPunct(p, ";");
   mkImport(path, names, locFrom(p, start))
@@ -991,7 +1023,7 @@ fn parsePattern(p: Parser) -> Node {
     while eatPunct(p, "|") == 1 {
       push(patterns, parsePatternAtom(p));
     }
-    return mkOrPat(patterns, locFrom(p, tokLoc(p0)));
+    return mkOrPat(patterns, locFrom(p, p0.loc));
   };
   p0
 }
@@ -1308,6 +1340,7 @@ fn postfixAction(p: Parser, t: Token, e: Node, allowStruct: int) -> PostfixActio
   };
   if allowStruct == 1 && t.kind == "Punct" && t.text == "{" && e.kind == "Ident" {
     let save = p.pos;
+    let start = e.loc;
     advanceTok(p);
     if isPunct(p, "}") == 1 {
       advanceTok(p);
