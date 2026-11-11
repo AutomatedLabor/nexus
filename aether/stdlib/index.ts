@@ -35,6 +35,15 @@ import * as Enc from "./encoding";
 import * as Cr from "./crypto";
 import * as Txt from "./text";
 import * as Async from "./async";
+// New modules (W4-STDLIB-EXPAND):
+import * as List from "./list";
+import * as Set_ from "./set";
+import * as Func from "./functional";
+import * as Stat from "./statistics";
+import * as Bits from "./bits";
+import * as Val from "./validate";
+import * as Tree from "./tree";
+import * as Uuid from "./uuid";
 
 export interface StdlibFn {
   name: string;
@@ -66,6 +75,17 @@ export function registerAll(register: (name: string, fn: any) => void): void {
   // sync evaluator; their `register` throws to surface this honestly.
   // Hosts that want to use them directly can `import * as Async from './async'`.
   // We deliberately do NOT call Async.register here.
+  //
+  // New modules added in W4-STDLIB-EXPAND.  These ARE callable from the v1
+  // evaluator (all sync, all pure functions).
+  List.register(register);
+  Set_.register(register);
+  Func.register(register);
+  Stat.register(register);
+  Bits.register(register);
+  Val.register(register);
+  Tree.register(register);
+  Uuid.register(register);
 }
 
 /** Build a {name -> fn} map (used by the evaluator's `opts.builtins`). */
@@ -90,6 +110,15 @@ export const STDLIB_MANIFEST: StdlibModuleManifest[] = [
   Cr.MANIFEST as StdlibModuleManifest,
   Txt.MANIFEST as StdlibModuleManifest,
   Async.MANIFEST as StdlibModuleManifest,
+  // New modules (W4-STDLIB-EXPAND):
+  List.MANIFEST as StdlibModuleManifest,
+  Set_.MANIFEST as StdlibModuleManifest,
+  Func.MANIFEST as StdlibModuleManifest,
+  Stat.MANIFEST as StdlibModuleManifest,
+  Bits.MANIFEST as StdlibModuleManifest,
+  Val.MANIFEST as StdlibModuleManifest,
+  Tree.MANIFEST as StdlibModuleManifest,
+  Uuid.MANIFEST as StdlibModuleManifest,
 ];
 
 /** Total function count across all modules (excluding async — not callable). */

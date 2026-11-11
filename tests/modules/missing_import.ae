@@ -1,0 +1,4 @@
+// missing_import.ae — imports a file that doesn't exist.
+import { x } from "./does_not_exist.ae";
+
+print(x);

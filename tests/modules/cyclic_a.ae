@@ -1,0 +1,5 @@
+// cyclic_a.ae — imports cyclic_b.ae (creating a cycle).
+import { b_val } from "./cyclic_b.ae";
+
+pub fn a_val() -> int { 1 }
+print("cyclic_a loaded");

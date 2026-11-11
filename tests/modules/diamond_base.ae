@@ -1,0 +1,2 @@
+// diamond_base.ae — shared base of the diamond.
+pub fn base() -> int { 100 }

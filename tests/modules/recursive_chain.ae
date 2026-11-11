@@ -1,0 +1,4 @@
+// recursive_chain.ae — closes the cycle back to recursive.ae.
+import { start } from "./recursive.ae";
+
+pub fn step() -> int { start() }

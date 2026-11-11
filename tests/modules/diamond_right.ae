@@ -1,0 +1,4 @@
+// diamond_right.ae — right side of the diamond, imports base.
+import { base } from "./diamond_base.ae";
+
+pub fn b() -> int { base() + 2 }

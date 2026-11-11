@@ -1,0 +1,4 @@
+// private_violation.ae — imports a private (non-pub) function.
+import { private_fn } from "./utils.ae";
+
+print(private_fn());

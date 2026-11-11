@@ -1,0 +1,5 @@
+// recursive.ae — imports itself indirectly via chain that goes
+// many levels. Used for cycle-path tests.
+import { step } from "./recursive_chain.ae";
+
+pub fn start() -> int { step() }

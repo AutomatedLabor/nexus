@@ -1,0 +1,5 @@
+// main.ae — imports greet from utils.ae and calls it.
+import { greet } from "./utils.ae";
+
+print(greet("Aether"));
+print(greet("World"));

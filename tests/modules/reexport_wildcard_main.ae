@@ -1,0 +1,6 @@
+// reexport_wildcard_main.ae — uses greet and goodbye via the
+// wildcard re-export.
+import { greet, goodbye } from "./reexport_wildcard.ae";
+
+print(greet("W1"));
+print(goodbye("W2"));

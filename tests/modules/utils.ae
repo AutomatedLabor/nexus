@@ -1,0 +1,17 @@
+// utils.ae — exports a single function used by main.ae.
+pub fn greet(name: string) -> string {
+  "Hello, " + name + "!"
+}
+
+pub fn goodbye(name: string) -> string {
+  "Goodbye, " + name + "."
+}
+
+fn secret_helper() -> string {
+  "private"
+}
+
+// A non-pub function: should NOT be importable.
+fn private_fn() -> string {
+  "private"
+}

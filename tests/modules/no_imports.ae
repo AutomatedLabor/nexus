@@ -1,0 +1,4 @@
+// no_imports.ae — a single-file program with no imports; should
+// work identically to v1 single-file mode.
+pub fn double(n: int) -> int { n * 2 }
+print(double(21));

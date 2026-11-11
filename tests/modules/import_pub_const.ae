@@ -1,0 +1,6 @@
+// import_pub_const.ae — imports a pub const from another module.
+import { PI, GREETING, use_pi } from "./use_pub_const.ae";
+
+print(PI);
+print(GREETING);
+print(use_pi());

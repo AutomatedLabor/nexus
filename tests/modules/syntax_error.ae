@@ -1,0 +1,4 @@
+// syntax_error.ae — has a parse error (unclosed string).
+import { greet } from "./utils.ae";
+
+print(greet("oops");

@@ -1,0 +1,5 @@
+// multi_main.ae — imports multiple names from the same dep.
+import { greet, goodbye } from "./utils.ae";
+
+print(greet("A"));
+print(goodbye("B"));

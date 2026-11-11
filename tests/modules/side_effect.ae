@@ -1,0 +1,3 @@
+// side_effect.ae — prints on load (library) to verify stdout suppression.
+print("library loaded");
+pub fn lib_fn() -> int { 42 }

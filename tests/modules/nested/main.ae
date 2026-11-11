@@ -1,0 +1,4 @@
+// nested/main.ae — relative path with `../`.
+import { greet } from "../utils.ae";
+
+print(greet("Nested"));

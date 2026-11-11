@@ -1,0 +1,4 @@
+// no_extension_main.ae — imports without the `.ae` extension.
+import { greet } from "./utils";
+
+print(greet("NoExt"));

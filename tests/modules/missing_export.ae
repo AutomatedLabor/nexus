@@ -1,0 +1,4 @@
+// missing_export.ae — imports a name that utils.ae doesn't export.
+import { nonexistent } from "./utils.ae";
+
+print(nonexistent);

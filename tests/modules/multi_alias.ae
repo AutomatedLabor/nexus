@@ -1,0 +1,5 @@
+// multi_alias.ae — imports with alias (RFC-003 `as`).
+import { greet as hello, goodbye as bye } from "./utils.ae";
+
+print(hello("Aliased"));
+print(bye("Aliased"));

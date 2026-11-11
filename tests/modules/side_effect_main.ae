@@ -1,0 +1,5 @@
+// side_effect_main.ae — imports a library that prints; only the
+// entry's prints should reach stdout.
+import { lib_fn } from "./side_effect.ae";
+
+print(lib_fn());

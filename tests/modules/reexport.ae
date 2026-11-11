@@ -1,0 +1,2 @@
+// reexport.ae — re-exports greet from utils.ae via `pub use`.
+pub use { greet } from "./utils.ae";

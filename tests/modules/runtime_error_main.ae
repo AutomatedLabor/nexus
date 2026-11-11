@@ -1,0 +1,4 @@
+// runtime_error_main.ae — imports a function that panics when called.
+import { explode } from "./runtime_error.ae";
+
+print(explode());

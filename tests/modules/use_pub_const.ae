@@ -1,0 +1,6 @@
+// use_pub_const.ae — declares a pub const and exports it.
+pub const PI = 3;
+pub const GREETING = "hello";
+const HIDDEN = 42;
+
+pub fn use_pi() -> int { PI * 2 }

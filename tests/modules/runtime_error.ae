@@ -1,0 +1,4 @@
+// runtime_error.ae — a module that runs but panics.
+pub fn explode() -> int {
+  panic("kaboom")
+}

@@ -1,0 +1,5 @@
+// diamond_top.ae — entry for the diamond test.
+import { a } from "./diamond_left.ae";
+import { b } from "./diamond_right.ae";
+
+print(a() + b());

@@ -1,0 +1,5 @@
+// reexport_main.ae — imports the re-exported name (which actually
+// comes from utils.ae, transitively through reexport.ae).
+import { greet } from "./reexport.ae";
+
+print(greet("Reexported"));

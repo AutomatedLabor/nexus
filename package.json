@@ -2,6 +2,9 @@
   "name": "atlas",
   "version": "1.0.0",
   "private": true,
+  "bin": {
+    "aether": "bun aether/tools/cli/cli.ts"
+  },
   "scripts": {
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
     "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
@@ -9,6 +12,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "aether": "bun aether/tools/cli/cli.ts",
     "aether:smoke": "bun /tmp/aether_smoke.ts",
     "postinstall": "prisma generate",
     "seed": "bun run prisma/seed.ts",

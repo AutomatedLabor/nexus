@@ -1,0 +1,4 @@
+// deep/a/b/main.ae — deeply nested, imports from `../../../utils.ae`.
+import { greet } from "../../../utils.ae";
+
+print(greet("Deep"));
