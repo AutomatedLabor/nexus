@@ -64,3 +64,9 @@ db/*.db-journal
 
 # Skills directory
 /skills/
+# ATLAS/Nexus artifacts
+tool-results/
+agent-ctx/
+dev.log
+server.log
+*.tsbuildinfo
