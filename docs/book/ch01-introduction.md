@@ -1,12 +1,12 @@
 # Chapter 1 — Introduction
 
-> Aether is a small, statically-typed, expression-oriented programming language with ML, Rust, and TypeScript influences. It runs today in two implementations: a tree-walking interpreter (v1) and a bytecode VM (v2). Both work. 1455 tests pass. This chapter is about what Aether *is*, why it exists, and how you can try it in 30 seconds.
+> Aether is a small, statically-typed, expression-oriented programming language with ML, Rust, and TypeScript influences. It runs today in two implementations: a tree-walking interpreter (v1) and a bytecode VM (v2). Both work. 1597 tests pass. This chapter is about what Aether *is*, why it exists, and how you can try it in 30 seconds.
 
 ---
 
 ## 1.1 What Aether is
 
-Aether is a language for *teaching* and *exploring* what a "small but real" programming language looks like. It is not a production language; it has no ecosystem, no native compiler, no package registry — yet. It is, however, real in the sense that its compiler is built, its type checker is built, its tree-walking interpreter is built, its bytecode VM is built, its 18-module standard library is built, and its 1455-test suite passes. The playground runs in any modern browser. The CLI runs on Node or Bun.
+Aether is a language for *teaching* and *exploring* what a "small but real" programming language looks like. It is not a production language; it has no ecosystem, no native compiler, no package registry — yet. It is, however, real in the sense that its compiler is built, its type checker is built, its tree-walking interpreter is built, its bytecode VM is built, its 18-module standard library is built, and its 1597-test suite passes. The playground runs in any modern browser. The CLI runs on Node or Bun.
 
 The language has opinions:
 
@@ -103,7 +103,7 @@ The v2 VM runs the same Aether source as v1. The playground has a toggle. The CL
 - **Full LSP.** Language Server Protocol support for VS Code, Neovim, Zed, Helix. RFC-007.
 - **Package manager.** `aether.toml`, `aether add`, a registry. RFC-008.
 
-The 1455 passing tests are the floor. Everything in v2 today is real and tested; everything in v2.x is designed but not built.
+The 1597 passing tests are the floor. Everything in v2 today is real and tested; everything in v2.x is designed but not built.
 
 ---
 
@@ -112,7 +112,7 @@ The 1455 passing tests are the floor. Everything in v2 today is real and tested;
 Aether is for:
 
 - **Compiler-curious developers.** If you've read *Crafting Interpreters* or *Types and Programming Languages* and want to see what a slightly-larger-than-tutorial language looks like, with a real type checker and a real VM, Aether is for you. The whole implementation is ~25k lines of TypeScript and you can read it end to end.
-- **Educators.** Aether's design — explicit v1/v2 split, explicit ADRs for every major decision, RFCs for future work, 1455 tests, a 60+ entry error catalog — is meant for teaching. You can assign "add a string-repeat optimizer pass" or "add a `zip3` stdlib function" as a week-long project; the test infrastructure and the docs make the contribution path clear.
+- **Educators.** Aether's design — explicit v1/v2 split, explicit ADRs for every major decision, RFCs for future work, 1597 tests, a 60+ entry error catalog — is meant for teaching. You can assign "add a string-repeat optimizer pass" or "add a `zip3` stdlib function" as a week-long project; the test infrastructure and the docs make the contribution path clear.
 - **People who want to see "small but real."** The playground is a single route, runs in any browser, has examples, a stdlib browser, a benchmarks view. You can be writing Aether in 30 seconds.
 
 Aether is *not* for:
@@ -289,7 +289,7 @@ These eight examples cover most of Aether's surface: literals, arithmetic, gener
 ## 1.8 Summary
 
 - Aether is a small, statically-typed, expression-oriented language.
-- It has two backends: a v1 tree-walker and a v2 bytecode VM. Both work; 1455 tests pass.
+- It has two backends: a v1 tree-walker and a v2 bytecode VM. Both work; 1597 tests pass.
 - The standard library has 18 modules and ~396 functions.
 - The v2 stack adds an optimizer (8 passes), an async runtime, a module system, a CLI, a formatter, and a linter.
 - v2.x plans: WASM backend, native backends, borrow checker, full LSP, package manager.

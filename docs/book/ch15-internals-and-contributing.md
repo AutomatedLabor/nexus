@@ -225,7 +225,7 @@ The test corpus is `*.test.ts` files alongside the source:
 
 Plus integration tests in `tests/` — multi-file programs that exercise the module system, the CLI, etc.
 
-The corpus is ~1455 tests today. The CI runs them all on every PR.
+The corpus is ~1597 tests today. The CI runs them all on every PR.
 
 ### 15.5.2 The doc corpus
 
@@ -313,7 +313,7 @@ The PR includes:
 - Doc updates.
 - A `PROGRESS.md` line.
 
-The CI runs all 1455 tests (now ~1460 with the new ones); the linter runs; the formatter runs (`--check` mode). The PR is reviewable.
+The CI runs all 1597 tests (now ~1460 with the new ones); the linter runs; the formatter runs (`--check` mode). The PR is reviewable.
 
 ---
 
@@ -388,7 +388,7 @@ The PR includes:
 1. Clone the repo.
 2. Install Bun (or Node 18+).
 3. Run `bun install` (or `npm install`).
-4. Run `bun test` (or `npm test`) — all 1455 tests should pass.
+4. Run `bun test` (or `npm test`) — all 1597 tests should pass.
 5. Run `bun aether/tools/cli/cli.ts run examples/fibonacci.ae` — should print the Fibonacci table.
 6. Open the playground locally: `bun dev` (Next.js dev server on port 3000).
 
@@ -422,7 +422,7 @@ The PR includes:
 
 - [ ] Added/updated unit tests
 - [ ] Added/updated integration tests (if relevant)
-- [ ] All 1455 tests pass
+- [ ] All 1597 tests pass
 
 ## Docs
 
@@ -464,7 +464,7 @@ A PR is accepted if:
 
 ```bash
 bun test
-# (all 1455 tests pass)
+# (all 1597 tests pass)
 ```
 
 **2. Run a single test file.**
@@ -524,4 +524,4 @@ bun aether/tools/cli/cli.ts repl
 - The 3× test/doc/bench rule: every change should include a test, a doc update, and (if perf-relevant) a benchmark update.
 - The contributor guide: clone, branch, change, test, format, commit, push, PR. The PR template covers the 3× rule.
 
-The next step is up to you: pick an issue, write a test, ship a PR. The 1455 tests are the floor; everything in v2 today is real and tested; everything in v2.x is designed but not built. The book is the map; the code is the territory.
+The next step is up to you: pick an issue, write a test, ship a PR. The 1597 tests are the floor; everything in v2 today is real and tested; everything in v2.x is designed but not built. The book is the map; the code is the territory.
