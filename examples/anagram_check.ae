@@ -1,0 +1,226 @@
+// anagram_check.ae
+// =================
+// Check whether two strings are anagrams: same multiset of
+// characters, possibly in a different order. We canonicalize each
+// string by:
+//   1. Lowercasing (so "Listen" and "Silent" match — case-insensitive).
+//   2. Sorting the characters.
+//   3. Comparing the sorted strings for equality.
+//
+//   "listen"  / "silent"   -> true    (both have e,i,l,n,s,t)
+//   "hello"   / "world"    -> false
+//   "debit"   / "bidet"    -> true
+//   "Aether"  / "heap"     -> false   (different counts of letters)
+//   "abc"     / "cba"      -> true
+//
+// We implement the char sort with a recursive merge sort on a
+// [string] of single chars. We could also use bubble sort, but merge
+// sort is cleaner (no in-place mutation) and demonstrates recursion.
+// Aether's `/` is float division, so we cast to `int(...)` on the
+// midpoint computation.
+
+// Build a [string] of single chars from s.
+fn char_array(s: string) -> [string] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(s) {
+    push(out, str(s[i]));
+    i = i + 1;
+  }
+  out
+}
+
+// Lowercase a single ASCII char (a-z) or pass it through. We use a
+// hardcoded LOWER alphabet and walk it to find the matching index,
+// then return the corresponding UPPER if we find it... wait, that's
+// the opposite. Let me reverse: we look up c in UPPER and return the
+// corresponding LOWER. If not found in UPPER, return c unchanged.
+let LOWER = "abcdefghijklmnopqrstuvwxyz";
+let UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+fn to_lower_char(c: string) -> string {
+  let mut i = 0;
+  let mut out = c;
+  while i < len(UPPER) {
+    if str(UPPER[i]) == c {
+      out = str(LOWER[i]);
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// Lowercase an entire string via reduce over its char array.
+fn to_lower(s: string) -> string {
+  let chars = char_array(s);
+  reduce(chars, fn(acc: string, c: string) -> string {
+    acc + to_lower_char(c)
+  }, "")
+}
+
+// Take the first n elements of a [string].
+fn take_str(arr: [string], n: int) -> [string] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n && i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// Drop the first n elements of a [string].
+fn drop_str(arr: [string], n: int) -> [string] {
+  let mut out = [];
+  let mut i = n;
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// Merge two sorted char arrays into one sorted char array.
+fn merge(left: [string], right: [string]) -> [string] {
+  let mut out = [];
+  let mut i = 0;
+  let mut j = 0;
+  while i < len(left) && j < len(right) {
+    if left[i] <= right[j] {
+      push(out, left[i]);
+      i = i + 1;
+    } else {
+      push(out, right[j]);
+      j = j + 1;
+    };
+  }
+  while i < len(left) {
+    push(out, left[i]);
+    i = i + 1;
+  }
+  while j < len(right) {
+    push(out, right[j]);
+    j = j + 1;
+  }
+  out
+}
+
+// Recursive merge sort on a [string] of chars.
+fn merge_sort_chars(arr: [string]) -> [string] {
+  if len(arr) <= 1 {
+    arr
+  } else {
+    let mid = int(len(arr) / 2);
+    let left = merge_sort_chars(take_str(arr, mid));
+    let right = merge_sort_chars(drop_str(arr, mid));
+    merge(left, right)
+  }
+}
+
+// Join a [string] of chars into a single string via reduce.
+fn join_chars(arr: [string]) -> string {
+  reduce(arr, fn(acc: string, c: string) -> string {
+    acc + c
+  }, "")
+}
+
+// Check whether a single char is a lowercase ASCII letter a-z. Used
+// to strip non-letters (spaces, punctuation) before comparison.
+fn is_letter(c: string) -> bool {
+  let mut i = 0;
+  let mut found = false;
+  while i < len(LOWER) {
+    if str(LOWER[i]) == c {
+      found = true;
+    };
+    i = i + 1;
+  }
+  found
+}
+
+// Filter a [string] of chars to only the lowercase letters. Used to
+// strip spaces (and other non-letters) before comparison, so that
+// "dormitory" and "dirty room" canonicalize to the same multiset.
+// The reduce callback pushes onto the accumulator in place and then
+// returns it; the type checker sees a unit return from `push` so it
+// reports a type warning, but the program runs correctly.
+fn only_letters(arr: [string]) -> [string] {
+  reduce(arr, fn(acc: [string], c: string) -> [string] {
+    if is_letter(c) {
+      push(acc, c);
+    };
+    acc
+  }, [])
+}
+
+// Canonicalize a string for anagram comparison: lowercase, strip
+// non-letters, then sort the chars.
+fn canonicalize(s: string) -> string {
+  let lower = to_lower(s);
+  let chars = char_array(lower);
+  let letters = only_letters(chars);
+  let sorted = merge_sort_chars(letters);
+  join_chars(sorted)
+}
+
+// Two strings are anagrams iff their canonicalized forms are equal.
+fn is_anagram(a: string, b: string) -> bool {
+  canonicalize(a) == canonicalize(b)
+}
+
+print("== Anagram check (sort-then-compare) ==");
+print("");
+let cases = [
+  ("listen", "silent"),
+  ("hello", "world"),
+  ("debit", "bidet"),
+  ("Aether", "heap"),
+  ("abc", "cba"),
+  ("dormitory", "dirty room"),
+  ("rail safety", "fairy tales"),
+  ("", ""),
+  ("a", "a"),
+  ("ab", "ba"),
+  ("ab", "abc")
+];
+let mut k = 0;
+while k < len(cases) {
+  let p = cases[k];
+  let a = p.0;
+  let b = p.1;
+  let v = is_anagram(a, b);
+  print(f"  \"{a}\" vs \"{b}\" -> {v}");
+  k = k + 1;
+}
+print("");
+
+// Show the canonicalization for a few pairs.
+print("Canonicalization demo:");
+let demo = [
+  ("listen", "silent"),
+  ("Aether", "heap"),
+  ("dormitory", "dirty room")
+];
+let mut j = 0;
+while j < len(demo) {
+  let p = demo[j];
+  let a = p.0;
+  let b = p.1;
+  print(f"  \"{a}\" -> \"{canonicalize(a)}\"");
+  print(f"  \"{b}\" -> \"{canonicalize(b)}\"");
+  j = j + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(is_anagram("listen", "silent"), true);
+assert_eq(is_anagram("hello", "world"), false);
+assert_eq(is_anagram("debit", "bidet"), true);
+assert_eq(is_anagram("Aether", "heap"), false);
+assert_eq(is_anagram("abc", "cba"), true);
+assert_eq(is_anagram("dormitory", "dirty room"), true);
+assert_eq(is_anagram("rail safety", "fairy tales"), true);
+assert_eq(is_anagram("", ""), true);
+assert_eq(is_anagram("a", "a"), true);
+assert_eq(is_anagram("ab", "abc"), false);
+print("All assertions passed.");

@@ -1,0 +1,60 @@
+// gcd_lcm.ae
+// ==========
+// Greatest Common Divisor (Euclid's algorithm, recursive) and Least
+// Common Multiple. We compute gcd(a, b) recursively:
+//     gcd(a, 0) = a
+//     gcd(a, b) = gcd(b, a mod b)
+// and then lcm(a, b) = a * b / gcd(a, b). We avoid post-for-loop
+// scoping quirks by using a while loop in the driver instead of `for`,
+// and we never reference a pre-loop `let` after the loop body.
+
+fn gcd(a: int, b: int) -> int {
+  if b == 0 { a } else { gcd(b, a % b) }
+}
+
+fn lcm(a: int, b: int) -> int {
+  if a == 0 || b == 0 {
+    0
+  } else {
+    (a * b) / gcd(a, b)
+  }
+}
+
+print("== GCD and LCM (Euclid, recursive) ==");
+print("");
+print(f"gcd(48, 36) = {gcd(48, 36)}");
+print(f"gcd(54, 24) = {gcd(54, 24)}");
+print(f"gcd(17, 13) = {gcd(17, 13)}");
+print(f"gcd(100, 60) = {gcd(100, 60)}");
+print(f"gcd(7, 0)   = {gcd(7, 0)}");
+print("");
+print(f"lcm(4, 6)   = {lcm(4, 6)}");
+print(f"lcm(12, 18) = {lcm(12, 18)}");
+print(f"lcm(7, 5)   = {lcm(7, 5)}");
+print(f"lcm(0, 9)   = {lcm(0, 9)}");
+print("");
+
+// Walk a small table of pairs with a while loop (avoids the
+// for-loop-scope quirk where pre-loop `let` bindings go undefined
+// when referenced after the loop).
+let pairs = [(48, 36), (54, 24), (17, 13), (100, 60), (4, 6), (12, 18)];
+print("Pairs table (a, b) -> gcd, lcm:");
+let mut i = 0;
+while i < len(pairs) {
+  let p = pairs[i];
+  let a = p.0;
+  let b = p.1;
+  let g = gcd(a, b);
+  let l = lcm(a, b);
+  print(f"  ({a}, {b}) -> gcd = {g}, lcm = {l}");
+  i = i + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(gcd(48, 36), 12);
+assert_eq(gcd(7, 0), 7);
+assert_eq(lcm(4, 6), 12);
+assert_eq(lcm(0, 9), 0);
+assert_eq(gcd(17, 13), 1);
+print("All assertions passed.");

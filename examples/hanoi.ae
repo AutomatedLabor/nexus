@@ -1,0 +1,93 @@
+// hanoi.ae
+// ========
+// Tower of Hanoi — the classic recursive puzzle. We have 3 pegs
+// (source, auxiliary, target) and N disks of different sizes, all
+// stacked on the source peg in decreasing size (smallest on top,
+// largest on bottom). The goal: move all disks to the target peg.
+// Rules:
+//   - Move one disk at a time.
+//   - A disk may only be placed on an empty peg or on a larger disk.
+//
+// Algorithm (recursive):
+//   hanoi(n, from, to, via):
+//     if n == 1:  move disk from -> to
+//     else:
+//       hanoi(n - 1, from, via, to)   // move top n-1 to the spare
+//       move disk from -> to           // move the largest disk
+//       hanoi(n - 1, via, to, from)    // move n-1 from spare to target
+//
+// We collect the moves into a [string] array (each move is "a -> c"
+// or similar) using `push` from inside the recursive helper, then
+// print them one per line. The number of moves for N disks is 2^N-1.
+
+// Recursive Hanoi solver. `n` is the number of disks to move.
+// `from`, `to`, `via` are peg names (single-letter strings).
+// `out` is the accumulator: each move is pushed onto it.
+fn hanoi(n: int, from: string, to: string, via: string, out: [string]) {
+  if n == 0 {
+    return;
+  };
+  hanoi(n - 1, from, via, to, out);
+  push(out, "move disk " + str(n) + " from " + from + " to " + to);
+  hanoi(n - 1, via, to, from, out);
+}
+
+// Run Hanoi for n disks and return the move list. We can't `return
+// out;` after a block, so we factor out the recursive accumulator
+// into a closure-style call: the recursive helper does the work, the
+// wrapper builds the empty list, calls the helper, then returns the
+// list as a bare expression.
+fn solve_hanoi(n: int) -> [string] {
+  let mut out = [];
+  hanoi(n, "A", "C", "B", out);
+  out
+}
+
+// Render a [string] of moves, one per line, with a header line.
+fn show_moves(moves: [string]) -> string {
+  reduce(moves, fn(acc: string, m: string) -> string {
+    if acc == "" { m } else { acc + "\n" + m }
+  }, "")
+}
+
+print("== Tower of Hanoi (recursive) ==");
+print("");
+let n = 3;
+let moves = solve_hanoi(n);
+print(f"Solving Hanoi for {n} disks (A -> C via B):");
+print("");
+print(show_moves(moves));
+print("");
+print(f"total moves: {len(moves)}  (expected 2^{n} - 1 = {power2(n) - 1})");
+print("");
+
+// Tiny 1-disk case for clarity.
+let moves1 = solve_hanoi(1);
+print(f"Hanoi for 1 disk: {show_moves(moves1)}");
+print("");
+
+// 4-disk case (15 moves).
+let moves4 = solve_hanoi(4);
+print(f"Hanoi for 4 disks ({len(moves4)} moves):");
+print(show_moves(moves4));
+print("");
+
+// Sanity assertions.
+assert_eq(len(solve_hanoi(1)), 1);
+assert_eq(len(solve_hanoi(2)), 3);
+assert_eq(len(solve_hanoi(3)), 7);
+assert_eq(len(solve_hanoi(4)), 15);
+assert_eq(len(solve_hanoi(5)), 31);
+print("All assertions passed.");
+
+// Helper: 2^n via a small while loop. We define it after the use
+// site — Aether supports forward references to top-level functions.
+fn power2(n: int) -> int {
+  let mut out = 1;
+  let mut i = 0;
+  while i < n {
+    out = out * 2;
+    i = i + 1;
+  }
+  out
+}

@@ -1,0 +1,98 @@
+// power_fn.ae
+// ============
+// Fast exponentiation by squaring — O(log n) multiplications instead
+// of O(n). Computes b^n (b raised to the n-th power) for non-negative
+// integer exponents.
+//
+// Algorithm (recursive):
+//   b^0          = 1
+//   b^n (n even) = (b^(n/2))^2     // square half-power
+//   b^n (n odd)  = b * b^(n-1)     // one extra multiply, then even
+//
+// The "even" branch is the key trick: instead of b * b * b * ... (n
+// times), we compute b^(n/2) once and square it — halving the work
+// at each step. The "odd" branch shaves one off so the next step is
+// even.
+//
+// We use the `int()` cast on `n / 2` because Aether's `/` is float
+// division (e.g., `7 / 2` returns 3.5, not 3) and we need an integer
+// exponent for the recursion.
+
+fn power(base: int, exp: int) -> int {
+  if exp == 0 {
+    1
+  } else {
+    if exp == 1 {
+      base
+    } else {
+      if exp % 2 == 0 {
+        // Even exponent: square the half-power.
+        let half = power(base, int(exp / 2));
+        half * half
+      } else {
+        // Odd exponent: peel one off, recurse on the even remainder.
+        base * power(base, exp - 1)
+      }
+    }
+  }
+}
+
+// Naive linear-time exponentiation, for verification. b^n = b*b*...*b
+// (n times). Used only as a sanity-check oracle against `power`.
+fn power_naive(base: int, exp: int) -> int {
+  let mut out = 1;
+  let mut i = 0;
+  while i < exp {
+    out = out * base;
+    i = i + 1;
+  }
+  out
+}
+
+print("== Fast exponentiation (exponentiation by squaring) ==");
+print("");
+print(f"2^10 = {power(2, 10)}    (naive: {power_naive(2, 10)})");
+print(f"3^5  = {power(3, 5)}     (naive: {power_naive(3, 5)})");
+print(f"5^0  = {power(5, 0)}    (naive: {power_naive(5, 0)})");
+print(f"7^1  = {power(7, 1)}    (naive: {power_naive(7, 1)})");
+print(f"2^20 = {power(2, 20)} (naive: {power_naive(2, 20)})");
+print("");
+
+// A table of (base, exp) pairs computed both ways.
+print("Table (base, exp) -> fast, naive, match:");
+let cases = [
+  (2, 0),
+  (2, 1),
+  (2, 10),
+  (2, 16),
+  (3, 5),
+  (5, 3),
+  (10, 6),
+  (7, 4),
+  (1, 100),
+  (-2, 5),
+  (-2, 6)
+];
+let mut k = 0;
+while k < len(cases) {
+  let p = cases[k];
+  let b = p.0;
+  let e = p.1;
+  let fast = power(b, e);
+  let naive = power_naive(b, e);
+  let match_str = if fast == naive { "ok" } else { "MISMATCH" };
+  print(f"  ({b}, {e}) -> fast = {fast}, naive = {naive}  [{match_str}]");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(power(2, 10), 1024);
+assert_eq(power(3, 5), 243);
+assert_eq(power(5, 0), 1);
+assert_eq(power(7, 1), 7);
+assert_eq(power(2, 20), 1048576);
+assert_eq(power(1, 100), 1);
+assert_eq(power(-2, 5), -32);
+assert_eq(power(-2, 6), 64);
+print("All assertions passed.");

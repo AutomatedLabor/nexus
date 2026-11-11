@@ -1609,11 +1609,239 @@ let n = int("42");
 
 **Cause:** `len(x)` where `x` is not an array, string, map, or set.
 
+### `'self' used outside of method`
+
+**Cause:** The `self` keyword appears outside a method declaration. Aether v1 doesn't support methods (the `self` keyword is reserved for v2 trait impls). Any use of `self` at the top level, in a free function, or in a closure that's not inside a method triggers this error.
+
+**Fix:** Don't use `self` in v1. Pass the receiver as an explicit parameter instead.
+
+**Bad:**
+
+```aether
+fn f() -> int {
+  self + 1   // 'self' outside of method
+}
+```
+
+**Good:**
+
+```aether
+fn f(x: int) -> int { x + 1 }
+```
+
+### `'self' is not supported outside of a method` (runtime)
+
+**Cause:** A `self` reference slipped past the type checker (e.g., via an interpreter quirk) and reached the runtime. This shouldn't happen in normal use; if it does, it's an internal bug.
+
+**Fix:** Report a bug. Don't use `self`.
+
+### `range bounds must be numeric, found <T>`
+
+**Cause:** The `range(start, end)` (or `range(start, end, step)`) inline builtin was called with non-numeric bounds. The bounds must be `int` (or widen to `int`).
+
+**Fix:** Pass int bounds.
+
+**Bad:**
+
+```aether
+for i in range("0", 10) { print(i); }
+```
+
+**Good:**
+
+```aether
+for i in range(0, 10) { print(i); }
+```
+
+### `right of '<op>' must be bool, found <T>`
+
+**Cause:** A logical operator (`&&`, `||`) was applied to a non-bool right operand. (The catalog already documents `left of '<op>' must be bool`; this is the right-operand version, which fires for the right operand specifically.)
+
+**Fix:** Use a bool on the right.
+
+**Bad:**
+
+```aether
+if true && 1 { print("hi"); }
+```
+
+**Good:**
+
+```aether
+if true && (1 == 1) { print("hi"); }
+```
+
+### `lambda body: expected <T>, found <U>`
+
+**Cause:** A lambda is assigned to a binding whose function type expects a return type `T`, but the lambda's body has type `U`. The type checker infers the lambda's return type from the body and unifies with the expected return type.
+
+**Fix:** Make the body's type match the expected return type.
+
+**Bad:**
+
+```aether
+let f: fn(int) -> int = fn(x: int) -> int { "hello" };
+```
+
+**Good:**
+
+```aether
+let f: fn(int) -> int = fn(x: int) -> int { x + 1 };
+```
+
+### `spread `...x` is not a standalone expression`
+
+**Cause:** A spread `...x` was used outside a struct literal. The spread syntax only makes sense inside `Name { ..base, field: value }` (struct update) — using it elsewhere is a parse/runtime error.
+
+**Fix:** Use spread only inside a struct literal.
+
+**Bad:**
+
+```aether
+let x = ...some_struct;
+```
+
+**Good:**
+
+```aether
+let p = Point { x: 1, ..some_struct };
+```
+
+### `cannot assign field '<field>' on non-struct` (runtime)
+
+**Cause:** A field assignment `s.field = v` where `s` is not a struct. (Type checker usually catches this.)
+
+**Fix:** Use a struct.
+
+### `no method '<name>' on <type>` (runtime)
+
+**Cause:** A method call `s.name(...)` where `s` doesn't have that method. (Methods are not yet a feature; this is reserved for v2 trait impls. The runtime throws this if a method call slips past the type checker.)
+
+**Fix:** Don't use methods in v1. Use a free function with the receiver as the first parameter.
+
+### `unknown unary operator '<op>'` (runtime)
+
+**Cause:** A unary operator the evaluator doesn't recognize. (Internal — shouldn't happen with the standard parser.)
+
+### `unknown compound assign '<op>='` (runtime)
+
+**Cause:** A compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) the evaluator doesn't recognize. (Some compound-assign operators may not be supported in v1.)
+
+**Fix:** Use the expanded form: `x = x + y` instead of `x += y`.
+
+### `cannot index-assign into non-array/map` (runtime)
+
+**Cause:** An index assignment `t[i] = v` where `t` is not an array or map. (Tuples and strings are indexable but not index-assignable.)
+
+**Fix:** Use an array or map.
+
 ### `Maximum call stack size exceeded`
 
 **Cause:** The host JS engine's stack overflowed. Aether has no tail-call optimization in v1; deep recursion hits this. The step limit usually fires first; this fires for very deep tail-recursion that doesn't trip the step counter.
 
 **Fix:** Use iteration instead of deep recursion.
+
+---
+
+## 4.x. Stdlib runtime errors
+
+The stdlib modules throw plain JS `Error`s on invalid input, which the evaluator converts to Aether panics. The error message format is `<fn>: <message>`. The list below is not exhaustive — each stdlib function's `assertX` call produces a specific message — but the most common are:
+
+### `split: expected string, got <type>`
+
+**Cause:** `split(s, sep)` was called with `s` (or `sep`) not a string.
+
+**Fix:** Convert with `str(x)` first, or pass a string.
+
+### `join: expected array`
+
+**Cause:** `join(arr, sep)` was called with `arr` not an array.
+
+**Fix:** Pass an array.
+
+### `<fn>: expected number, got <type>` (math/string)
+
+**Cause:** A function that expects a number (e.g., `slice`, `repeat`, `charCode`) was called with a non-number.
+
+**Fix:** Convert with `int(x)` or `float(x)` first.
+
+### `charAt: index out of bounds`
+
+**Cause:** `charAt(s, i)` with `i < 0` or `i >= len(s)`.
+
+**Fix:** Check the length first or use `slice`.
+
+### `charCode: index out of bounds`
+
+Same as above.
+
+### `fromCharCode: code point out of range`
+
+**Cause:** `fromCharCode(n)` with `n < 0` or `n > 0x10FFFF`.
+
+**Fix:** Use a valid Unicode code point.
+
+### `repeat: count must be non-negative`
+
+**Cause:** `repeat(s, n)` with `n < 0`.
+
+**Fix:** Use `n >= 0`.
+
+### `padStart: padding must be a single char` / `padEnd: padding must be a single char`
+
+**Cause:** `padStart(s, n, ch)` (or `padEnd`) with `ch` not exactly one character.
+
+**Fix:** Use a single-character padding string.
+
+### `toInt: empty string`
+
+**Cause:** `toInt("")` (or a whitespace-only string after trimming).
+
+**Fix:** Use a non-empty string.
+
+### `toInt: cannot parse '<s>'`
+
+**Cause:** `toInt(s)` where `s` doesn't parse to a finite number.
+
+**Fix:** Validate the input before parsing.
+
+### `format: trailing % in format string`
+
+**Cause:** `format(s, ...)` where `s` ends with `%`.
+
+**Fix:** End the format with `%%` for a literal percent.
+
+### `format: unknown conversion '%X'`
+
+**Cause:** `format` encountered a `%X` where `X` is not a known conversion (`s`, `d`, `f`, `x`, `X`, `o`, `b`, `%`).
+
+**Fix:** Use a valid conversion.
+
+### `int: cannot parse '<value>'`
+
+**Cause:** The inline `int(x)` builtin was called with a string that doesn't parse as an integer.
+
+**Fix:** Use a valid string, or use `toInt` from the `string` module for more lenient parsing (accepts decimals and exponents).
+
+### `float: cannot parse '<value>'`
+
+Same for `float(x)`.
+
+### `push: expected array` / `pop: expected array` / `map: expected array` / `filter: expected array` / `reduce: expected array`
+
+**Cause:** The inline `push`, `pop`, `map`, `filter`, or `reduce` builtins were called with a first argument that's not an array.
+
+**Fix:** Pass an array.
+
+### `len: unsupported value <type>`
+
+**Cause:** `len(x)` where `x` is not an array, string, map, or set.
+
+**Fix:** Use a length-able type.
+
+### `mapGet` panic: `map key not found: <key>`
+
+(Already documented above; this is the catalog's main runtime entry for map access.)
 
 ---
 
@@ -1632,6 +1860,8 @@ The Stats tab shows the step count and elapsed time, useful for distinguishing "
 - The step limit fires after the program has run partway; output emitted before the panic is preserved.
 - Match exhaustiveness isn't checked in v1 — write a `_` arm or check the runtime error.
 - Lambda parameter types are required in v1; missing them is a parse error, not a type error.
+- Compound-assign (`+=`, etc.) may not be supported for all types in v1; use the expanded form if you hit `unknown compound assign`.
+- Stdlib functions panic on invalid input (the catalog's §4.x covers the common ones); validate inputs at the boundary.
 
 ## 7. What's next
 
@@ -1639,3 +1869,4 @@ The Stats tab shows the step count and elapsed time, useful for distinguishing "
 - [error-handling.md](../tutorials/error-handling.md) — `Result` and `?` for recoverable errors.
 - [testing.md](../tutorials/testing.md) — `assert` and `assert_eq` as panic-based testing.
 - [decisions/adr-09-vitest-for-implementation-tests.md](../decisions/adr-09-vitest-for-implementation-tests.md) — the lenient-semantics decision.
+- The book's [Chapter 7](../book/ch07-error-handling.md) — the chapter-length treatment of `Result`, `?`, panic vs error, propagation, and how to read the catalog.

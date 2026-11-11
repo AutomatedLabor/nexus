@@ -1,0 +1,121 @@
+// reverse_number.ae
+// ==================
+// Reverse the decimal digits of a non-negative integer.
+//   12345  -> 54321
+//   1000   -> 1     (leading zeros dropped)
+//   7      -> 7
+//   0      -> 0
+//
+// We implement two strategies and verify they agree:
+//   1. Arithmetic — walk the digits left-to-right (well, right-to-left
+//      via `% 10`) accumulating the reversed value as `rev = rev * 10
+//      + digit`. The advantage: no string conversion; works on
+//      arbitrary-size ints.
+//   2. String-based — convert n to a string, reverse the char array
+//      via reduce (the canonical pattern for avoiding the for-loop-
+//      scope quirk when iterating over an array), then parse it back
+//      to an int by walking left to right with `n = n * 10 + digit`.
+//
+// Both should give the same answer for non-negative inputs. We
+// include a table and assertions at the end. Aether's `/` is float
+// division, so we cast to `int(...)` after each divide.
+
+// Convert a single digit char to its int value.
+fn digit_value(c: string) -> int {
+  if c == "0" { 0 } else {
+  if c == "1" { 1 } else {
+  if c == "2" { 2 } else {
+  if c == "3" { 3 } else {
+  if c == "4" { 4 } else {
+  if c == "5" { 5 } else {
+  if c == "6" { 6 } else {
+  if c == "7" { 7 } else {
+  if c == "8" { 8 } else {
+  9 } } } } } } } } }
+}
+
+// Arithmetic reverse. Walk right-to-left, building `rev` left-to-right.
+//   rev = rev * 10 + (cur % 10)
+//   cur = cur / 10   (integer division via int())
+fn reverse_arith(n: int) -> int {
+  let mut rev = 0;
+  let mut cur = n;
+  while cur > 0 {
+    rev = rev * 10 + (cur % 10);
+    cur = int(cur / 10);
+  }
+  rev
+}
+
+// Build a [string] of single chars from s.
+fn char_array(s: string) -> [string] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(s) {
+    push(out, str(s[i]));
+    i = i + 1;
+  }
+  out
+}
+
+// Reverse a string by reducing over its char array and prepending.
+fn rev_string(s: string) -> string {
+  let chars = char_array(s);
+  reduce(chars, fn(acc: string, c: string) -> string {
+    c + acc
+  }, "")
+}
+
+// Parse a non-negative decimal string back into an int. Walk left to
+// right, multiplying the accumulator by 10 and adding the digit.
+fn parse_int(s: string) -> int {
+  let mut n = 0;
+  let mut i = 0;
+  while i < len(s) {
+    n = n * 10 + digit_value(str(s[i]));
+    i = i + 1;
+  }
+  n
+}
+
+// String-based reverse. Convert n to string, reverse the chars via
+// reduce, parse the reversed string back to an int.
+fn reverse_str(n: int) -> int {
+  if n == 0 {
+    0
+  } else {
+    parse_int(rev_string(str(n)))
+  }
+}
+
+print("== Reverse digits of an integer ==");
+print("");
+let cases = [0, 7, 12, 100, 12345, 1000, 99999, 123456789, 10203];
+print("Table (n) -> arith, string, match:");
+let mut k = 0;
+while k < len(cases) {
+  let n = cases[k];
+  let a = reverse_arith(n);
+  let s = reverse_str(n);
+  let tag = if a == s { "ok" } else { "MISMATCH" };
+  print(f"  {n} -> arith = {a}, string = {s}  [{tag}]");
+  k = k + 1;
+}
+print("");
+
+// Headline cases.
+print(f"reverse(12345) = {reverse_arith(12345)}");
+print(f"reverse(1000)  = {reverse_arith(1000)}");
+print(f"reverse(99999) = {reverse_arith(99999)}");
+print(f"reverse(123456789) = {reverse_arith(123456789)}");
+print("");
+
+// Sanity assertions.
+assert_eq(reverse_arith(12345), 54321);
+assert_eq(reverse_arith(1000), 1);
+assert_eq(reverse_arith(7), 7);
+assert_eq(reverse_arith(0), 0);
+assert_eq(reverse_str(12345), 54321);
+assert_eq(reverse_str(1000), 1);
+assert_eq(reverse_arith(123456789), 987654321);
+print("All assertions passed.");

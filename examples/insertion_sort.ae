@@ -1,0 +1,87 @@
+// insertion_sort.ae
+// =================
+// Insertion sort on an int array, implemented in imperative style
+// with a while loop and array element assignment (`arr[i] = x`).
+//
+// Algorithm: for each i from 1 to len-1, take the element arr[i] and
+// "insert" it into the already-sorted prefix arr[0..i] by repeatedly
+// swapping it left while it's smaller than its predecessor. O(n^2)
+// worst case, O(n) on already-sorted input (the inner loop never
+// executes).
+
+// Make a copy of an int array so we don't mutate the caller's data.
+fn copy_of(arr: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// In-place insertion sort. Returns the sorted array.
+fn insertion_sort(arr: [int]) -> [int] {
+  let mut a = copy_of(arr);
+  let n = len(a);
+  let mut i = 1;
+  while i < n {
+    // The element we want to insert into the sorted prefix.
+    let key = a[i];
+    let mut j = i - 1;
+    // Shift elements of a[0..i-1] that are greater than `key` to the
+    // right by one position, making room for `key`.
+    while j >= 0 && a[j] > key {
+      a[j + 1] = a[j];
+      j = j - 1;
+    }
+    a[j + 1] = key;
+    i = i + 1;
+  }
+  a
+}
+
+// Render an int array as "[1, 2, 3]" via reduce — the canonical
+// pattern for avoiding the for-loop-scope quirk when building a
+// string out of an array.
+fn show(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Insertion sort (while + array assignment) ==");
+print("");
+let input = [5, 2, 8, 1, 9, 3, 7, 4, 6, 0];
+print(f"input:  {show(input)}");
+let sorted = insertion_sort(input);
+print(f"sorted: {show(sorted)}");
+print("");
+
+// More cases.
+let cases = [
+  [3, 1, 2],
+  [42],
+  [],
+  [9, 8, 7, 6, 5, 4, 3, 2, 1],
+  [1, 1, 1, 1],
+  [5, 5, 3, 3, 1, 1],
+  [10, -3, 7, 0, -1, 4]
+];
+let mut k = 0;
+while k < len(cases) {
+  let c = cases[k];
+  print(f"  {show(c)} -> {show(insertion_sort(c))}");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(insertion_sort([5, 2, 8, 1, 9, 3, 7, 4, 6, 0]), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+assert_eq(insertion_sort([]), []);
+assert_eq(insertion_sort([42]), [42]);
+assert_eq(insertion_sort([3, 1, 2]), [1, 2, 3]);
+assert_eq(insertion_sort([9, 8, 7, 6, 5, 4, 3, 2, 1]), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+assert_eq(insertion_sort([10, -3, 7, 0, -1, 4]), [-3, -1, 0, 4, 7, 10]);
+print("All assertions passed.");

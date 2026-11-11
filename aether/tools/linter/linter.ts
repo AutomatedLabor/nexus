@@ -19,9 +19,9 @@
  * Categories (30 rules total)
  * ---------------------------
  *   Correctness  (10): no-shadow, no-unused-var, no-unused-import,
- *                       no-unreachable, no-empty-match, match-exhaustive,
- *                       no-panic-in-fn, no-implicit-return-unit,
- *                       no-compare-float-eq, no-mut-without-mut
+ *                       no-unreachable, no-empty-match, match-not-exhaustive,
+ *                       no-panic-in-fn, no-duplicate-def,
+ *                       no-compare-float-eq, no-mut-reassign
  *   Style        (10): no-trailing-whitespace, no-mixed-indent,
  *                       prefer-const, naming-snake, naming-pascal,
  *                       naming-screaming, no-single-match,
@@ -39,7 +39,7 @@ import { parse } from "../../core/parser/parser";
 import { walk } from "../../core/ast/visitor";
 import type {
   Program, Node, Expr, Stmt, Pattern, TypeNode,
-  SourceLocation, Block, FnDecl, Match, MatchArm, Param,
+  SourceLocation, Block, FnDecl, Match, MatchArm, Param, Call,
 } from "../../core/ast/ast";
 
 //-----------------------------------------------------------------------------
@@ -51,7 +51,13 @@ export interface LintDiagnostic {
   rule: string;
   severity: Severity;
   message: string;
+  /** 1-based line of the diagnostic's primary location. */
+  line: number;
+  /** 1-based column of the diagnostic's primary location. */
+  col: number;
+  /** Full source location (kept for tooling that wants the span). */
   loc: SourceLocation;
+  /** Optional suggested fix as a string. */
   fix?: string;
 }
 
@@ -111,6 +117,8 @@ export function lintProgram(program: Program, source: string, opts?: LintOptions
         rule: r.name,
         severity: sev as Severity,
         message: d.message,
+        line: d.loc.start.line,
+        col: d.loc.start.col,
         loc: d.loc,
         fix: d.fix,
       });
@@ -120,7 +128,7 @@ export function lintProgram(program: Program, source: string, opts?: LintOptions
 }
 
 //-----------------------------------------------------------------------------
-// Scope analysis (shared by no-shadow, no-unused-var, no-mut-without-mut,
+// Scope analysis (shared by no-shadow, no-unused-var, no-mut-reassign,
 // prefer-const).  A single pass over the AST that records every binding
 // with its kind, location, enclosing scope chain, and usage count.
 //-----------------------------------------------------------------------------
@@ -793,8 +801,8 @@ rule("no-empty-match", "error", (ast) => {
   return out;
 });
 
-// 6. match-exhaustive
-rule("match-exhaustive", "warning", (ast) => {
+// 6. match-not-exhaustive
+rule("match-not-exhaustive", "warning", (ast) => {
   const out: RawDiagnostic[] = [];
   walkKind(ast, (node) => {
       if (node.kind !== "Match") return;
@@ -836,25 +844,49 @@ rule("no-panic-in-fn", "warning", (ast) => {
   return out;
 });
 
-// 8. no-implicit-return-unit
-rule("no-implicit-return-unit", "warning", (ast) => {
+// 8. no-duplicate-def
+rule("no-duplicate-def", "error", (ast) => {
   const out: RawDiagnostic[] = [];
-  walkKind(ast, (node) => {
-      if (node.kind !== "FnDecl") return;
-      const f = node as FnDecl;
-      if (!f.ret) return;
-      // Unit return type: () or unit keyword
-      if (f.ret.kind === "UnitType") return;
-      // Heuristic: if the body has no trailing expr AND no Return stmt,
-      // it implicitly returns unit.
-      const hasReturn = f.body.stmts.some(s => s.kind === "Return");
-      if (!f.body.expr && !hasReturn) {
-        out.push({
-          message: `function '${f.name}' declares a non-unit return type but its body falls through without a return — implicit unit return`,
-          loc: f.loc,
-        });
+  // Detect two top-level (or same-scope) declarations that introduce the
+  // same name: `fn`, `struct`, `enum`, `type`, `const`, top-level `let`,
+  // and `import { a, b }` where `a` or `b` collide with a prior binding.
+  // We use a small scope walker so that nested blocks are also checked.
+  interface Entry { name: string; kind: string; loc: SourceLocation; }
+  const stack: Array<Map<string, Entry>> = [new Map()];
+  function push(): void { stack.push(new Map()); }
+  function pop(): void { stack.pop(); }
+  function declare(name: string, kind: string, loc: SourceLocation): void {
+    const top = stack[stack.length - 1];
+    const prev = top.get(name);
+    if (prev) {
+      out.push({
+        message: `'${name}' is already declared in this scope (previous declaration at ${prev.loc.start.line}:${prev.loc.start.col})`,
+        loc,
+      });
+    } else {
+      top.set(name, { name, kind, loc });
+    }
+  }
+  function visitStmts(stmts: Stmt[]): void {
+    for (const s of stmts) {
+      switch (s.kind) {
+        case "Let": case "MutLet": declare(s.name, s.kind, s.loc); break;
+        case "Const": declare(s.name, "const", s.loc); break;
+        case "FnDecl": declare(s.name, "fn", s.loc); push(); visitStmts(s.body.stmts); pop(); break;
+        case "EnumDecl": declare(s.name, "enum", s.loc); break;
+        case "StructDecl": declare(s.name, "struct", s.loc); break;
+        case "TypeAlias": declare(s.name, "type", s.loc); break;
+        case "Import":
+          for (const n of s.names) declare(n, "import", s.loc);
+          break;
+        case "While": push(); visitStmts(s.body.stmts); pop(); break;
+        case "ForIn": declare(s.varName, "for", s.loc); push(); visitStmts(s.body.stmts); pop(); break;
+        case "BlockStmt": push(); visitStmts(s.body); pop(); break;
+        default: break;
       }
-    });
+    }
+  }
+  visitStmts(ast.body);
   return out;
 });
 
@@ -876,8 +908,8 @@ rule("no-compare-float-eq", "warning", (ast) => {
   return out;
 });
 
-// 10. no-mut-without-mut
-rule("no-mut-without-mut", "error", (ast) => {
+// 10. no-mut-reassign
+rule("no-mut-reassign", "error", (ast) => {
   const out: RawDiagnostic[] = [];
   const bindings = analyzeScopes(ast);
   // Build a map of (name, loc) -> binding.
@@ -1230,8 +1262,11 @@ rule("no-recursive-fib", "warning", (ast) => {
       if (!/^fib/i.test(f.name)) return;
       let selfCalls = 0;
       walkKind(f, (inner) => {
-          if (inner.kind === "Call" && inner.callee.kind === "Ident" && inner.callee.name === f.name) {
-            selfCalls++;
+          if (inner.kind === "Call") {
+            const c = inner as Call;
+            if (c.callee.kind === "Ident" && c.callee.name === f.name) {
+              selfCalls++;
+            }
           }
         });
       if (selfCalls >= 2) {

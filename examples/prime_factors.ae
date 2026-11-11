@@ -1,0 +1,90 @@
+// prime_factors.ae
+// =================
+// Prime factorization of a positive integer: write n as a product
+// of primes. We trial-divide by 2 first (the only even prime) and
+// then by every odd number from 3 up to sqrt(n). Each factor found
+// is divided out as many times as possible. The result is the list
+// of prime factors in non-decreasing order.
+//
+//   360   = 2 * 2 * 2 * 3 * 3 * 5
+//   99    = 3 * 3 * 11
+//   1000  = 2 * 2 * 2 * 5 * 5 * 5
+//
+// The driver walks a list of n values with a `while` loop (rather
+// than `for`) so we don't trip over the for-loop-scope quirk where
+// pre-loop `let` bindings go undefined when referenced after the
+// loop. We also use the `int()` cast on `sqrt(...)` because Aether's
+// `/` (and other math ops on floats) return floats and we need an
+// integer bound for the while loop.
+
+// Prime factorization of n. Returns the array of prime factors in
+// non-decreasing order. Handles n >= 1; for n = 1 the result is the
+// empty array (1 has no prime factors).
+fn prime_factors(n: int) -> [int] {
+  let mut out = [];
+  let mut cur = n;
+  // Factor out all the 2s.
+  while cur % 2 == 0 {
+    push(out, 2);
+    cur = cur / 2;
+  }
+  // Factor out odd primes from 3 up.
+  let mut p = 3;
+  // p * p <= cur — equivalent to p <= sqrt(cur). We compute the
+  // bound once per loop iteration and re-check after `cur` shrinks.
+  while p * p <= cur {
+    while cur % p == 0 {
+      push(out, p);
+      cur = cur / p;
+    }
+    p = p + 2;
+  }
+  // If cur > 1 at this point, it's the last prime factor.
+  if cur > 1 {
+    push(out, cur);
+  };
+  out
+}
+
+// Render an int array as "[a, b, c]" via reduce.
+fn show(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+// Pretty-print: "n = p1 * p2 * ... * pk".
+fn show_factorization(n: int) -> string {
+  let fs = prime_factors(n);
+  if len(fs) == 0 {
+    "1 = (no prime factors)"
+  } else {
+    let body = reduce(fs, fn(acc: string, x: int) -> string {
+      if acc == "" { str(x) } else { acc + " * " + str(x) }
+    }, "");
+    str(n) + " = " + body
+  }
+}
+
+print("== Prime factorization ==");
+print("");
+let cases = [1, 2, 7, 12, 17, 99, 100, 360, 1000, 1024, 99991];
+let mut k = 0;
+while k < len(cases) {
+  let c = cases[k];
+  let fs = prime_factors(c);
+  print(f"  {show_factorization(c)}   factors = {show(fs)}");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(prime_factors(1), []);
+assert_eq(prime_factors(2), [2]);
+assert_eq(prime_factors(7), [7]);
+assert_eq(prime_factors(12), [2, 2, 3]);
+assert_eq(prime_factors(99), [3, 3, 11]);
+assert_eq(prime_factors(360), [2, 2, 2, 3, 3, 5]);
+assert_eq(prime_factors(1000), [2, 2, 2, 5, 5, 5]);
+print("All assertions passed.");

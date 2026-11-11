@@ -1,0 +1,117 @@
+// merge_sort.ae
+// =============
+// Recursive divide-and-conquer merge sort on an int array. We split
+// the array into two halves, recursively sort each, and merge the
+// sorted halves with a two-finger walk. Uses `push` and `while` for
+// the merge step and `take`/`drop_n` helpers for slicing. No array
+// concat (`+`) so the type checker stays happy.
+//
+// Note: Aether's `/` is float division, so we use `int(len(arr) / 2)`
+// to truncate the midpoint to an integer index. Without the `int()`
+// cast, slicing an array of odd length would pass a float bound to
+// `take`/`drop_n`, which then mis-counts the elements.
+
+// Take the first n elements of an array.
+fn take(arr: [int], n: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n && i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// Drop the first n elements of an array, returning the rest.
+fn drop_n(arr: [int], n: int) -> [int] {
+  let mut out = [];
+  let mut i = n;
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// Merge two sorted arrays into one sorted array. Two-finger walk:
+// compare the fronts, append the smaller, advance that finger. When
+// one array is exhausted, append the rest of the other. Uses `push`
+// exclusively (no array concat).
+fn merge(left: [int], right: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  let mut j = 0;
+  while i < len(left) && j < len(right) {
+    if left[i] <= right[j] {
+      push(out, left[i]);
+      i = i + 1;
+    } else {
+      push(out, right[j]);
+      j = j + 1;
+    };
+  }
+  while i < len(left) {
+    push(out, left[i]);
+    i = i + 1;
+  }
+  while j < len(right) {
+    push(out, right[j]);
+    j = j + 1;
+  }
+  out
+}
+
+// Recursive merge sort. Base case: arrays of length 0 or 1 are
+// already sorted. Recursive case: split, recurse, merge.
+fn merge_sort(arr: [int]) -> [int] {
+  if len(arr) <= 1 {
+    arr
+  } else {
+    let mid = int(len(arr) / 2);
+    let left = merge_sort(take(arr, mid));
+    let right = merge_sort(drop_n(arr, mid));
+    merge(left, right)
+  }
+}
+
+// Render an int array as "[1, 2, 3]" via reduce.
+fn show(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Merge sort (recursive divide & conquer) ==");
+print("");
+let input = [5, 2, 8, 1, 9, 3, 7, 4, 6, 0];
+print(f"input:  {show(input)}");
+let sorted = merge_sort(input);
+print(f"sorted: {show(sorted)}");
+print("");
+
+let cases = [
+  [3, 1, 2],
+  [42],
+  [],
+  [9, 8, 7, 6, 5, 4, 3, 2, 1],
+  [1, 1, 1, 1],
+  [5, 5, 3, 3, 1, 1],
+  [10, -3, 7, 0, -1, 4]
+];
+let mut k = 0;
+while k < len(cases) {
+  let c = cases[k];
+  print(f"  {show(c)} -> {show(merge_sort(c))}");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(merge_sort([5, 2, 8, 1, 9, 3, 7, 4, 6, 0]), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+assert_eq(merge_sort([]), []);
+assert_eq(merge_sort([42]), [42]);
+assert_eq(merge_sort([3, 1, 2]), [1, 2, 3]);
+assert_eq(merge_sort([9, 8, 7, 6, 5, 4, 3, 2, 1]), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+assert_eq(merge_sort([10, -3, 7, 0, -1, 4]), [-3, -1, 0, 4, 7, 10]);
+print("All assertions passed.");

@@ -1,0 +1,104 @@
+// sum_digits.ae
+// =============
+// Sum the digits of a non-negative integer.
+//   digit_sum(12345) = 1 + 2 + 3 + 4 + 5 = 15
+//   digit_sum(99999) = 9 + 9 + 9 + 9 + 9 = 45
+//   digit_sum(1000)  = 1 + 0 + 0 + 0     = 1
+//
+// We implement the digit sum two ways:
+//   1. Arithmetic — repeatedly divide by 10, take the remainder as
+//      the next digit, add to the accumulator. The advantage: no
+//      string conversion needed.
+//   2. String-based — `str(n)` gives the decimal representation, we
+//      build a [string] of single chars via a while loop, then fold
+//      with `reduce` (the canonical pattern for avoiding the for-
+//      loop-scope quirk when iterating over an array).
+//
+// Both should give the same answer; we assert equality on a small
+// table of inputs. Aether's `/` is float division, so for the
+// arithmetic version we cast to `int(...)` after each divide to
+// stay in integer land.
+
+// Convert a single digit char to its int value. Chains if/else
+// since Aether v1 has no `switch`/`case`.
+fn digit_value(c: string) -> int {
+  if c == "0" { 0 } else {
+  if c == "1" { 1 } else {
+  if c == "2" { 2 } else {
+  if c == "3" { 3 } else {
+  if c == "4" { 4 } else {
+  if c == "5" { 5 } else {
+  if c == "6" { 6 } else {
+  if c == "7" { 7 } else {
+  if c == "8" { 8 } else {
+  9 } } } } } } } } }
+}
+
+// Arithmetic digit sum. Walk the digits right-to-left by repeatedly
+// taking `% 10` (lowest digit) and `/ 10` (shift right one place).
+// Use `int()` to truncate the float result of `/ 10`.
+fn sum_digits_arith(n: int) -> int {
+  let mut acc = 0;
+  let mut cur = n;
+  if cur < 0 {
+    cur = -cur;
+  };
+  while cur > 0 {
+    acc = acc + (cur % 10);
+    cur = int(cur / 10);
+  }
+  acc
+}
+
+// Build a [string] of single chars from s.
+fn char_array(s: string) -> [string] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(s) {
+    push(out, str(s[i]));
+    i = i + 1;
+  }
+  out
+}
+
+// String-based digit sum. Convert n to string, build a char array,
+// reduce with `+`.
+fn sum_digits_str(n: int) -> int {
+  let s = if n < 0 { str(-n) } else { str(n) };
+  let chars = char_array(s);
+  reduce(chars, fn(acc: int, c: string) -> int {
+    acc + digit_value(c)
+  }, 0)
+}
+
+print("== Sum of digits ==");
+print("");
+let cases = [0, 5, 12345, 99999, 1000, 1000000, 7];
+print("Table (n) -> arith, string, match:");
+let mut k = 0;
+while k < len(cases) {
+  let n = cases[k];
+  let a = sum_digits_arith(n);
+  let s = sum_digits_str(n);
+  let tag = if a == s { "ok" } else { "MISMATCH" };
+  print(f"  {n} -> arith = {a}, string = {s}  [{tag}]");
+  k = k + 1;
+}
+print("");
+
+// Print the digit sums for the headline cases.
+print(f"sum_digits(12345) = {sum_digits_arith(12345)}");
+print(f"sum_digits(99999) = {sum_digits_arith(99999)}");
+print(f"sum_digits(1000)  = {sum_digits_arith(1000)}");
+print("");
+
+// Sanity assertions.
+assert_eq(sum_digits_arith(0), 0);
+assert_eq(sum_digits_arith(5), 5);
+assert_eq(sum_digits_arith(12345), 15);
+assert_eq(sum_digits_arith(99999), 45);
+assert_eq(sum_digits_arith(1000), 1);
+assert_eq(sum_digits_str(12345), 15);
+assert_eq(sum_digits_str(99999), 45);
+assert_eq(sum_digits_str(1000), 1);
+print("All assertions passed.");

@@ -1,0 +1,93 @@
+// bubble_sort.ae
+// ==============
+// In-place bubble sort using while loops, array indexing, and array
+// element assignment (`arr[i] = x`). The playground evaluator supports
+// `arr[i] = x` mutation on `mut` arrays (verified by the matrix_ops
+// example), so we can implement a textbook bubble sort without the
+// functional-style `filter`/`+` dance.
+//
+// Algorithm: repeatedly pass over the array, swapping adjacent out-
+// of-order pairs. After pass k the largest k elements are in their
+// final positions, so each subsequent pass can ignore the tail.
+// We halt early if a pass makes no swaps (the array is already
+// sorted).
+
+// Make a copy of an int array so we don't mutate the caller's data.
+// Uses a while loop + push.
+fn copy_of(arr: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// In-place bubble sort. Returns the sorted array (same one we mutated).
+fn bubble_sort(arr: [int]) -> [int] {
+  let mut a = copy_of(arr);
+  let n = len(a);
+  let mut swapped = true;
+  while swapped {
+    swapped = false;
+    let mut i = 0;
+    while i < n - 1 {
+      if a[i] > a[i + 1] {
+        // Swap using a temporary variable. `arr[i] = x` works.
+        let tmp = a[i];
+        a[i] = a[i + 1];
+        a[i + 1] = tmp;
+        swapped = true;
+      };
+      i = i + 1;
+    }
+    // After each pass, the largest remaining element is at the end,
+    // so we could shrink the range — but the swapped flag already
+    // terminates us on sorted input.
+  }
+  a
+}
+
+// Render an int array as "[1, 2, 3]" via reduce — the canonical
+// pattern for avoiding the for-loop-scope quirk when building a
+// string out of an array.
+fn show(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Bubble sort (while + array assignment) ==");
+print("");
+let input = [5, 2, 8, 1, 9, 3, 7, 4, 6, 0];
+print(f"input:  {show(input)}");
+let sorted = bubble_sort(input);
+print(f"sorted: {show(sorted)}");
+print("");
+
+// More cases.
+let cases = [
+  [3, 1, 2],
+  [42],
+  [],
+  [9, 8, 7, 6, 5, 4, 3, 2, 1],
+  [1, 1, 1, 1],
+  [5, 5, 3, 3, 1, 1]
+];
+let mut k = 0;
+while k < len(cases) {
+  let c = cases[k];
+  print(f"  {show(c)} -> {show(bubble_sort(c))}");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(bubble_sort([5, 2, 8, 1, 9, 3, 7, 4, 6, 0]), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+assert_eq(bubble_sort([]), []);
+assert_eq(bubble_sort([42]), [42]);
+assert_eq(bubble_sort([3, 1, 2]), [1, 2, 3]);
+assert_eq(bubble_sort([9, 8, 7, 6, 5, 4, 3, 2, 1]), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+print("All assertions passed.");

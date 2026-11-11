@@ -1,0 +1,158 @@
+// caesar_cipher.ae
+// =================
+// Caesar cipher: shift each letter in a string by a fixed number
+// of positions in the alphabet (here, 3). Non-letters pass through
+// unchanged.
+//
+//   "HELLO" -> "KHOOR"     (H->K, E->H, L->O, L->O, O->R)
+//   "KHOOR" -> "HELLO"     (decrypt with shift -3, or equivalently
+//                           shift 23 (= 26 - 3))
+//
+// Aether v1 doesn't have a `char(int)` builtin, so we use a lookup
+// string ALPHABET and index into it. For an uppercase letter c, we:
+//   1. Find its position in ALPHABET (a while-loop search).
+//   2. Add the shift, take it modulo 26 (with `int()` to truncate
+//      since Aether's `/` is float division... actually we use `%`
+//      which is integer modulo).
+//   3. Index into ALPHABET at the new position.
+//
+// Lowercase letters are shifted using the same ALPHABET (since the
+// algorithm is identical, we just upper-case them, shift, then
+// lower-case them back). For simplicity, this example works on
+// uppercase only — lowercase input is uppercased first.
+
+let ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+// Find the index of c in ALPHABET, or -1 if not found.
+fn find_pos(c: string) -> int {
+  let mut i = 0;
+  let mut found = -1;
+  while i < len(ALPHABET) {
+    if str(ALPHABET[i]) == c {
+      found = i;
+    };
+    i = i + 1;
+  }
+  found
+}
+
+// Upper-case a single ASCII char if it's a lowercase letter; pass
+// other chars through unchanged.
+fn to_upper_char(c: string) -> string {
+  let code_a = 97;   // 'a' ASCII
+  let code_z = 122;  // 'z' ASCII
+  // We don't have a way to get the ASCII code directly in Aether v1
+  // without a lookup table, so we use a hardcoded LOWER alphabet.
+  let LOWER = "abcdefghijklmnopqrstuvwxyz";
+  let mut i = 0;
+  let mut out = c;
+  while i < len(LOWER) {
+    if str(LOWER[i]) == c {
+      out = str(ALPHABET[i]);
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// Lower-case a single ASCII char if it's an uppercase letter; pass
+// other chars through unchanged.
+fn to_lower_char(c: string) -> string {
+  let LOWER = "abcdefghijklmnopqrstuvwxyz";
+  let mut i = 0;
+  let mut out = c;
+  while i < len(ALPHABET) {
+    if str(ALPHABET[i]) == c {
+      out = str(LOWER[i]);
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// Build a [string] of single chars from s.
+fn char_array(s: string) -> [string] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(s) {
+    push(out, str(s[i]));
+    i = i + 1;
+  }
+  out
+}
+
+// Caesar-shift a single character by `shift` positions. Non-letters
+// pass through unchanged. Uppercases first, shifts, then lowercases
+// if the original was lowercase.
+fn shift_char(c: string, shift: int) -> string {
+  let was_lower = (c != to_upper_char(c)) && (to_upper_char(c) != c);
+  let up = to_upper_char(c);
+  let pos = find_pos(up);
+  if pos < 0 {
+    c
+  } else {
+    // Wrap-around: (pos + shift) mod 26. Use a while loop to handle
+    // negative shifts cleanly (avoiding any language-specific modulo
+    // quirks for negative operands).
+    let mut new_pos = pos + shift;
+    while new_pos < 0 {
+      new_pos = new_pos + 26;
+    }
+    while new_pos >= 26 {
+      new_pos = new_pos - 26;
+    }
+    let new_char = str(ALPHABET[new_pos]);
+    if was_lower { to_lower_char(new_char) } else { new_char }
+  }
+}
+
+// Caesar-shift a whole string by `shift` positions. Build a char
+// array, shift each via reduce, then concat back into a string.
+fn caesar(s: string, shift: int) -> string {
+  let chars = char_array(s);
+  reduce(chars, fn(acc: string, c: string) -> string {
+    acc + shift_char(c, shift)
+  }, "")
+}
+
+print("== Caesar cipher (shift 3) ==");
+print("");
+let plain = "HELLO";
+let shift = 3;
+let cipher = caesar(plain, shift);
+print(f"plain:    \"{plain}\"");
+print(f"shift:    {shift}");
+print(f"encrypted: \"{cipher}\"");
+print("");
+let back = caesar(cipher, 26 - shift);
+print(f"decrypt ({26 - shift}): \"{back}\"");
+print("");
+
+// More samples.
+let samples = [
+  "HELLO WORLD",
+  "AETHER",
+  "ATTACK AT DAWN",
+  "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG",
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+];
+let mut k = 0;
+while k < len(samples) {
+  let s = samples[k];
+  let enc = caesar(s, 3);
+  let dec = caesar(enc, 23);
+  print(f"  \"{s}\"");
+  print(f"    enc(3): \"{enc}\"");
+  print(f"    dec(23): \"{dec}\"");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(caesar("HELLO", 3), "KHOOR");
+assert_eq(caesar("KHOOR", 23), "HELLO");
+assert_eq(caesar("ABC", 1), "BCD");
+assert_eq(caesar("XYZ", 3), "ABC");
+assert_eq(caesar("HELLO WORLD", 3), "KHOOR ZRUOG");
+assert_eq(caesar(caesar("ATTACK AT DAWN", 3), 23), "ATTACK AT DAWN");
+print("All assertions passed.");

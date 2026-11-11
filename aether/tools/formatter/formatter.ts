@@ -687,7 +687,13 @@ class Printer {
   // ----- program / statements -----
   printProgram(p: Program): void {
     for (const s of p.body) {
-      this.emitLeading(s.loc.start.offset);
+      // For ExprStmt the parser's loc.start sometimes points to the
+      // enclosing block's `{` rather than to the wrapped expression.
+      // Use the inner expression's loc.start.offset to emit leading
+      // comments in the right place.
+      const inner = s.kind === "ExprStmt" ? s.expr : null;
+      const leadingOffset = inner ? inner.loc.start.offset : s.loc.start.offset;
+      this.emitLeading(leadingOffset);
       if (!this.atLineStart) this.nl();
       this.printStmt(s);
       this.emitTrailing(s.loc.end.line);
@@ -1255,7 +1261,15 @@ class Printer {
     this.emit("{");
     this.indent++;
     for (const s of b.stmts) {
-      this.emitLeading(s.loc.start.offset);
+      // For ExprStmt the parser's loc.start sometimes points to the
+      // enclosing block's `{` rather than to the wrapped expression
+      // (a known parser limitation with `if { … };` statements).  Use
+      // the inner expression's loc.start.offset, which always points to
+      // the actual first token of the statement, so any leading comments
+      // land in the right place.
+      const inner = s.kind === "ExprStmt" ? s.expr : null;
+      const leadingOffset = inner ? inner.loc.start.offset : s.loc.start.offset;
+      this.emitLeading(leadingOffset);
       this.nl();
       this.printStmt(s);
       this.emitTrailing(s.loc.end.line);

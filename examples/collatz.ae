@@ -1,0 +1,78 @@
+// collatz.ae
+// ==========
+// Collatz conjecture sequence generator.
+//   f(n) = n / 2          if n is even
+//   f(n) = 3 * n + 1      if n is odd
+// The conjecture: starting from any positive integer, repeatedly
+// applying f eventually reaches 1. We generate the sequence for N=27
+// (a famously long trajectory: 112 steps reaching a peak of 9232)
+// and print every step plus the length.
+//
+// We use a `while` loop rather than recursion because the sequence
+// length for N=27 is 112 — recursion works but burns stack frames
+// for no benefit. The while loop also avoids the for-loop-scope
+// quirk where pre-loop `let` bindings go undefined when referenced
+// after the loop.
+
+// Generate the Collatz sequence from n down to 1 (inclusive). Returns
+// the sequence as an int array. Uses a `while` loop and `push` to
+// accumulate.
+fn collatz_seq(n: int) -> [int] {
+  let mut out = [];
+  let mut cur = n;
+  while cur != 1 {
+    push(out, cur);
+    if cur % 2 == 0 {
+      cur = cur / 2;
+    } else {
+      cur = 3 * cur + 1;
+    };
+  }
+  push(out, 1);
+  out
+}
+
+// Join an int array into a comma-separated string using reduce — the
+// canonical pattern for avoiding the for-loop-scope quirk when
+// building a string out of an array.
+fn join_ints(arr: [int]) -> string {
+  reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "")
+}
+
+print("== Collatz conjecture ==");
+print("");
+let n = 27;
+let seq = collatz_seq(n);
+print(f"Collatz sequence starting at {n}:");
+print(f"  {join_ints(seq)}");
+print(f"length: {len(seq)}");
+print("");
+
+// Peak value: the maximum element reached along the way. Use reduce
+// with the `max` builtin baked in (we call `max` directly).
+let peak = reduce(seq, fn(acc: int, x: int) -> int {
+  if x > acc { x } else { acc }
+}, 0);
+print(f"peak value reached: {peak}");
+print("");
+
+// A few small cases to sanity-check.
+print("Sequence lengths for small n:");
+let cases = [1, 2, 3, 6, 7, 19];
+let mut i = 0;
+while i < len(cases) {
+  let c = cases[i];
+  let s = collatz_seq(c);
+  print(f"  n = {c}: length = {len(s)}, sequence = [{join_ints(s)}]");
+  i = i + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(len(collatz_seq(27)), 112);
+assert_eq(collatz_seq(1), [1]);
+assert_eq(collatz_seq(2), [2, 1]);
+assert_eq(collatz_seq(4), [4, 2, 1]);
+print("All assertions passed.");

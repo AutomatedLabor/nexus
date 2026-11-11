@@ -1,0 +1,105 @@
+// palindrome_check.ae
+// ====================
+// Check whether a string reads the same forwards and backwards.
+//   "racecar"  -> true   (r-a-c-e-c-a-r)
+//   "hello"    -> false
+//   "a"        -> true   (single char)
+//   ""         -> true   (empty string is vacuously a palindrome)
+//
+// We implement the string reversal two ways:
+//   1. Recursive — `rev(s)` walks the string by index, recursing on
+//      the tail and prepending the head. O(n) stack frames.
+//   2. Reduce-based — `rev_reduce` walks a char array (built with a
+//      while loop) and folds it into a reversed string. The canonical
+//      pattern for avoiding the for-loop-scope quirk when iterating
+//      over an array with side effects.
+//
+// A string is a palindrome iff it equals its reverse. The driver
+// checks several cases and prints a verdict for each.
+
+// Recursive reverse. Prepend the last char to the reverse of the
+// prefix. Base case: empty string reverses to itself.
+fn rev(s: string) -> string {
+  if len(s) == 0 {
+    ""
+  } else {
+    let last = str(s[len(s) - 1]);
+    last + rev(substring(s, 0, len(s) - 1))
+  }
+}
+
+// substring(s, start, end) — the chars of s from index start (incl)
+// up to end (excl). Built with a while loop to avoid the for-loop-
+// scope quirk.
+fn substring(s: string, start: int, end: int) -> string {
+  let mut out = "";
+  let mut i = start;
+  while i < end && i < len(s) {
+    out = out + str(s[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// Reduce-based reverse. We build a [string] of single chars from s,
+// then reduce with an accumulator that prepends each char.
+fn char_array(s: string) -> [string] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(s) {
+    push(out, str(s[i]));
+    i = i + 1;
+  }
+  out
+}
+
+fn rev_reduce(s: string) -> string {
+  let chars = char_array(s);
+  reduce(chars, fn(acc: string, c: string) -> string {
+    c + acc
+  }, "")
+}
+
+// Palindrome check: a string equals its reverse.
+fn is_palindrome(s: string) -> bool {
+  s == rev_reduce(s)
+}
+
+print("== Palindrome check ==");
+print("");
+print("Recursive reverse (rev):");
+print(f"  rev(\"racecar\") = \"{rev("racecar")}\"");
+print(f"  rev(\"hello\")   = \"{rev("hello")}\"");
+print(f"  rev(\"a\")       = \"{rev("a")}\"");
+print(f"  rev(\"\")         = \"{rev("")}\"");
+print("");
+
+print("Reduce-based reverse (rev_reduce):");
+print(f"  rev_reduce(\"Aether\") = \"{rev_reduce("Aether")}\"");
+print(f"  rev_reduce(\"noon\")   = \"{rev_reduce("noon")}\"");
+print("");
+
+print("Palindrome verdicts:");
+let cases = ["racecar", "hello", "a", "", "noon", "level", "Aether", "12321", "12345"];
+let mut k = 0;
+while k < len(cases) {
+  let s = cases[k];
+  let v = is_palindrome(s);
+  print(f"  \"{s}\" -> {v}");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(rev("racecar"), "racecar");
+assert_eq(rev("hello"), "olleh");
+assert_eq(rev(""), "");
+assert_eq(rev_reduce("racecar"), "racecar");
+assert_eq(rev_reduce("hello"), "olleh");
+assert_eq(is_palindrome("racecar"), true);
+assert_eq(is_palindrome("hello"), false);
+assert_eq(is_palindrome("a"), true);
+assert_eq(is_palindrome(""), true);
+assert_eq(is_palindrome("noon"), true);
+assert_eq(is_palindrome("Aether"), false);
+print("All assertions passed.");

@@ -1,0 +1,141 @@
+// string_reverse_words.ae
+// ========================
+// Reverse the WORDS in a sentence — keep each word's characters in
+// their original order, but reverse the order of the words.
+//
+//   "hello world foo"  -> "foo world hello"
+//
+// Pipeline:
+//   1. Split the input on spaces into a [string] of words. We use
+//      `reduce` to fold the char array, accumulating (current_word,
+//      words_so_far) and flushing on each space — the canonical
+//      pattern for avoiding the for-loop-scope quirk when iterating
+//      over an array with side effects.
+//   2. Reverse the [string] of words using another `reduce`: prepend
+//      each word to the accumulator array. (We need a small helper
+//      since `push` appends rather than prepends.)
+//   3. Join the reversed word list back into a single string with
+//      spaces between words, again via `reduce`.
+
+// Build a [string] of single chars from s.
+fn char_array(s: string) -> [string] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(s) {
+    push(out, str(s[i]));
+    i = i + 1;
+  }
+  out
+}
+
+// Append a string to a [string] (in place via push).
+fn append_word(arr: [string], w: string) -> [string] {
+  push(arr, w);
+  arr
+}
+
+// Split s on spaces into a list of words. Multiple consecutive spaces
+// collapse; leading/trailing spaces are ignored.
+fn split_words(s: string) -> [string] {
+  let chars = char_array(s);
+  let init = ("", []);
+  let result = reduce(chars, fn(state: (string, [string]), c: string) -> (string, [string]) {
+    let cur = state.0;
+    let words = state.1;
+    if c == " " || c == "\t" || c == "\n" {
+      if cur == "" {
+        state
+      } else {
+        ("", append_word(words, cur))
+      }
+    } else {
+      (cur + c, words)
+    }
+  }, init);
+  let final_cur = result.0;
+  let final_words = result.1;
+  if final_cur == "" {
+    final_words
+  } else {
+    append_word(final_words, final_cur)
+  }
+}
+
+// Reverse a [string] by prepending each element. We use reduce with
+// an empty initial array and `prepend` (which builds a new array
+// via a small while loop, since we don't have an unshift builtin).
+fn prepend(arr: [string], x: string) -> [string] {
+  let mut out = [x];
+  let mut i = 0;
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+fn reverse_words_array(words: [string]) -> [string] {
+  reduce(words, fn(acc: [string], w: string) -> [string] {
+    prepend(acc, w)
+  }, [])
+}
+
+// Join a [string] with a single-space separator, via reduce.
+fn join_with_space(arr: [string]) -> string {
+  reduce(arr, fn(acc: string, w: string) -> string {
+    if acc == "" { w } else { acc + " " + w }
+  }, "")
+}
+
+// Public API: reverse the words of a sentence.
+fn reverse_words(s: string) -> string {
+  let words = split_words(s);
+  let rev = reverse_words_array(words);
+  join_with_space(rev)
+}
+
+print("== Reverse words in a sentence ==");
+print("");
+let cases = [
+  "hello world foo",
+  "the quick brown fox",
+  "  one  two   three ",
+  "solo",
+  "",
+  "a b c d e",
+  "first last"
+];
+let mut k = 0;
+while k < len(cases) {
+  let s = cases[k];
+  let r = reverse_words(s);
+  print(f"  \"{s}\" -> \"{r}\"");
+  k = k + 1;
+}
+print("");
+
+// Also show the intermediate steps for one example, to make the
+// pipeline explicit.
+let sample = "hello world foo";
+print(f"Pipeline demo for \"{sample}\":");
+let words = split_words(sample);
+let body = reduce(words, fn(acc: string, w: string) -> string {
+  if acc == "" { "\"" + w + "\"" } else { acc + ", \"" + w + "\"" }
+}, "");
+print(f"  split into words: [{body}]");
+let rev = reverse_words_array(words);
+let body2 = reduce(rev, fn(acc: string, w: string) -> string {
+  if acc == "" { "\"" + w + "\"" } else { acc + ", \"" + w + "\"" }
+}, "");
+print(f"  reversed:         [{body2}]");
+print(f"  joined:           \"{join_with_space(rev)}\"");
+print("");
+
+// Sanity assertions.
+assert_eq(reverse_words("hello world foo"), "foo world hello");
+assert_eq(reverse_words("the quick brown fox"), "fox brown quick the");
+assert_eq(reverse_words("solo"), "solo");
+assert_eq(reverse_words(""), "");
+assert_eq(reverse_words("a b c d e"), "e d c b a");
+assert_eq(reverse_words("first last"), "last first");
+print("All assertions passed.");

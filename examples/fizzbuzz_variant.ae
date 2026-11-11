@@ -1,0 +1,114 @@
+// fizzbuzz_variant.ae
+// =====================
+// FizzBuzzPop — the next iteration of FizzBuzz with a third divisor.
+// For each integer i in 1..105, print a label based on divisibility:
+//
+//   by 3        -> "Fizz"
+//   by 5        -> "Buzz"
+//   by 7        -> "Pop"
+//   by 15 (3*5) -> "FizzBuzz"
+//   by 21 (3*7) -> "FizzPop"
+//   by 35 (5*7) -> "BuzzPop"
+//   by 105 (3*5*7) -> "FizzBuzzPop"
+//   otherwise   -> the number itself
+//
+// We combine the labels in a fixed precedence: 3, 5, 7. The order
+// of the labels in the output is always Fizz, then Buzz, then Pop
+// (so by-21 prints "FizzPop", not "PopFizz", and by-105 prints the
+// full "FizzBuzzPop").
+//
+// We use a `while` loop (not `for`) to drive the iteration, because
+// referencing a pre-loop `let` after a `for` loop hits a known
+// scoping quirk in the v1 evaluator (the binding is reported as
+// undefined). `while` doesn't have that quirk.
+
+// Classify one number into its FizzBuzzPop label.
+fn classify(i: int) -> string {
+  let by3 = i % 3 == 0;
+  let by5 = i % 5 == 0;
+  let by7 = i % 7 == 0;
+  // Build the label by concatenating Fizz, Buzz, Pop in that order.
+  let mut out = "";
+  if by3 {
+    out = out + "Fizz";
+  };
+  if by5 {
+    out = out + "Buzz";
+  };
+  if by7 {
+    out = out + "Pop";
+  };
+  // If no divisor matched, the label is just the number.
+  if out == "" {
+    str(i)
+  } else {
+    out
+  }
+}
+
+print("== FizzBuzzPop (1..105) ==");
+print("");
+let mut i = 1;
+let mut last_n = 105;
+while i <= last_n {
+  print(classify(i));
+  i = i + 1;
+}
+print("");
+
+// Spot-check some special values.
+print("Spot checks:");
+print(f"  classify(3)   = {classify(3)}     (expect Fizz)");
+print(f"  classify(5)   = {classify(5)}     (expect Buzz)");
+print(f"  classify(7)   = {classify(7)}     (expect Pop)");
+print(f"  classify(15)  = {classify(15)}  (expect FizzBuzz)");
+print(f"  classify(21)  = {classify(21)}  (expect FizzPop)");
+print(f"  classify(35)  = {classify(35)}  (expect BuzzPop)");
+print(f"  classify(105) = {classify(105)} (expect FizzBuzzPop)");
+print(f"  classify(2)   = {classify(2)}     (expect 2)");
+print("");
+
+// Count labels in 1..105 to make sure each appears the right number
+// of times.
+let mut fizz_count = 0;
+let mut buzz_count = 0;
+let mut pop_count = 0;
+let mut fizzpop_count = 0;
+let mut fizzbuzz_count = 0;
+let mut buzzpop_count = 0;
+let mut fizzbuzzpop_count = 0;
+let mut number_count = 0;
+let mut k = 1;
+while k <= 105 {
+  let s = classify(k);
+  if s == "Fizz" { fizz_count = fizz_count + 1; };
+  if s == "Buzz" { buzz_count = buzz_count + 1; };
+  if s == "Pop" { pop_count = pop_count + 1; };
+  if s == "FizzPop" { fizzpop_count = fizzpop_count + 1; };
+  if s == "FizzBuzz" { fizzbuzz_count = fizzbuzz_count + 1; };
+  if s == "BuzzPop" { buzzpop_count = buzzpop_count + 1; };
+  if s == "FizzBuzzPop" { fizzbuzzpop_count = fizzbuzzpop_count + 1; };
+  if s == str(k) { number_count = number_count + 1; };
+  k = k + 1;
+}
+print("Label counts in 1..105:");
+print(f"  Fizz       (by 3 only)    : {fizz_count}");
+print(f"  Buzz       (by 5 only)    : {buzz_count}");
+print(f"  Pop        (by 7 only)    : {pop_count}");
+print(f"  FizzBuzz   (by 15 only)   : {fizzbuzz_count}");
+print(f"  FizzPop    (by 21 only)   : {fizzpop_count}");
+print(f"  BuzzPop    (by 35 only)   : {buzzpop_count}");
+print(f"  FizzBuzzPop (by 105 only) : {fizzbuzzpop_count}");
+print(f"  numbers    (other)        : {number_count}");
+print("");
+
+// Sanity assertions.
+assert_eq(classify(3), "Fizz");
+assert_eq(classify(5), "Buzz");
+assert_eq(classify(7), "Pop");
+assert_eq(classify(15), "FizzBuzz");
+assert_eq(classify(21), "FizzPop");
+assert_eq(classify(35), "BuzzPop");
+assert_eq(classify(105), "FizzBuzzPop");
+assert_eq(classify(2), "2");
+print("All assertions passed.");

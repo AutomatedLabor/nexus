@@ -1,0 +1,80 @@
+// ackermann.ae
+// ============
+// Ackermann function — the classic textbook example of a total
+// computable function that isn't primitive recursive. Its values
+// grow astronomically even for tiny inputs, which makes it a great
+// stress test of any interpreter's recursion stack.
+//
+//   A(m, n):
+//     if m == 0         -> n + 1
+//     if m > 0, n == 0  -> A(m - 1, 1)
+//     if m > 0, n > 0   -> A(m - 1, A(m, n - 1))
+//
+// Some reference values:
+//   A(0, n)   = n + 1
+//   A(1, n)   = n + 2
+//   A(2, n)   = 2n + 3
+//   A(3, n)   = 2^(n+3) - 3
+//   A(4, 0)   = 13
+//   A(4, 1)   = 65533
+//   A(4, 2)   = a number with 19729 digits (way out of reach)
+//
+// We keep it small: A(2, 3) = 9, A(3, 3) = 61, A(3, 4) = 125. We
+// also verify a small closed-form: A(2, n) should equal 2n + 3, so
+// A(2, n) - 2n should be 3 for every n.
+
+fn ackermann(m: int, n: int) -> int {
+  if m == 0 {
+    n + 1
+  } else {
+    if n == 0 {
+      ackermann(m - 1, 1)
+    } else {
+      ackermann(m - 1, ackermann(m, n - 1))
+    }
+  }
+}
+
+print("== Ackermann function ==");
+print("");
+print(f"A(0, 0) = {ackermann(0, 0)}");
+print(f"A(0, 5) = {ackermann(0, 5)}");
+print(f"A(1, 0) = {ackermann(1, 0)}");
+print(f"A(1, 5) = {ackermann(1, 5)}");
+print(f"A(2, 0) = {ackermann(2, 0)}");
+print(f"A(2, 3) = {ackermann(2, 3)}");
+print(f"A(2, 5) = {ackermann(2, 5)}");
+print(f"A(3, 0) = {ackermann(3, 0)}");
+print(f"A(3, 3) = {ackermann(3, 3)}");
+print(f"A(3, 4) = {ackermann(3, 4)}");
+print("");
+
+// Verify closed forms: A(1, n) = n + 2, A(2, n) = 2n + 3.
+print("Closed-form check (A(1, n) should be n+2; A(2, n) should be 2n+3):");
+let ns = [0, 1, 2, 3, 4, 5, 6, 7];
+let mut k = 0;
+while k < len(ns) {
+  let n = ns[k];
+  let a1 = ackermann(1, n);
+  let a2 = ackermann(2, n);
+  let exp1 = n + 2;
+  let exp2 = 2 * n + 3;
+  let m1 = if a1 == exp1 { "ok" } else { "MISMATCH" };
+  let m2 = if a2 == exp2 { "ok" } else { "MISMATCH" };
+  print(f"  n = {n}: A(1, n) = {a1} (exp {exp1}) [{m1}], A(2, n) = {a2} (exp {exp2}) [{m2}]");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(ackermann(0, 0), 1);
+assert_eq(ackermann(0, 5), 6);
+assert_eq(ackermann(1, 0), 2);
+assert_eq(ackermann(1, 5), 7);
+assert_eq(ackermann(2, 0), 3);
+assert_eq(ackermann(2, 3), 9);
+assert_eq(ackermann(2, 5), 13);
+assert_eq(ackermann(3, 0), 5);
+assert_eq(ackermann(3, 3), 61);
+assert_eq(ackermann(3, 4), 125);
+print("All assertions passed.");

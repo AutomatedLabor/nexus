@@ -1,0 +1,109 @@
+// count_words.ae
+// ===============
+// Word count for a string. A "word" is a maximal run of non-space
+// characters. Multiple consecutive spaces don't count as extra words
+// (so "  one  two   three " has 3 words, not 8). We implement split
+// via `reduce` — the canonical pattern for avoiding the for-loop-
+// scope quirk when iterating over an array with side effects.
+//
+// Pipeline:
+//   1. Build a [string] of single chars from the input (while loop).
+//   2. reduce over the char array with a `(string, [string])` tuple
+//      accumulator: the current word being built, and the list of
+//      completed words. On a space we flush the current word to the
+//      list; on a non-space we append to the current word.
+//   3. After reduce, flush any remaining word.
+//   4. Return the list of words (and len = word count).
+
+// Build a [string] of single chars from s.
+fn char_array(s: string) -> [string] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(s) {
+    push(out, str(s[i]));
+    i = i + 1;
+  }
+  out
+}
+
+// Append a string to a [string] (returns a new array; we don't have
+// `push` returning the array, so we use a small helper that pushes
+// then returns the array — push mutates in place and the return
+// value of push is unspecified).
+fn append_word(arr: [string], w: string) -> [string] {
+  push(arr, w);
+  arr
+}
+
+// Split s on spaces into a list of words. Multiple consecutive spaces
+// collapse; leading/trailing spaces are ignored (they produce empty
+// "current word" which we never flush as a real word).
+fn split_words(s: string) -> [string] {
+  let chars = char_array(s);
+  // Reduce state: a tuple (current_word, words_so_far).
+  // We accumulate the current word and the list of completed words.
+  let init = ("", []);
+  let result = reduce(chars, fn(state: (string, [string]), c: string) -> (string, [string]) {
+    let cur = state.0;
+    let words = state.1;
+    if c == " " || c == "\t" || c == "\n" {
+      if cur == "" {
+        state
+      } else {
+        ("", append_word(words, cur))
+      }
+    } else {
+      (cur + c, words)
+    }
+  }, init);
+  // Flush any word that was in progress when we hit end-of-string.
+  let final_cur = result.0;
+  let final_words = result.1;
+  if final_cur == "" {
+    final_words
+  } else {
+    append_word(final_words, final_cur)
+  }
+}
+
+fn word_count(s: string) -> int {
+  len(split_words(s))
+}
+
+// Render a [string] as `["a", "b", "c"]` via reduce.
+fn show_words(arr: [string]) -> string {
+  let body = reduce(arr, fn(acc: string, x: string) -> string {
+    if acc == "" { "\"" + x + "\"" } else { acc + ", \"" + x + "\"" }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Word count (split via reduce) ==");
+print("");
+let cases = [
+  "the quick brown fox",
+  "  one  two   three ",
+  "",
+  "solo",
+  "a b c d e f g h i j",
+  "hello\tworld\nfoo"
+];
+let mut k = 0;
+while k < len(cases) {
+  let s = cases[k];
+  let words = split_words(s);
+  let n = len(words);
+  print(f"  {show_words(words)}");
+  print(f"    -> word count = {n}");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(word_count("the quick brown fox"), 4);
+assert_eq(word_count("  one  two   three "), 3);
+assert_eq(word_count(""), 0);
+assert_eq(word_count("solo"), 1);
+assert_eq(word_count("a b c d e f g h i j"), 10);
+assert_eq(split_words("hello world"), ["hello", "world"]);
+print("All assertions passed.");
