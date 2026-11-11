@@ -1,0 +1,133 @@
+// bogosort.ae
+// ===========
+// Bogosort — the canonical "perversely awful" sort: generate random
+// permutations of the input until one happens to be sorted. Real
+// implementations use a PRNG; this one uses a deterministic counter-
+// based "pseudo-shuffle" (the Lehmer / factorial-number-system
+// enumeration of the s-th permutation) so the run is fully
+// reproducible and never gets stuck in a cycle that misses the
+// sorted state for tiny inputs.
+//
+//   [3, 1, 2]   -- tries: ~3, sorted: [1, 2, 3]
+//
+// We keep the input tiny (3 elements) and cap the search at 100 tries
+// so the program can't run forever. For n=3 there are 6 permutations,
+// for n=4 there are 24 — both well under the 100-step cap.
+
+// Compute (n-1)! for n in [0..6]. Hardcoded since factorial grows
+// fast and we never need bigger inputs here.
+fn fact(n: int) -> int {
+  if n <= 1 { 1 } else { n * fact(n - 1) }
+}
+
+// Generate the s-th permutation of [0, 1, ..., n-1] using the
+// factorial-number-system (Lehmer code). For n=3, s=0..5 enumerates:
+//   0:[0,1,2] 1:[0,2,1] 2:[1,0,2] 3:[1,2,0] 4:[2,0,1] 5:[2,1,0]
+// We start with `available = [0, 1, ..., n-1]` and, for each position,
+// pick the (s div (remaining-1)!)th remaining index, then reduce s.
+fn perm_at(n: int, s: int) -> [int] {
+  let mut available = [];
+  let mut i = 0;
+  while i < n {
+    push(available, i);
+    i = i + 1;
+  }
+  let mut result = [];
+  let mut k = s;
+  let mut remaining = n;
+  while remaining > 0 {
+    let f = fact(remaining - 1);
+    let idx = int(k / f);
+    k = k - idx * f;
+    push(result, available[idx]);
+    // Remove available[idx] by rebuilding the array.
+    let mut new_avail = [];
+    let mut m = 0;
+    while m < len(available) {
+      if m != idx {
+        push(new_avail, available[m]);
+      };
+      m = m + 1;
+    }
+    available = new_avail;
+    remaining = remaining - 1;
+  }
+  result
+}
+
+// Permute `arr` by the s-th permutation of its indices. We don't have
+// a `map(arr, fn)` that returns a typed array of int easily here, but
+// the builtin `map` works on [int] returning [int] via JS coercion.
+fn permute(arr: [int], s: int) -> [int] {
+  let idxs = perm_at(len(arr), s);
+  map(idxs, fn(i: int) -> int { arr[i] })
+}
+
+// Is the array non-decreasing? Walk with a while loop and track a
+// mut flag. The flag is referenced AFTER the loop — safe with
+// `while` (only `for` has the post-loop scope quirk in v1).
+fn is_sorted(arr: [int]) -> bool {
+  let mut ok = true;
+  let mut i = 1;
+  while i < len(arr) {
+    if arr[i] < arr[i - 1] {
+      ok = false;
+    };
+    i = i + 1;
+  }
+  ok
+}
+
+// Render an int array as "[1, 2, 3]" via reduce.
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Bogosort (deterministic pseudo-shuffle) ==");
+print("");
+
+let input = [3, 1, 2];
+print(f"input:  {show_ints(input)}");
+
+let mut current = input;
+let mut tries = 0;
+let mut done = is_sorted(current);
+while (!done) && (tries < 100) {
+  current = permute(input, tries);
+  tries = tries + 1;
+  done = is_sorted(current);
+}
+
+print(f"sorted: {show_ints(current)}");
+print(f"tries:  {tries}");
+print("");
+
+// A couple of extra tiny inputs to show the same machinery scales.
+let more = [[2, 1], [1], [4, 3, 2, 1]];
+let mut k = 0;
+while k < len(more) {
+  let arr = more[k];
+  let mut c = arr;
+  let mut t = 0;
+  let mut d = is_sorted(c);
+  while (!d) && (t < 200) {
+    c = permute(arr, t);
+    t = t + 1;
+    d = is_sorted(c);
+  }
+  print(f"  {show_ints(arr)} -> {show_ints(c)} in {t} tries");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(is_sorted([1, 2, 3]), true);
+assert_eq(is_sorted([3, 1, 2]), false);
+assert_eq(perm_at(3, 0), [0, 1, 2]);
+assert_eq(perm_at(3, 3), [1, 2, 0]);
+assert_eq(permute([3, 1, 2], 3), [1, 2, 3]);
+assert_eq(current, [1, 2, 3]);
+print("All assertions passed.");

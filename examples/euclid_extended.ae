@@ -1,0 +1,102 @@
+// euclid_extended.ae
+// ==================
+// Extended Euclidean algorithm: given two non-negative integers
+// a, b, compute gcd(a, b) and the Bezout coefficients x, y such
+// that
+//
+//   a*x + b*y = gcd(a, b)
+//
+// We use the iterative form: at each step we have a pair (a, b)
+// and the corresponding Bezout coefficients (x1, y1) and (x2, y2)
+// tracking how the previous remainders decompose.
+//
+//   while b != 0:
+//     q = a / b
+//     r = a - q*b
+//     a, b = b, r
+//     (x1, x2) = (x2, x1 - q*x2)
+//     (y1, y2) = (y2, y1 - q*y2)
+//   return (a, x1, y1)
+//
+// For (240, 46): gcd = 2, x = -9, y = 47.
+// Verify: 240*(-9) + 46*47 = -2160 + 2162 = 2.
+
+// Returns [gcd, x, y] such that a*x + b*y = gcd. The `let mut`
+// pairs are referenced after the while loop (the while variant
+// is unaffected by the for-loop-scope quirk).
+fn ext_gcd(a_in: int, b_in: int) -> [int] {
+  let mut a = a_in;
+  let mut b = b_in;
+  let mut x1 = 1;
+  let mut y1 = 0;
+  let mut x2 = 0;
+  let mut y2 = 1;
+  while b != 0 {
+    let q = int(a / b);
+    let r = a - q * b;
+    a = b;
+    b = r;
+    let nx = x1 - q * x2;
+    let ny = y1 - q * y2;
+    x1 = x2;
+    y1 = y2;
+    x2 = nx;
+    y2 = ny;
+  }
+  [a, x1, y1]
+}
+
+// Plain gcd via the standard Euclidean algorithm, for
+// cross-checking the extended version's first return value.
+fn gcd(a: int, b: int) -> int {
+  let mut x = a;
+  let mut y = b;
+  while y != 0 {
+    let t = x % y;
+    x = y;
+    y = t;
+  }
+  if x < 0 { -x } else { x }
+}
+
+print("== Extended Euclidean algorithm ==");
+print("");
+
+let cases = [
+  [240, 46],
+  [1071, 462],
+  [17, 5],
+  [100, 75],
+  [13, 0],
+  [0, 7]
+];
+let mut k = 0;
+while k < len(cases) {
+  let a = cases[k][0];
+  let b = cases[k][1];
+  let r = ext_gcd(a, b);
+  let g = r[0];
+  let x = r[1];
+  let y = r[2];
+  // Verify the Bezout identity.
+  let check = a * x + b * y;
+  let verify = if check == g { "ok" } else { "MISMATCH" };
+  let gcd_check = if g == gcd(a, b) { "ok" } else { "MISMATCH" };
+  print(f"  gcd({a}, {b}) = {g}, x = {x}, y = {y}");
+  print(f"    {a}*({x}) + {b}*({y}) = {check}  [{verify}]  (gcd match: [{gcd_check}])");
+  k = k + 1;
+}
+print("");
+
+// Highlight the headline case.
+let r240_46 = ext_gcd(240, 46);
+print(f"Headline: 240*(-9) + 46*47 = {240 * -9 + 46 * 47}");
+print("");
+
+// Sanity assertions.
+assert_eq(ext_gcd(240, 46), [2, -9, 47]);
+assert_eq(ext_gcd(1071, 462), [21, -3, 7]);
+assert_eq(ext_gcd(17, 5), [1, -2, 7]);
+assert_eq(ext_gcd(13, 0), [13, 1, 0]);
+assert_eq(ext_gcd(0, 7), [7, 0, 1]);
+print("All assertions passed.");

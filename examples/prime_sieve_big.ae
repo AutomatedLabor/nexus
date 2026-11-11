@@ -1,0 +1,126 @@
+// prime_sieve_big.ae
+// ==================
+// Sieve of Eratosthenes up to N = 200. Returns the count of primes
+// and the last 5 primes below N.
+//
+// Algorithm: maintain a boolean array `is_prime[0..N]` initialized
+// to true. For each i from 2 to sqrt(N), if is_prime[i] is still
+// true, mark all multiples of i (i*i, i*i + i, ...) as composite.
+// Then sweep the array: any index still true is prime.
+//
+// We use 1/0 in an `int` array (Aether v1 has no bool array literal
+// type in the type checker's mind, but int works fine at runtime).
+//
+// For N = 200 the answer is 46 primes; the last 5 are 181, 191,
+// 193, 197, 199.
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n {
+    push(out, v);
+    i = i + 1;
+  }
+  out
+}
+
+// Integer sqrt — floor of sqrt(n). Used to bound the outer loop.
+// We use the builtin `sqrt` then truncate.
+fn isqrt(n: int) -> int {
+  int(sqrt(float(n)))
+}
+
+// Sieve of Eratosthenes up to N (inclusive). Returns the list of
+// primes in ascending order. We rebuild the result array by
+// walking is_prime and pushing any index that's still 1.
+fn sieve(N: int) -> [int] {
+  let mut is_prime = repeat(N + 1, 1);
+  is_prime[0] = 0;
+  if N >= 1 {
+    is_prime[1] = 0;
+  };
+  let mut i = 2;
+  while i <= isqrt(N) {
+    if is_prime[i] == 1 {
+      let mut j = i * i;
+      while j <= N {
+        is_prime[j] = 0;
+        j = j + i;
+      }
+    };
+    i = i + 1;
+  }
+  let mut primes = [];
+  let mut k = 2;
+  while k <= N {
+    if is_prime[k] == 1 {
+      push(primes, k);
+    };
+    k = k + 1;
+  }
+  primes
+}
+
+// Render an int array as "[2, 3, 5, ...]".
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+// Return the last `n` elements of arr as a new array.
+fn take_last(arr: [int], n: int) -> [int] {
+  let mut out = [];
+  let start = len(arr) - n;
+  if start < 0 {
+    return arr;
+  };
+  let mut i = start;
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+print("== Sieve of Eratosthenes (N = 200) ==");
+print("");
+
+let N = 200;
+let primes = sieve(N);
+print(f"N:           {N}");
+print(f"prime count:  {len(primes)}");
+print(f"last 5 primes: {show_ints(take_last(primes, 5))}");
+print(f"first 5 primes: {show_ints(take_last(primes, len(primes) - 0))}");  // ugly but exercises take_last at full length
+print("");
+
+// Re-print first 5 cleanly.
+let mut first5 = [];
+let mut i = 0;
+while i < 5 {
+  push(first5, primes[i]);
+  i = i + 1;
+}
+print(f"first 5 primes: {show_ints(first5)}");
+print("");
+
+// Other cutoffs.
+let cutoffs = [10, 50, 100, 200];
+let mut k = 0;
+while k < len(cutoffs) {
+  let c = cutoffs[k];
+  let p = sieve(c);
+  print(f"  primes <= {c}: count={len(p)}, last={p[len(p) - 1]}");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(len(sieve(10)), 4);
+assert_eq(sieve(10), [2, 3, 5, 7]);
+assert_eq(sieve(20), [2, 3, 5, 7, 11, 13, 17, 19]);
+assert_eq(len(sieve(200)), 46);
+assert_eq(take_last(sieve(200), 5), [181, 191, 193, 197, 199]);
+print("All assertions passed.");

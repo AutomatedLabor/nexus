@@ -1,0 +1,110 @@
+// fibonacci_golden.ae
+// ===================
+// Fibonacci numbers via Binet's closed-form formula:
+//
+//   F(n) = (phi^n - psi^n) / sqrt(5)
+//
+// where phi = (1 + sqrt(5)) / 2  (the golden ratio) and
+//       psi = (1 - sqrt(5)) / 2  (its conjugate).
+//
+// Since |psi| < 1, psi^n -> 0 as n grows, so for large n the
+// formula simplifies to F(n) ~ round(phi^n / sqrt(5)).
+//
+// We compute F(10..15) and print them alongside the integer
+// reference values. The expected values are 55, 89, 144, 233,
+// 377, 610. By n = 15 the float rounding is still exact.
+//
+// Float-precision note: at n ~= 70 the float64 mantissa runs out
+// of bits and Binet's formula starts to drift from the true
+// Fibonacci values; we stay well below that boundary here.
+
+// Helper: round a non-negative float to the nearest integer via
+// `int(x + 0.5)` (the builtin `int` truncates toward zero).
+fn round_pos(x: float) -> int {
+  int(x + 0.5)
+}
+
+// Binet's formula for F(n).
+fn fib_binet(n: int) -> int {
+  let sqrt5 = sqrt(5.0);
+  let phi = (1.0 + sqrt5) / 2.0;
+  let psi = (1.0 - sqrt5) / 2.0;
+  let p = pow_pos(phi, n) - pow_pos(psi, n);
+  round_pos(p / sqrt5)
+}
+
+// float ^ int via repeated multiplication. (Aether v1 has no `**`
+// operator; we roll our own.)
+fn pow_pos(base: float, n: int) -> float {
+  let mut result = 1.0;
+  let mut b = base;
+  let mut k = n;
+  while k > 0 {
+    if (k % 2) == 1 {
+      result = result * b;
+    };
+    b = b * b;
+    k = int(k / 2);
+  }
+  result
+}
+
+// Integer Fibonacci via iteration, used to cross-check Binet.
+fn fib_iter(n: int) -> int {
+  if n <= 1 {
+    return n;
+  };
+  let mut a = 0;
+  let mut b = 1;
+  let mut i = 2;
+  while i <= n {
+    let c = a + b;
+    a = b;
+    b = c;
+    i = i + 1;
+  }
+  b
+}
+
+print("== Fibonacci via Binet's formula ==");
+print("");
+
+let sqrt5 = sqrt(5.0);
+let phi = (1.0 + sqrt5) / 2.0;
+let psi = (1.0 - sqrt5) / 2.0;
+print(f"phi = (1+sqrt(5))/2 = {phi}");
+print(f"psi = (1-sqrt(5))/2 = {psi}");
+print(f"sqrt(5) = {sqrt5}");
+print("");
+
+print("n | F(n) Binet | F(n) iter");
+let mut n = 10;
+while n <= 15 {
+  let fb = fib_binet(n);
+  let fi = fib_iter(n);
+  let mark = if fb == fi { "ok" } else { "MISMATCH" };
+  print(f"  n={n}:  Binet={fb}, iter={fi}  [{mark}]");
+  n = n + 1;
+}
+print("");
+
+// Also show some earlier values to prove the formula works for
+// small n too.
+print("small n:");
+let mut m = 0;
+while m <= 10 {
+  print(f"  F({m}) = {fib_binet(m)}");
+  m = m + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(fib_binet(10), 55);
+assert_eq(fib_binet(11), 89);
+assert_eq(fib_binet(12), 144);
+assert_eq(fib_binet(13), 233);
+assert_eq(fib_binet(14), 377);
+assert_eq(fib_binet(15), 610);
+assert_eq(fib_binet(0), 0);
+assert_eq(fib_binet(1), 1);
+print("All assertions passed.");

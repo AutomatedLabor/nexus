@@ -32,7 +32,11 @@
  *   formatFile(path, opts?)  -> string
  *   extractComments(source) -> Comment[]   (helper used by the linter too)
  */
-import { readFileSync } from "fs";
+// Note: we deliberately do NOT statically import `fs` here. The browser
+// bundle (Next.js / Turbopack) cannot resolve Node built-ins, and the only
+// function in this module that touches the filesystem is `formatFile`,
+// which is Node-only (CLI). We resolve `fs` lazily through `globalThis`
+// indirection so bundlers don't try to pull `fs` into the browser bundle.
 import { lex } from "../../core/lexer/lexer";
 import { parse } from "../../core/parser/parser";
 import type {
@@ -103,7 +107,15 @@ export function format(source: string, opts?: FormatOptions): string {
 }
 
 export function formatFile(path: string, opts?: FormatOptions): string {
-  return format(readFileSync(path, "utf8"), opts);
+  // Lazy `fs` access via globalThis indirection — hidden from bundlers so
+  // the browser bundle never tries to resolve `fs`. Throws a clean error
+  // in the browser (formatFile is Node-only).
+  const req = (globalThis as any).require;
+  if (typeof req !== "function") {
+    throw new Error("formatFile() requires Node.js (fs not available in browser)");
+  }
+  const fs = req("fs");
+  return format(fs.readFileSync(path, "utf8"), opts);
 }
 
 //-----------------------------------------------------------------------------

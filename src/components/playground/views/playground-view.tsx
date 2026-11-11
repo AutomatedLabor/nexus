@@ -14,6 +14,10 @@ import {
   Braces,
   Clock,
   Hash,
+  Cpu,
+  Zap,
+  ScanLine,
+  Wand2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -27,10 +31,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 
 import { useViewStore } from "@/lib/view-store";
 import { runAether, formatValue } from "@/lib/aether-worker";
 import type { CompileResult } from "@aether/core";
+import { compileToVm, type CompileVmResult } from "@aether/core";
+import { disassemble } from "@aether/vm/bytecode/bytecode";
+import { format } from "@aether/tools/formatter/formatter";
+import { lint, type LintDiagnostic, type Severity } from "@aether/tools/linter/linter";
 import { CodeEditor } from "../code-editor";
 import { RunStatus } from "../header";
 
@@ -42,12 +53,25 @@ interface ExampleEntry {
   size: number;
 }
 
+type RuntimeMode = "tree-walker" | "bytecode";
+
+const MODE_STORAGE_KEY = "aether.playground.runtimeMode";
+const LINT_ON_RUN_KEY = "aether.playground.lintOnRun";
+
 interface RunState {
   status: "idle" | "running" | "ok" | "error";
   lastMs: number;
   output: string[];
+  /** Tree-walker result (active when mode === "tree-walker"). */
   result: CompileResult | null;
+  /** VM result (active when mode === "bytecode"). */
+  vmResult: CompileVmResult | null;
+  /** Bytecode disassembly text (VM mode only). */
+  bytecodeText: string | null;
+  /** Flattened errors for the Errors tab — built from whichever mode ran. */
+  errors: Array<{ stage: "lex" | "parse" | "type" | "runtime"; message: string }>;
   lastRunAt: number | null;
+  mode: RuntimeMode;
 }
 
 const INITIAL_RUN_STATE: RunState = {
@@ -55,19 +79,50 @@ const INITIAL_RUN_STATE: RunState = {
   lastMs: 0,
   output: [],
   result: null,
+  vmResult: null,
+  bytecodeText: null,
+  errors: [],
   lastRunAt: null,
+  mode: "tree-walker",
 };
+
+interface LintState {
+  diagnostics: LintDiagnostic[] | null;
+  ranAt: number | null;
+}
+
+function readMode(): RuntimeMode {
+  if (typeof window === "undefined") return "tree-walker";
+  try {
+    const v = window.localStorage.getItem(MODE_STORAGE_KEY);
+    return v === "bytecode" ? "bytecode" : "tree-walker";
+  } catch {
+    return "tree-walker";
+  }
+}
+
+function readLintOnRun(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    const v = window.localStorage.getItem(LINT_ON_RUN_KEY);
+    return v === null ? true : v === "1";
+  } catch {
+    return true;
+  }
+}
 
 /**
  * PlaygroundView — the main interactive view of the Aether playground.
  *
  * Layout:
- *   toolbar (Run | Clear | Format | Load Example | Share)
+ *   toolbar (Run | Format | Lint | Clear | Runtime mode | Load Example | Share)
  *   ┌─ editor ──────┬─ output panel ──┐
  *   │  textarea     │  Tabs:         │
  *   │  + gutter     │  Output / AST  │
  *   │               │  / Tokens /    │
  *   │               │  Errors / Stats│
+ *   │               │  / Bytecode /  │
+ *   │               │  Lint          │
  *   └───────────────┴────────────────┘
  *
  * The editor and output panel split horizontally on lg+ and stack
@@ -80,41 +135,161 @@ export function PlaygroundView() {
   const [editorCode, setEditorCode] = React.useState(code);
 
   const [run, setRun] = React.useState<RunState>(INITIAL_RUN_STATE);
+  const [lintState, setLintState] = React.useState<LintState>({
+    diagnostics: null,
+    ranAt: null,
+  });
   const [examples, setExamples] = React.useState<ExampleEntry[]>([]);
   const [examplesLoading, setExamplesLoading] = React.useState(true);
+  const [mode, setMode] = React.useState<RuntimeMode>(() => readMode());
+  const [lintOnRun, setLintOnRun] = React.useState<boolean>(() => readLintOnRun());
 
-  // Compile + run the given source. Always reads from `editorCode` if no
-  // argument is supplied (so the Run button stays in sync with edits).
-  const runCode = React.useCallback(async (src?: string) => {
-    const codeToRun = src ?? editorCode;
-    setRun((r) => ({
-      ...r,
-      status: "running",
-      output: [],
-      result: null,
-      lastRunAt: Date.now(),
-    }));
-    // The runtime's stdout callback receives every print() line. When a
-    // callback is supplied the runtime's own `output` array stays empty
-    // (see eval.ts), so we collect into `out` here and use that as the
-    // source of truth for the Output tab.
-    const out: string[] = [];
-    const handle = await runAether(codeToRun, {
-      onOutput: (line) => {
-        out.push(line);
-        setRun((r) => ({ ...r, output: [...out] }));
-      },
-    });
-    setRun({
-      status: handle.result.ok ? "ok" : "error",
-      lastMs: handle.elapsedMs,
-      output: out.length > 0
-        ? out
-        : (handle.result.runtime?.output ?? []),
-      result: handle.result,
-      lastRunAt: Date.now(),
-    });
-  }, [editorCode]);
+  // Persist mode + lint toggle.
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem(MODE_STORAGE_KEY, mode);
+    } catch { /* ignore */ }
+  }, [mode]);
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem(LINT_ON_RUN_KEY, lintOnRun ? "1" : "0");
+    } catch { /* ignore */ }
+  }, [lintOnRun]);
+
+  // Run lint on the given source. Cheap and synchronous; never throws the
+  // UI — if the linter itself blows up (e.g. a parser panic), we surface
+  // a single synthetic diagnostic so the user sees something happened.
+  const runLint = React.useCallback((src: string) => {
+    try {
+      const diags = lint(src);
+      setLintState({ diagnostics: diags, ranAt: Date.now() });
+    } catch (e) {
+      setLintState({
+        diagnostics: [
+          {
+            rule: "internal",
+            severity: "error" as Severity,
+            message: "linter crashed: " + (e as Error).message,
+            line: 1,
+            col: 1,
+            loc: { file: "<synthetic>", start: { line: 1, col: 1, offset: 0 }, end: { line: 1, col: 1, offset: 0 } },
+          },
+        ],
+        ranAt: Date.now(),
+      });
+    }
+  }, []);
+
+  // Compile + run the given source. Branches on the runtime mode:
+  //   tree-walker → runAether (compileAndRun)
+  //   bytecode    → compileToVm + disassemble
+  const runCode = React.useCallback(
+    async (src?: string) => {
+      const codeToRun = src ?? editorCode;
+      setRun((r) => ({
+        ...r,
+        status: "running",
+        output: [],
+        result: null,
+        vmResult: null,
+        bytecodeText: null,
+        errors: [],
+        lastRunAt: Date.now(),
+        mode,
+      }));
+      const start =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
+      if (mode === "tree-walker") {
+        const out: string[] = [];
+        const handle = await runAether(codeToRun, {
+          onOutput: (line) => {
+            out.push(line);
+            setRun((r) => ({ ...r, output: [...out] }));
+          },
+        });
+        const end =
+          typeof performance !== "undefined" ? performance.now() : Date.now();
+        setRun({
+          status: handle.result.ok ? "ok" : "error",
+          lastMs: end - start,
+          output: out.length > 0 ? out : (handle.result.runtime?.output ?? []),
+          result: handle.result,
+          vmResult: null,
+          bytecodeText: null,
+          errors: handle.result.errors,
+          lastRunAt: Date.now(),
+          mode,
+        });
+      } else {
+        // Bytecode VM mode.
+        const out: string[] = [];
+        let vmResult: CompileVmResult;
+        try {
+          vmResult = compileToVm(codeToRun, {
+            stdout: (s) => out.push(s),
+            maxSteps: 20_000_000,
+          });
+        } catch (e) {
+          const end =
+            typeof performance !== "undefined" ? performance.now() : Date.now();
+          setRun({
+            status: "error",
+            lastMs: end - start,
+            output: out,
+            result: null,
+            vmResult: null,
+            bytecodeText: null,
+            errors: [
+              {
+                stage: "runtime",
+                message: "compileToVm threw: " + (e as Error).message,
+              },
+            ],
+            lastRunAt: Date.now(),
+            mode,
+          });
+          return;
+        }
+        const end =
+          typeof performance !== "undefined" ? performance.now() : Date.now();
+        // Disassemble the bytecode (guarded — lowering/codegen may have
+        // produced a degenerate module).
+        let bytecodeText: string | null = null;
+        try {
+          if (vmResult.bytecode) {
+            bytecodeText = disassemble(vmResult.bytecode);
+          }
+        } catch (e) {
+          bytecodeText = "; disassemble failed: " + (e as Error).message;
+        }
+        // Flatten errors for the Errors tab.
+        const errors: RunState["errors"] = [];
+        for (const te of vmResult.typeErrors) {
+          errors.push({ stage: "type", message: te.message });
+        }
+        if (vmResult.runtime?.error) {
+          errors.push({ stage: "runtime", message: vmResult.runtime.error.message });
+        }
+        setRun({
+          status: vmResult.ok ? "ok" : "error",
+          lastMs: end - start,
+          output: out.length > 0 ? out : (vmResult.runtime?.output ?? []),
+          result: null,
+          vmResult,
+          bytecodeText,
+          errors,
+          lastRunAt: Date.now(),
+          mode,
+        });
+      }
+      // Always lint after a run (the toggle gates whether the Lint tab
+      // auto-populates; the button can still trigger it manually).
+      if (lintOnRun) {
+        runLint(codeToRun);
+      }
+    },
+    [editorCode, mode, lintOnRun, runLint],
+  );
 
   // Sync editor when a new example/share is loaded.
   React.useEffect(() => {
@@ -143,6 +318,7 @@ export function PlaygroundView() {
   }, []);
 
   // Auto-run on mount using the default code.
+  // (intentionally run once on mount; runCode is stable enough for this)
   React.useEffect(() => {
     runCode(code);
   }, []);
@@ -171,31 +347,27 @@ export function PlaygroundView() {
   function clearAll() {
     setEditorCode("");
     setRun(INITIAL_RUN_STATE);
+    setLintState({ diagnostics: null, ranAt: null });
   }
 
   function formatCode() {
-    // Lightweight formatter: dedent common leading whitespace per block
-    // and trim trailing spaces. Not a real parser-based formatter — but
-    // enough to be useful for paste-mess.
-    const lines = editorCode.split("\n");
-    // Compute min indent across non-empty lines.
-    let minIndent = Infinity;
-    for (const line of lines) {
-      if (line.trim() === "") continue;
-      const indent = line.match(/^\s*/)?.[0].length ?? 0;
-      if (indent < minIndent) minIndent = indent;
+    // Real parser-based formatter (aether/tools/formatter). Idempotent.
+    try {
+      const formatted = format(editorCode);
+      if (formatted === editorCode) {
+        toast.success("Already formatted — no changes");
+      } else {
+        setEditorCode(formatted);
+        toast.success("Formatted");
+      }
+    } catch (e) {
+      toast.error("Format failed: " + (e as Error).message);
     }
-    if (!isFinite(minIndent) || minIndent === 0) {
-      // Just trim trailing whitespace.
-      const trimmed = lines.map((l) => l.replace(/\s+$/, "")).join("\n");
-      setEditorCode(trimmed);
-      toast.success("Trimmed trailing whitespace");
-      return;
-    }
-    const re = new RegExp("^" + " ".repeat(minIndent));
-    const out = lines.map((l) => l.replace(re, "").replace(/\s+$/, "")).join("\n");
-    setEditorCode(out);
-    toast.success("Re-indented (dedented " + minIndent + " spaces)");
+  }
+
+  function lintCode() {
+    runLint(editorCode);
+    toast.success("Linted");
   }
 
   function shareCode() {
@@ -227,10 +399,15 @@ export function PlaygroundView() {
         onRun={() => runCode()}
         onClear={clearAll}
         onFormat={formatCode}
+        onLint={lintCode}
         onShare={shareCode}
         examples={examples}
         examplesLoading={examplesLoading}
         onExample={loadExample}
+        mode={mode}
+        onModeChange={setMode}
+        lintOnRun={lintOnRun}
+        onLintOnRunChange={setLintOnRun}
       />
 
       <div className="grid flex-1 min-h-0 gap-4 lg:grid-cols-2">
@@ -250,12 +427,12 @@ export function PlaygroundView() {
           />
         </div>
 
-        <OutputPanel run={run} />
+        <OutputPanel run={run} lint={lintState} />
       </div>
 
       {/* Hidden status relay — Header reads it from a shared store in v2. */}
       <span className="sr-only" aria-live="polite">
-        Status: {run.status}
+        Status: {run.status} · mode: {run.mode}
         {run.lastRunAt ? ` · last run ${run.lastMs.toFixed(1)}ms` : ""}
       </span>
     </div>
@@ -266,20 +443,30 @@ interface ToolbarProps {
   onRun: () => void;
   onClear: () => void;
   onFormat: () => void;
+  onLint: () => void;
   onShare: () => void;
   examples: ExampleEntry[];
   examplesLoading: boolean;
   onExample: (slug: string) => void;
+  mode: RuntimeMode;
+  onModeChange: (m: RuntimeMode) => void;
+  lintOnRun: boolean;
+  onLintOnRunChange: (v: boolean) => void;
 }
 
 function Toolbar({
   onRun,
   onClear,
   onFormat,
+  onLint,
   onShare,
   examples,
   examplesLoading,
   onExample,
+  mode,
+  onModeChange,
+  lintOnRun,
+  onLintOnRunChange,
 }: ToolbarProps) {
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -290,14 +477,53 @@ function Toolbar({
           ⌘↵
         </span>
       </Button>
-      <Button onClick={onFormat} variant="outline" size="default">
-        <ArrowRightLeft className="size-4" />
+
+      {/* Runtime mode toggle — Tree-walker vs Bytecode VM. */}
+      <ToggleGroup
+        type="single"
+        value={mode}
+        onValueChange={(v) => {
+          if (v === "tree-walker" || v === "bytecode") onModeChange(v);
+        }}
+        variant="outline"
+        size="sm"
+        aria-label="Runtime mode"
+      >
+        <ToggleGroupItem value="tree-walker" className="gap-1.5">
+          <ListTree className="size-3.5" />
+          <span className="hidden sm:inline">Tree-walker</span>
+        </ToggleGroupItem>
+        <ToggleGroupItem value="bytecode" className="gap-1.5">
+          <Cpu className="size-3.5" />
+          <span className="hidden sm:inline">Bytecode VM</span>
+        </ToggleGroupItem>
+      </ToggleGroup>
+
+      <Button onClick={onFormat} variant="outline" size="default" title="Format code (parser-based)">
+        <Wand2 className="size-4" />
         <span className="hidden sm:inline">Format</span>
+      </Button>
+      <Button onClick={onLint} variant="outline" size="default" title="Lint code (30 rules)">
+        <ScanLine className="size-4" />
+        <span className="hidden sm:inline">Lint</span>
       </Button>
       <Button onClick={onClear} variant="outline" size="default">
         <Trash2 className="size-4" />
         <span className="hidden sm:inline">Clear</span>
       </Button>
+
+      {/* Lint-on-run toggle. */}
+      <div className="flex items-center gap-1.5 rounded-md border px-2 py-1">
+        <Switch
+          id="lint-on-run"
+          checked={lintOnRun}
+          onCheckedChange={onLintOnRunChange}
+          className="scale-90"
+        />
+        <Label htmlFor="lint-on-run" className="text-xs text-muted-foreground">
+          Lint on run
+        </Label>
+      </div>
 
       <div className="ml-auto flex items-center gap-2">
         <Select
@@ -333,11 +559,20 @@ function Toolbar({
   );
 }
 
-function OutputPanel({ run }: { run: RunState }) {
+interface OutputPanelProps {
+  run: RunState;
+  lint: LintState;
+}
+
+function OutputPanel({ run, lint }: OutputPanelProps) {
+  // The Bytecode tab only makes sense in VM mode.
+  const showBytecode = run.mode === "bytecode";
   return (
     <div className="flex min-h-[280px] min-w-0 flex-col gap-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>Output</span>
+        <span>
+          Output · {run.mode === "bytecode" ? "Bytecode VM" : "Tree-walker"}
+        </span>
         <RunStatus status={run.status} lastMs={run.lastMs} />
       </div>
       <Tabs defaultValue="output" className="flex min-h-0 flex-1 flex-col">
@@ -354,6 +589,14 @@ function OutputPanel({ run }: { run: RunState }) {
           <TabsTrigger value="errors" className="gap-1.5">
             <AlertTriangle className="size-3.5" /> Errors
           </TabsTrigger>
+          {showBytecode && (
+            <TabsTrigger value="bytecode" className="gap-1.5">
+              <Cpu className="size-3.5" /> Bytecode
+            </TabsTrigger>
+          )}
+          <TabsTrigger value="lint" className="gap-1.5">
+            <ScanLine className="size-3.5" /> Lint
+          </TabsTrigger>
           <TabsTrigger value="stats" className="gap-1.5">
             <Clock className="size-3.5" /> Stats
           </TabsTrigger>
@@ -369,6 +612,14 @@ function OutputPanel({ run }: { run: RunState }) {
         </TabsContent>
         <TabsContent value="errors" className="min-h-0 flex-1">
           <ErrorsTab run={run} />
+        </TabsContent>
+        {showBytecode && (
+          <TabsContent value="bytecode" className="min-h-0 flex-1">
+            <BytecodeTab run={run} />
+          </TabsContent>
+        )}
+        <TabsContent value="lint" className="min-h-0 flex-1">
+          <LintTab lint={lint} />
         </TabsContent>
         <TabsContent value="stats" className="min-h-0 flex-1">
           <StatsTab run={run} />
@@ -397,7 +648,7 @@ function OutputTab({ run }: { run: RunState }) {
       </TabShell>
     );
   }
-  if (run.output.length === 0 && (!run.result || run.status === "idle")) {
+  if (run.output.length === 0 && (!hasResult(run) || run.status === "idle")) {
     return (
       <TabShell>
         <div className="py-6 text-sm text-muted-foreground">
@@ -426,9 +677,19 @@ function OutputTab({ run }: { run: RunState }) {
   );
 }
 
+function hasResult(run: RunState): boolean {
+  return run.result !== null || run.vmResult !== null;
+}
+
+/** Return the AST from whichever mode ran. */
+function getAst(run: RunState) {
+  return run.result?.ast ?? run.vmResult?.ast ?? null;
+}
+
 function AstTab({ run }: { run: RunState }) {
-  if (!run.result) return <EmptyTab label="No AST yet — run the code first." />;
-  const astJson = JSON.stringify(run.result.ast, null, 2);
+  const ast = getAst(run);
+  if (!ast) return <EmptyTab label="No AST yet — run the code first." />;
+  const astJson = JSON.stringify(ast, null, 2);
   return (
     <TabShell>
       <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
@@ -439,8 +700,8 @@ function AstTab({ run }: { run: RunState }) {
 }
 
 function TokensTab({ run }: { run: RunState }) {
-  if (!run.result) return <EmptyTab label="No tokens yet — run the code first." />;
-  const tokens = run.result.tokens;
+  const tokens = run.result?.tokens ?? run.vmResult?.tokens ?? null;
+  if (!tokens) return <EmptyTab label="No tokens yet — run the code first." />;
   if (tokens.length === 0) {
     return <EmptyTab label="No tokens — the lexer produced nothing." />;
   }
@@ -485,8 +746,10 @@ function TokensTab({ run }: { run: RunState }) {
 }
 
 function ErrorsTab({ run }: { run: RunState }) {
-  if (!run.result) return <EmptyTab label="No errors to show — run the code first." />;
-  const errors = run.result.errors;
+  if (!hasResult(run) && run.errors.length === 0) {
+    return <EmptyTab label="No errors to show — run the code first." />;
+  }
+  const errors = run.errors;
   if (errors.length === 0) {
     return (
       <TabShell>
@@ -521,14 +784,139 @@ function ErrorsTab({ run }: { run: RunState }) {
   );
 }
 
+function BytecodeTab({ run }: { run: RunState }) {
+  if (run.mode !== "bytecode") {
+    return (
+      <EmptyTab label="Switch to Bytecode VM mode and Run to see the disassembly." />
+    );
+  }
+  if (run.status === "running") {
+    return (
+      <TabShell>
+        <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+          Compiling to bytecode…
+        </div>
+      </TabShell>
+    );
+  }
+  if (!run.bytecodeText) {
+    return <EmptyTab label="No bytecode yet — run the code in Bytecode VM mode." />;
+  }
+  return (
+    <TabShell>
+      <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+        <Cpu className="size-3.5" />
+        <span>
+          {run.vmResult?.bytecode?.funcs.length ?? 0} function(s) ·
+          entry = {run.vmResult?.bytecode?.entry ?? "—"}
+        </span>
+      </div>
+      <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground">
+        {run.bytecodeText}
+      </pre>
+    </TabShell>
+  );
+}
+
+function severityTone(sev: Severity): string {
+  switch (sev) {
+    case "error":
+      return "text-destructive";
+    case "warning":
+      return "text-amber-600 dark:text-amber-400";
+    default:
+      return "text-muted-foreground";
+  }
+}
+
+function severityBadge(sev: Severity) {
+  if (sev === "error") return <Badge variant="destructive" className="text-[10px] uppercase">error</Badge>;
+  if (sev === "warning") return <Badge variant="outline" className="text-[10px] uppercase text-amber-600 dark:text-amber-400">warn</Badge>;
+  return <Badge variant="outline" className="text-[10px] uppercase">info</Badge>;
+}
+
+function LintTab({ lint }: { lint: LintState }) {
+  if (!lint.diagnostics) {
+    return (
+      <EmptyTab label="No lint diagnostics yet — click Lint or enable Lint on run." />
+    );
+  }
+  const diags = lint.diagnostics;
+  if (diags.length === 0) {
+    return (
+      <TabShell>
+        <div className="flex items-center gap-2 py-6 text-sm text-emerald-600 dark:text-emerald-400">
+          <CheckCircle2 className="size-4" />
+          No lint diagnostics — clean code.
+        </div>
+      </TabShell>
+    );
+  }
+  // Summary counts.
+  const counts = { error: 0, warning: 0, info: 0 } as Record<Severity, number>;
+  for (const d of diags) counts[d.severity]++;
+  return (
+    <TabShell>
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <Badge variant="outline" className="gap-1">
+          <ScanLine className="size-3" />
+          {diags.length} diagnostic{diags.length === 1 ? "" : "s"}
+        </Badge>
+        {counts.error > 0 && (
+          <span className={severityTone("error")}>{counts.error} error{counts.error === 1 ? "" : "s"}</span>
+        )}
+        {counts.warning > 0 && (
+          <span className={severityTone("warning")}>{counts.warning} warning{counts.warning === 1 ? "" : "s"}</span>
+        )}
+        {counts.info > 0 && (
+          <span className={severityTone("info")}>{counts.info} info</span>
+        )}
+      </div>
+      <ul className="space-y-2">
+        {diags.map((d, i) => (
+          <li
+            key={i}
+            className="flex items-start gap-2 rounded-md border bg-background p-3 text-xs"
+          >
+            {severityBadge(d.severity)}
+            <Badge variant="outline" className="shrink-0 font-mono text-[10px]">
+              {d.rule}
+            </Badge>
+            <span className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">
+              {d.line}:{d.col}
+            </span>
+            <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+              {d.message}
+            </pre>
+          </li>
+        ))}
+      </ul>
+    </TabShell>
+  );
+}
+
 function StatsTab({ run }: { run: RunState }) {
-  if (!run.result) return <EmptyTab label="No stats yet — run the code first." />;
-  const r = run.result.runtime;
+  if (!hasResult(run)) return <EmptyTab label="No stats yet — run the code first." />;
+  const isVm = run.mode === "bytecode";
+  const steps = isVm
+    ? run.vmResult?.runtime?.steps ?? 0
+    : run.result?.runtime?.steps ?? 0;
+  const returnValue = isVm
+    ? run.vmResult?.runtime?.value
+    : run.result?.runtime?.value;
+  const tokensCount =
+    run.result?.tokens.length ?? run.vmResult?.tokens.length ?? 0;
   const stats: Array<{ label: string; value: string; icon: React.ReactNode }> = [
     {
+      label: "Runtime mode",
+      value: isVm ? "Bytecode VM (v2)" : "Tree-walker (v1)",
+      icon: isVm ? <Cpu className="size-4" /> : <ListTree className="size-4" />,
+    },
+    {
       label: "Status",
-      value: run.result.ok ? "ok" : "errors",
-      icon: run.result.ok ? (
+      value: (isVm ? run.vmResult?.ok : run.result?.ok) ? "ok" : "errors",
+      icon: (isVm ? run.vmResult?.ok : run.result?.ok) ? (
         <CheckCircle2 className="size-4 text-emerald-500" />
       ) : (
         <AlertTriangle className="size-4 text-destructive" />
@@ -540,8 +928,8 @@ function StatsTab({ run }: { run: RunState }) {
       icon: <Clock className="size-4" />,
     },
     {
-      label: "Eval steps",
-      value: r ? r.steps.toLocaleString() : "—",
+      label: isVm ? "VM steps" : "Eval steps",
+      value: steps.toLocaleString(),
       icon: <Hash className="size-4" />,
     },
     {
@@ -551,13 +939,22 @@ function StatsTab({ run }: { run: RunState }) {
     },
     {
       label: "Return value",
-      value: r ? formatValue(r.value as any) : "—",
+      value: returnValue !== undefined && returnValue !== null
+        ? formatValue(returnValue as any)
+        : (returnValue === null ? "null" : "—"),
       icon: <Braces className="size-4" />,
     },
     {
       label: "Tokens",
-      value: run.result.tokens.length.toLocaleString(),
+      value: tokensCount.toLocaleString(),
       icon: <ListTree className="size-4" />,
+    },
+    {
+      label: "Bytecode funcs",
+      value: isVm
+        ? (run.vmResult?.bytecode?.funcs.length ?? 0).toLocaleString()
+        : "—",
+      icon: <Zap className="size-4" />,
     },
   ];
   return (
@@ -576,6 +973,12 @@ function StatsTab({ run }: { run: RunState }) {
           </div>
         ))}
       </dl>
+      {isVm && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          VM step budget: 20,000,000 (vs 1,000,000 for the tree-walker).
+          Bytecode disassembly is in the Bytecode tab.
+        </p>
+      )}
     </TabShell>
   );
 }

@@ -33,7 +33,11 @@
  *   Complexity   (5):  cognitive-complexity, too-many-params,
  *                       too-many-arms, deep-pattern-nesting, long-function
  */
-import { readFileSync } from "fs";
+// Note: we deliberately do NOT statically import `fs` here. The browser
+// bundle (Next.js / Turbopack) cannot resolve Node built-ins, and the only
+// function in this module that touches the filesystem is `lintFile`, which
+// is Node-only (CLI). We resolve `fs` lazily through `globalThis` indirection
+// so bundlers don't try to pull `fs` into the browser bundle.
 import { lex } from "../../core/lexer/lexer";
 import { parse } from "../../core/parser/parser";
 import { walk } from "../../core/ast/visitor";
@@ -101,7 +105,15 @@ export function lint(source: string, opts?: LintOptions): LintDiagnostic[] {
 }
 
 export function lintFile(path: string, opts?: LintOptions): LintDiagnostic[] {
-  return lint(readFileSync(path, "utf8"), opts);
+  // Lazy `fs` access via globalThis indirection — hidden from bundlers so
+  // the browser bundle never tries to resolve `fs`. Throws a clean error
+  // in the browser (lintFile is Node-only).
+  const req = (globalThis as any).require;
+  if (typeof req !== "function") {
+    throw new Error("lintFile() requires Node.js (fs not available in browser)");
+  }
+  const fs = req("fs");
+  return lint(fs.readFileSync(path, "utf8"), opts);
 }
 
 /** Lower-level entry point: lint a pre-parsed program.  Useful for tests. */

@@ -1,0 +1,124 @@
+// knapsack.ae
+// ===========
+// 0/1 knapsack via dynamic programming. Given n items, each with a
+// weight w_i and a value v_i, and a total capacity W, find the
+// maximum total value that fits within the capacity. Each item may
+// be taken at most once (the "0/1" rule — fractional items aren't
+// allowed).
+//
+//   weights:  [2, 3, 4, 5]
+//   values:   [3, 4, 5, 6]
+//   capacity: 5
+//   optimal:  7  (take items 0 and 1: w=2+3=5, v=3+4=7)
+//
+// Classic 1D DP: dp[c] = best value for capacity c. For each item,
+// update dp from c=W down to c=w_i so each item is used at most
+// once (the descending sweep is the trick that makes the 1D
+// formulation equivalent to the 2D one).
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n {
+    push(out, v);
+    i = i + 1;
+  }
+  out
+}
+
+// Integer max — avoid the builtin name clash with `max` (it takes
+// varargs; here we want a binary helper).
+fn imax(a: int, b: int) -> int {
+  if a >= b { a } else { b }
+}
+
+// Solve 0/1 knapsack. Returns the dp array indexed by capacity,
+// where dp[c] = max value for capacity c.
+fn knapsack(weights: [int], values: [int], capacity: int) -> [int] {
+  let mut dp = repeat(capacity + 1, 0);
+  let mut i = 0;
+  while i < len(weights) {
+    let wi = weights[i];
+    let vi = values[i];
+    let mut c = capacity;
+    while c >= wi {
+      let candidate = dp[c - wi] + vi;
+      dp[c] = imax(dp[c], candidate);
+      c = c - 1;
+    }
+    i = i + 1;
+  }
+  dp
+}
+
+// Reconstruct which items are in the optimal solution by walking
+// the dp table backward. We do this by recomputing the dp row by
+// row would be cleaner, but a quick approach is: for each item
+// (in reverse), check whether dp[c] differs from dp[c - w_i] + v_i
+// and "took" if so. This works because we ran the 1D DP with the
+// descending sweep, so each item's contribution is preserved.
+fn reconstruct(dp: [int], weights: [int], values: [int], capacity: int) -> [int] {
+  let mut taken = [];
+  let mut c = capacity;
+  let mut i = len(weights) - 1;
+  while i >= 0 {
+    let wi = weights[i];
+    let vi = values[i];
+    let took = (c >= wi) && (dp[c] == dp[c - wi] + vi);
+    if took {
+      push(taken, i);
+      c = c - wi;
+    };
+    i = i - 1;
+  }
+  // Reverse so the chosen items come out in ascending index order.
+  let mut out = [];
+  let mut k = len(taken) - 1;
+  while k >= 0 {
+    push(out, taken[k]);
+    k = k - 1;
+  }
+  out
+}
+
+// Render an int array as "[1, 2, 3]".
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== 0/1 Knapsack DP ==");
+print("");
+
+let weights = [2, 3, 4, 5];
+let values = [3, 4, 5, 6];
+let capacity = 5;
+
+print(f"weights:  {show_ints(weights)}");
+print(f"values:   {show_ints(values)}");
+print(f"capacity: {capacity}");
+print("");
+
+let dp = knapsack(weights, values, capacity);
+print("dp table (capacity -> max value):");
+let mut c = 0;
+while c <= capacity {
+  print(f"  cap={c}: value={dp[c]}");
+  c = c + 1;
+}
+print("");
+
+let chosen = reconstruct(dp, weights, values, capacity);
+print(f"max value: {dp[capacity]}");
+print(f"items taken (0-indexed): {show_ints(chosen)}");
+print("");
+
+// Sanity assertions.
+assert_eq(dp[5], 7);
+assert_eq(chosen, [0, 1]);
+assert_eq(knapsack([1, 2, 3], [6, 10, 12], 5)[5], 22);
+assert_eq(knapsack([3, 4, 5], [4, 5, 6], 7)[7], 9);
+print("All assertions passed.");

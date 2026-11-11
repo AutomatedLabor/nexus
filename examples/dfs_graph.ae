@@ -1,0 +1,142 @@
+// dfs_graph.ae
+// ============
+// Depth-first search on a small undirected graph. Print the visit
+// order starting from a chosen root.
+//
+//   nodes: 0..4
+//   edges (adjacency matrix):
+//     0-1, 0-2, 1-3, 2-4
+//
+//   DFS from 0 visiting neighbors in ascending order:
+//     0 -> 1 -> 3 -> 2 -> 4
+//
+// Implemented recursively with a nested `visit` helper that closes
+// over a `visited` array (mutated via index-assignment) and an
+// `order` accumulator (mutated via `push`). This is the canonical
+// Aether pattern when you need mutation + recursion: declare the
+// mutable state as a `let mut` in the enclosing function, then
+// have the nested helper mutate it through closure capture.
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n {
+    push(out, v);
+    i = i + 1;
+  }
+  out
+}
+
+// DFS that returns the visit order as a list of node indices.
+// The recursive `visit` helper closes over `visited` and `order`.
+// Neighbors are visited in ascending index order (deterministic).
+fn dfs(graph: [[int]], n: int, src: int) -> [int] {
+  let mut visited = repeat(n, 0);
+  let mut order = [];
+  fn visit(u: int) -> int {
+    if visited[u] == 1 {
+      return 0;
+    };
+    visited[u] = 1;
+    push(order, u);
+    let mut j = 0;
+    while j < n {
+      if graph[u][j] == 1 {
+        visit(j);
+      };
+      j = j + 1;
+    }
+    0
+  }
+  visit(src);
+  order
+}
+
+// Iterative DFS (push to stack, pop, visit). Included to show the
+// alternative pattern: an explicit stack array, no recursion. For
+// a 5-node graph the visit order is the same as recursive DFS when
+// neighbors are pushed in ascending order (popped in descending).
+fn dfs_iter(graph: [[int]], n: int, src: int) -> [int] {
+  let mut visited = repeat(n, 0);
+  let mut order = [];
+  let mut stack = [src];
+  while len(stack) > 0 {
+    let top = len(stack) - 1;
+    let u = stack[top];
+    // Pop.
+    let mut new_stack = [];
+    let mut k = 0;
+    while k < top {
+      push(new_stack, stack[k]);
+      k = k + 1;
+    }
+    stack = new_stack;
+    if visited[u] == 0 {
+      visited[u] = 1;
+      push(order, u);
+      // Push neighbors in descending order so the smallest-index
+      // neighbor ends up on top of the stack and gets visited next.
+      let mut v = n - 1;
+      while v >= 0 {
+        if graph[u][v] == 1 {
+          push(stack, v);
+        };
+        v = v - 1;
+      }
+    }
+  }
+  order
+}
+
+// Render an int array as "0 -> 1 -> 3 -> 2 -> 4".
+fn show_order(arr: [int]) -> string {
+  reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + " -> " + str(x) }
+  }, "")
+}
+
+print("== Depth-first search ==");
+print("");
+
+// Adjacency matrix (5 nodes, undirected).
+let graph = [
+  [0, 1, 1, 0, 0],
+  [1, 0, 0, 1, 0],
+  [1, 0, 0, 0, 1],
+  [0, 1, 0, 0, 0],
+  [0, 0, 1, 0, 0]
+];
+let n = 5;
+
+print("adjacency matrix:");
+let mut i = 0;
+while i < n {
+  let mut row = "  ";
+  let mut j = 0;
+  while j < n {
+    row = row + str(graph[i][j]) + " ";
+    j = j + 1;
+  }
+  print(row);
+  i = i + 1;
+}
+print("");
+
+let order_r = dfs(graph, n, 0);
+print(f"recursive DFS from 0: {show_order(order_r)}");
+
+let order_i = dfs_iter(graph, n, 0);
+print(f"iterative DFS from 0: {show_order(order_i)}");
+print("");
+
+// DFS from a different root.
+let order2 = dfs(graph, n, 3);
+print(f"recursive DFS from 3: {show_order(order2)}");
+print("");
+
+// Sanity assertions.
+assert_eq(dfs(graph, n, 0), [0, 1, 3, 2, 4]);
+assert_eq(dfs_iter(graph, n, 0), [0, 1, 3, 2, 4]);
+assert_eq(dfs(graph, n, 3), [3, 1, 0, 2, 4]);
+print("All assertions passed.");

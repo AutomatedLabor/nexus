@@ -1,0 +1,73 @@
+// pi_leibniz.ae
+// =============
+// Approximate pi via the Leibniz series:
+//
+//   pi / 4 = 1 - 1/3 + 1/5 - 1/7 + 1/9 - ...
+//
+// which is the Gregory series — the Taylor expansion of arctan(1)
+// since arctan(x) = x - x^3/3 + x^5/5 - ... and arctan(1) = pi/4.
+//
+// The series converges very slowly (logarithmic), so we sum 1000
+// terms and print the approximation. The expected value is around
+// 3.14059 (close to but not equal to pi = 3.14159265...).
+//
+// Aether v1's `/` is float division, so all arithmetic stays in
+// floats; we accumulate the sum into a `let mut acc` referenced
+// after the while loop (the while variant is safe from the
+// for-loop-scope quirk).
+
+print("== Leibniz series approximation of pi ==");
+print("");
+
+let terms = 1000;
+let mut acc = 0.0;
+let mut i = 0;
+while i < terms {
+  let denom = 2.0 * float(i) + 1.0;
+  let term = 1.0 / denom;
+  // Even i (i = 0, 2, 4, ...) contribute +term; odd i contribute -term.
+  if (i % 2) == 0 {
+    acc = acc + term;
+  } else {
+    acc = acc - term;
+  };
+  i = i + 1;
+}
+
+let pi_approx = 4.0 * acc;
+print(f"terms summed:  {terms}");
+print(f"pi/4 partial:  {acc}");
+print(f"pi approx:     {pi_approx}");
+print(f"reference pi:  3.141592653589793");
+print(f"abs error:     {abs(pi_approx - 3.141592653589793)}");
+print("");
+
+// A few intermediate approximations to show convergence.
+let checkpoints = [10, 100, 1000, 5000];
+let mut k = 0;
+while k < len(checkpoints) {
+  let n = checkpoints[k];
+  let mut a = 0.0;
+  let mut j = 0;
+  while j < n {
+    let denom = 2.0 * float(j) + 1.0;
+    let term = 1.0 / denom;
+    if (j % 2) == 0 {
+      a = a + term;
+    } else {
+      a = a - term;
+    };
+    j = j + 1;
+  }
+  let approx = 4.0 * a;
+  print(f"  after {n} terms: pi ~ {approx}  (err {abs(approx - 3.141592653589793)})");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions (loose, since the series converges slowly).
+assert(abs(pi_approx - 3.14) < 0.01);
+assert(abs(pi_approx - 3.14159) > 0.0001);
+assert(pi_approx > 3.0);
+assert(pi_approx < 4.0);
+print("All assertions passed.");

@@ -1,0 +1,141 @@
+// kmp_search.ae
+// =============
+// Knuth–Morris–Pratt string search. Finds every occurrence of a
+// pattern `pat` inside `text` in O(|text| + |pat|) time, returning
+// the list of starting indices.
+//
+// The trick: precompute a prefix table `lps[i]` = the length of the
+// longest proper prefix of pat[0..=i] that is also a suffix of
+// pat[0..=i]. When a mismatch occurs at position j, jump to
+// lps[j-1] instead of starting over at 0 — this is what makes KMP
+// linear.
+//
+//   text: "abcabcabcababc"
+//   pat:  "abc"
+//   matches: [0, 3, 6, 9, 11]
+//
+// All char comparisons use `str(s[i]) == str(p[j])` since string
+// indexing returns a char that the type checker treats separately
+// from a 1-char string (at runtime both are JS 1-char strings, so
+// the comparison works either way).
+
+// Build a fresh array of `n` zeros.
+fn zeros(n: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n {
+    push(out, 0);
+    i = i + 1;
+  }
+  out
+}
+
+// Build the KMP prefix table (a.k.a. "longest-prefix-suffix" or
+// "failure" array). lps[i] = the length of the longest proper
+// prefix of pat[0..=i] that is also a suffix of pat[0..=i].
+//
+// Standard two-pointer construction: i walks forward through pat;
+// j tracks the current matched-prefix length. On mismatch with
+// j > 0, jump j = lps[j-1] (the failure link). On match, j++.
+fn build_lps(pat: string) -> [int] {
+  let n = len(pat);
+  let lps = zeros(n);
+  if n == 0 {
+    return lps;
+  };
+  let mut i = 1;
+  let mut j = 0;
+  while i < n {
+    let mut matched = false;
+    while (!matched) && (j > 0) {
+      if str(pat[i]) == str(pat[j]) {
+        matched = true;
+      } else {
+        j = lps[j - 1];
+      }
+    }
+    if str(pat[i]) == str(pat[j]) {
+      j = j + 1;
+    };
+    lps[i] = j;
+    i = i + 1;
+  }
+  lps
+}
+
+// KMP search: every occurrence of `pat` in `text`, as a list of
+// starting indices. We push `i - j + 1` when a full match is found,
+// then advance via the failure link (instead of restarting from 0)
+// so overlapping matches are caught (e.g., "aaa" in "aaaa" finds
+// both [0, 1]).
+fn kmp_search(text: string, pat: string) -> [int] {
+  if len(pat) == 0 {
+    return [];
+  };
+  let lps = build_lps(pat);
+  let mut matches = [];
+  let mut i = 0;
+  let mut j = 0;
+  while i < len(text) {
+    let mut matched = false;
+    while (!matched) && (j > 0) {
+      if str(text[i]) == str(pat[j]) {
+        matched = true;
+      } else {
+        j = lps[j - 1];
+      }
+    }
+    if str(text[i]) == str(pat[j]) {
+      j = j + 1;
+    };
+    if j == len(pat) {
+      push(matches, i - j + 1);
+      j = lps[j - 1];
+    };
+    i = i + 1;
+  }
+  matches
+}
+
+// Render an int array as "[1, 2, 3]".
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== KMP string search ==");
+print("");
+
+let text = "abcabcabcababc";
+let pat = "abc";
+print(f"text:      \"{text}\"");
+print(f"pattern:    \"{pat}\"");
+print(f"lps table: {show_ints(build_lps(pat))}");
+print(f"matches:   {show_ints(kmp_search(text, pat))}");
+print("");
+
+// Overlapping matches: "aaa" in "aaaaaaa" finds 5 occurrences.
+let text2 = "aaaaaaa";
+let pat2 = "aaa";
+print(f"text:      \"{text2}\"");
+print(f"pattern:    \"{pat2}\"");
+print(f"lps table: {show_ints(build_lps(pat2))}");
+print(f"matches:   {show_ints(kmp_search(text2, pat2))}  (overlapping)");
+print("");
+
+// Pattern not in text -> empty list.
+print(f"no-match:  {show_ints(kmp_search("hello world", "xyz"))}");
+print("");
+
+// Sanity assertions.
+assert_eq(kmp_search("abcabcabcababc", "abc"), [0, 3, 6, 11]);
+assert_eq(kmp_search("aaaaaaa", "aaa"), [0, 1, 2, 3, 4]);
+assert_eq(kmp_search("hello world", "xyz"), []);
+assert_eq(kmp_search("aaa", "aaaaaa"), []);
+assert_eq(kmp_search("aaa", ""), []);
+assert_eq(build_lps("abc"), [0, 0, 0]);
+assert_eq(build_lps("aaa"), [0, 1, 2]);
+assert_eq(build_lps("aabaab"), [0, 1, 0, 1, 2, 3]);
+print("All assertions passed.");

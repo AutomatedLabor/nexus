@@ -1,0 +1,142 @@
+// chinese_remainder.ae
+// =====================
+// Chinese Remainder Theorem (CRT). Solve a system of simultaneous
+// congruences
+//
+//   x ≡ r_1 (mod n_1)
+//   x ≡ r_2 (mod n_2)
+//   ...
+//   x ≡ r_k (mod n_k)
+//
+// for x, where the n_i are pairwise coprime. The unique solution
+// modulo N = product of n_i is given by
+//
+//   x = sum_i  r_i * (N / n_i) * inv(N / n_i, n_i)   (mod N)
+//
+// where inv(a, m) is the modular multiplicative inverse of a
+// modulo m (computed here via the extended Euclidean algorithm).
+//
+// Headline case:
+//   x ≡ 2 (mod 3), x ≡ 3 (mod 5), x ≡ 2 (mod 7)
+//   answer: x = 23
+
+// Extended Euclidean: returns [gcd, x, y] with a*x + b*y = gcd.
+fn ext_gcd(a_in: int, b_in: int) -> [int] {
+  let mut a = a_in;
+  let mut b = b_in;
+  let mut x1 = 1;
+  let mut y1 = 0;
+  let mut x2 = 0;
+  let mut y2 = 1;
+  while b != 0 {
+    let q = int(a / b);
+    let r = a - q * b;
+    a = b;
+    b = r;
+    let nx = x1 - q * x2;
+    let ny = y1 - q * y2;
+    x1 = x2;
+    y1 = y2;
+    x2 = nx;
+    y2 = ny;
+  }
+  [a, x1, y1]
+}
+
+// Modular inverse of a mod m: returns e in [0, m) with a*e ≡ 1
+// (mod m). Requires gcd(a, m) == 1; if not, throws via assertion.
+fn mod_inv(a: int, m: int) -> int {
+  let r = ext_gcd(a % m, m);
+  let g = r[0];
+  let x = r[1];
+  assert_eq(g, 1);
+  // Normalize x to [0, m).
+  let mut e = x % m;
+  while e < 0 {
+    e = e + m;
+  }
+  e
+}
+
+// CRT solver for two residues at a time. We fold residues by
+// repeated pairwise combination:
+//   given x ≡ r1 (mod n1), x ≡ r2 (mod n2),
+//   return x ≡ r' (mod n1*n2), with r' the unique solution in
+//   [0, n1*n2).
+fn combine_crt(r1: int, n1: int, r2: int, n2: int) -> [int] {
+  let r = ext_gcd(n1, n2);
+  let g = r[0];
+  let p = r[1];
+  // q = r[2];
+  // The standard CRT step needs n1, n2 coprime.
+  assert_eq(g, 1);
+  let N = n1 * n2;
+  // Solution: x = r1 + n1 * ((r2 - r1) * inv(n1, n2) mod n2)
+  let diff = (r2 - r1) % n2;
+  let diff_pos = if diff < 0 { diff + n2 } else { diff };
+  let inv = mod_inv(n1, n2);
+  let t = (diff_pos * inv) % n2;
+  let x = (r1 + n1 * t) % N;
+  [x, N]
+}
+
+// Solve a system given as two parallel arrays: residues[i] mod
+// moduli[i]. Folds pairwise with combine_crt.
+fn crt(residues: [int], moduli: [int]) -> int {
+  let mut r = residues[0];
+  let mut n = moduli[0];
+  let mut i = 1;
+  while i < len(residues) {
+    let pair = combine_crt(r, n, residues[i], moduli[i]);
+    r = pair[0];
+    n = pair[1];
+    i = i + 1;
+  }
+  r
+}
+
+print("== Chinese Remainder Theorem ==");
+print("");
+
+let residues = [2, 3, 2];
+let moduli = [3, 5, 7];
+print("system:");
+let mut i = 0;
+while i < len(residues) {
+  print(f"  x = {residues[i]} (mod {moduli[i]})");
+  i = i + 1;
+}
+print("");
+
+let x = crt(residues, moduli);
+let N = 3 * 5 * 7;
+print(f"solution: x = {x} (mod {N})");
+print("");
+
+// Verify.
+let mut k = 0;
+let mut all_ok = true;
+while k < len(residues) {
+  let m = x % moduli[k];
+  let ok = m == residues[k];
+  if !ok {
+    all_ok = false;
+  };
+  print(f"  {x} mod {moduli[k]} = {m}  (expected {residues[k]})  [{if ok { "ok" } else { "MISMATCH" }}]");
+  k = k + 1;
+}
+print("");
+
+// A second example: a bigger system.
+let r2 = [1, 4, 3, 0];
+let m2 = [2, 5, 7, 11];
+let x2 = crt(r2, m2);
+let N2 = 2 * 5 * 7 * 11;
+print(f"system #2 solution: x = {x2} (mod {N2})");
+print("");
+
+// Sanity assertions.
+assert_eq(crt([2, 3, 2], [3, 5, 7]), 23);
+assert_eq(crt([1, 4, 3, 0], [2, 5, 7, 11]), 583);
+assert_eq(crt([2, 3], [3, 5]), 8);
+print("All assertions passed.");

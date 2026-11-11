@@ -1,0 +1,93 @@
+// counting_sort.ae
+// =================
+// Counting sort: sort an integer array whose values lie in a known
+// small range (here 0..9) by counting how many times each value
+// occurs, then emitting each value count times in ascending order.
+// Linear time O(n + k), where k is the value-range width.
+//
+//   input:  [3, 1, 4, 1, 5, 9, 2, 6]
+//   sorted: [1, 1, 2, 3, 4, 5, 6, 9]
+//
+// We use array index-assignment `counts[v] = counts[v] + 1` to bump
+// the counters — Aether v1 supports indexed assignment to arrays
+// (the evalAssign path handles `Index` targets). The output is
+// built by pushing `v` into a result array count times.
+
+// Build a fresh array of `n` zeros — we can't just write `[0]*10`
+// (no repeat operator), so we walk a counter and push 0 each time.
+fn zeros(n: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n {
+    push(out, 0);
+    i = i + 1;
+  }
+  out
+}
+
+// Counting sort for values in [0, max_value]. Returns a new sorted
+// array; the input is not mutated.
+fn counting_sort(arr: [int], max_value: int) -> [int] {
+  let counts = zeros(max_value + 1);
+  // Count occurrences. The indexed compound-assign works on arrays
+  // in Aether v1 — the evaluator's assignTo path handles Index targets.
+  let mut i = 0;
+  while i < len(arr) {
+    let v = arr[i];
+    counts[v] = counts[v] + 1;
+    i = i + 1;
+  }
+  // Emit each value `v` exactly counts[v] times, in ascending order.
+  let mut out = [];
+  let mut v = 0;
+  while v <= max_value {
+    let mut c = 0;
+    while c < counts[v] {
+      push(out, v);
+      c = c + 1;
+    }
+    v = v + 1;
+  }
+  out
+}
+
+// Render an int array as "[1, 2, 3]" via reduce.
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Counting sort ==");
+print("");
+
+let input = [3, 1, 4, 1, 5, 9, 2, 6];
+print(f"input:  {show_ints(input)}");
+let sorted = counting_sort(input, 9);
+print(f"sorted: {show_ints(sorted)}");
+print("");
+
+// A few more cases to show the range handling.
+let cases = [
+  [9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+  [5, 5, 5, 5],
+  [0],
+  [2, 2, 1, 1, 0, 0]
+];
+let mut k = 0;
+while k < len(cases) {
+  let c = cases[k];
+  let s = counting_sort(c, 9);
+  print(f"  {show_ints(c)} -> {show_ints(s)}");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(counting_sort([3, 1, 4, 1, 5, 9, 2, 6], 9), [1, 1, 2, 3, 4, 5, 6, 9]);
+assert_eq(counting_sort([], 9), []);
+assert_eq(counting_sort([5], 9), [5]);
+assert_eq(counting_sort([9, 8, 7, 6, 5, 4, 3, 2, 1, 0], 9), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+assert_eq(counting_sort([2, 2, 1, 1, 0, 0], 9), [0, 0, 1, 1, 2, 2]);
+print("All assertions passed.");

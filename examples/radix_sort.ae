@@ -1,0 +1,120 @@
+// radix_sort.ae
+// =============
+// Radix sort (LSD — least significant digit first). Sorts positive
+// integers by repeatedly bucket-sorting on each decimal digit,
+// starting with the units, then tens, then hundreds, and so on up
+// to the largest value's highest digit.
+//
+//   input:  [170, 45, 75, 90, 802, 24, 2, 66]
+//   sorted: [2, 24, 45, 66, 75, 90, 170, 802]
+//
+// We implement each pass without array-of-arrays (which would need
+// `[[int]]` typing that the v1 checker doesn't love). Instead, for
+// each digit `d` in 0..9 we filter the previous pass's array by
+// `(x / exp) % 10 == d` and concatenate the results in ascending
+// digit order. This is stable — equal-key elements keep their
+// relative order from the previous pass — which is the property
+// that makes LSD radix sort work.
+
+// Compute the maximum element of a non-empty array. Empty arrays
+// return 0 (a no-op sort).
+fn array_max(arr: [int]) -> int {
+  let mut m = 0;
+  let mut i = 0;
+  while i < len(arr) {
+    if arr[i] > m {
+      m = arr[i];
+    };
+    i = i + 1;
+  }
+  m
+}
+
+// One radix pass: stably reorder `arr` by the digit at position
+// `exp` (1 = units, 10 = tens, ...). For each digit 0..9 we walk
+// `arr` and push any element whose (x / exp) % 10 equals d.
+// Since we iterate d ascending and walk arr left-to-right, the
+// result is stable.
+fn radix_pass(arr: [int], exp: int) -> [int] {
+  let mut out = [];
+  let mut d = 0;
+  while d < 10 {
+    let mut i = 0;
+    while i < len(arr) {
+      let digit = (int(arr[i] / exp)) % 10;
+      if digit == d {
+        push(out, arr[i]);
+      };
+      i = i + 1;
+    }
+    d = d + 1;
+  }
+  out
+}
+
+// Full LSD radix sort: do radix_pass for exp = 1, 10, 100, ...
+// while exp <= max(arr). Each pass is stable so the previous
+// pass's ordering is preserved among equal keys at the new digit.
+fn radix_sort(arr: [int]) -> [int] {
+  let mut result = arr;
+  let mut exp = 1;
+  let m = array_max(arr);
+  while exp <= m {
+    result = radix_pass(result, exp);
+    exp = exp * 10;
+  }
+  result
+}
+
+// Render an int array as "[1, 2, 3]" via reduce.
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Radix sort (LSD) ==");
+print("");
+
+let input = [170, 45, 75, 90, 802, 24, 2, 66];
+print(f"input:  {show_ints(input)}");
+let sorted = radix_sort(input);
+print(f"sorted: {show_ints(sorted)}");
+print("");
+
+// Tracing each pass so we can see the LSD progression.
+let mut trace = input;
+let mut exp = 1;
+let m = array_max(input);
+print("pass trace (digit considered: units, tens, hundreds, ...):");
+while exp <= m {
+  trace = radix_pass(trace, exp);
+  print(f"  after exp={exp}: {show_ints(trace)}");
+  exp = exp * 10;
+}
+print("");
+
+// A few more cases.
+let cases = [
+  [5, 4, 3, 2, 1],
+  [1, 10, 100, 1000],
+  [42, 7, 99, 13, 0, 256],
+  [3]
+];
+let mut k = 0;
+while k < len(cases) {
+  let c = cases[k];
+  let s = radix_sort(c);
+  print(f"  {show_ints(c)} -> {show_ints(s)}");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(radix_sort([170, 45, 75, 90, 802, 24, 2, 66]), [2, 24, 45, 66, 75, 90, 170, 802]);
+assert_eq(radix_sort([5, 4, 3, 2, 1]), [1, 2, 3, 4, 5]);
+assert_eq(radix_sort([1, 10, 100, 1000]), [1, 10, 100, 1000]);
+assert_eq(radix_sort([42, 7, 99, 13, 0, 256]), [0, 7, 13, 42, 99, 256]);
+assert_eq(radix_sort([]), []);
+print("All assertions passed.");

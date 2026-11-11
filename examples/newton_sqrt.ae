@@ -1,0 +1,72 @@
+// newton_sqrt.ae
+// ==============
+// Newton's method (a.k.a. the Babylonian method) for square roots.
+// To find sqrt(S), iterate:
+//   x_{n+1} = (x_n + S / x_n) / 2
+// starting from any positive guess. Quadratic convergence — the
+// number of correct digits roughly doubles each step.
+//
+// We compute sqrt(2) starting from x_0 = 1.0 for 5 iterations and
+// print each intermediate value, ending with ~1.4142135623730951.
+//
+// Aether v1's `/` is float division, so all arithmetic here stays
+// in floats. We use a `let mut x` referenced after a `while` loop
+// (the while variant does NOT have the for-loop-scope quirk).
+
+print("== Newton's method for sqrt(2) ==");
+print("");
+
+let S = 2.0;
+let mut x = 1.0;
+print(f"initial guess:  x_0 = {x}");
+
+let mut i = 1;
+while i <= 5 {
+  x = (x + S / x) / 2.0;
+  let err = abs(x * x - S);
+  print(f"  iter {i}:  x = {x}    (x^2 - 2 = {err})");
+  i = i + 1;
+}
+
+print("");
+print(f"approximation: {x}");
+print(f"reference:      1.4142135623730951");
+print("");
+
+// A few more square roots, computed with the same machinery wrapped
+// in a helper.
+fn newton_sqrt(s: float, iters: int) -> float {
+  let mut x = s / 2.0;
+  if x <= 0.0 {
+    x = 1.0;
+  };
+  let mut i = 0;
+  while i < iters {
+    x = (x + s / x) / 2.0;
+    i = i + 1;
+  }
+  x
+}
+
+print("other roots (8 iterations each):");
+let roots = [[2.0, 2.0], [9.0, 3.0], [25.0, 5.0], [144.0, 12.0], [2.25, 1.5]];
+let mut k = 0;
+while k < len(roots) {
+  let s = roots[k][0];
+  let expected = roots[k][1];
+  let r = newton_sqrt(s, 8);
+  let err = abs(r - expected);
+  print(f"  sqrt({s}) = {r}  (expected {expected}, |err| = {err})");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions — float comparison via a small tolerance.
+fn approx(a: float, b: float) -> bool {
+  abs(a - b) < 0.000001
+}
+assert(approx(newton_sqrt(2.0, 10), 1.4142135623730951));
+assert(approx(newton_sqrt(9.0, 10), 3.0));
+assert(approx(newton_sqrt(144.0, 10), 12.0));
+assert(approx(newton_sqrt(0.25, 10), 0.5));
+print("All assertions passed.");

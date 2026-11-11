@@ -1,0 +1,151 @@
+// rabin_karp.ae
+// =============
+// Rabin–Karp string search using a rolling polynomial hash. Find
+// every occurrence of `pat` inside `text` in expected O(|text| +
+// |pat|) time. Each window's hash is updated in O(1) by removing
+// the contribution of the leftmost char and adding the new right
+// char, so we never rehash the whole window.
+//
+//   text: "hello world foo world"
+//   pat:  "world"
+//   matches: [6, 16]
+//
+// We use a small custom alphabet (space + letters) and lookup-based
+// char codes, since Aether v1 has no `ord()` builtin. Hash collisions
+// are confirmed against the substring explicitly (a real Rabin–Karp
+// implementation must always verify; cheap and avoids false matches).
+
+// Custom alphabet: ' ' at index 0, then a-z, then A-Z. Anything not
+// in this map gets code 0 too — fine for our search text/pattern.
+let CHARS = " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+// Lookup the numeric code of a single-char string by linear scan
+// of CHARS. Not the fastest, but for a 53-char table it's fine.
+fn char_code(c: string) -> int {
+  let mut code = 0;
+  let mut i = 0;
+  while i < len(CHARS) {
+    if str(CHARS[i]) == c {
+      code = i;
+    };
+    i = i + 1;
+  }
+  code
+}
+
+// Test whether text[start..start+len(pat)] equals pat. Used as the
+// verification step after a hash hit.
+fn substr_eq(text: string, start: int, pat: string) -> bool {
+  if start + len(pat) > len(text) {
+    return false;
+  };
+  let mut eq = true;
+  let mut i = 0;
+  while i < len(pat) {
+    if str(text[start + i]) != str(pat[i]) {
+      eq = false;
+    };
+    i = i + 1;
+  }
+  eq
+}
+
+// Rabin–Karp search. Returns the list of starting indices where pat
+// occurs in text. Uses polynomial hash
+//   h(s) = s[0]*B^(n-1) + s[1]*B^(n-2) + ... + s[n-1]   (mod M)
+// and the rolling update:
+//   h_new = ((h_old - left*B^(n-1)) * B + right) mod M
+// (with the negative-mod fix via while loop).
+fn rabin_karp(text: string, pat: string) -> [int] {
+  let n = len(pat);
+  let m = len(text);
+  if n == 0 || n > m {
+    return [];
+  };
+  let B = 256;
+  let M = 1000000007;
+  // Hash of pattern.
+  let mut pat_hash = 0;
+  let mut i = 0;
+  while i < n {
+    pat_hash = (pat_hash * B + char_code(str(pat[i]))) % M;
+    i = i + 1;
+  }
+  // Hash of the first text window.
+  let mut win_hash = 0;
+  let mut j = 0;
+  while j < n {
+    win_hash = (win_hash * B + char_code(str(text[j]))) % M;
+    j = j + 1;
+  }
+  // Precompute B^(n-1) mod M for the rolling subtraction.
+  let mut bn = 1;
+  let mut t = 0;
+  while t < n - 1 {
+    bn = (bn * B) % M;
+    t = t + 1;
+  }
+  let mut matches = [];
+  if (pat_hash == win_hash) && substr_eq(text, 0, pat) {
+    push(matches, 0);
+  };
+  let mut k = n;
+  while k < m {
+    let left = char_code(str(text[k - n]));
+    let right = char_code(str(text[k]));
+    win_hash = ((win_hash - left * bn) * B + right) % M;
+    while win_hash < 0 {
+      win_hash = win_hash + M;
+    }
+    if (pat_hash == win_hash) && substr_eq(text, k - n + 1, pat) {
+      push(matches, k - n + 1);
+    };
+    k = k + 1;
+  }
+  matches
+}
+
+// Render an int array as "[1, 2, 3]".
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Rabin-Karp string search ==");
+print("");
+
+let text = "hello world foo world";
+let pat = "world";
+print(f"text:    \"{text}\"");
+print(f"pattern: \"{pat}\"");
+print(f"matches: {show_ints(rabin_karp(text, pat))}");
+print("");
+
+// A couple more cases: short pattern at start, overlapping, none.
+let cases = [
+  ["abcabcabcababc", "abc"],
+  ["aaaaaaa", "aa"],
+  ["hello world", "xyz"],
+  ["single", "single"]
+];
+let mut k = 0;
+while k < len(cases) {
+  let pair = cases[k];
+  let t = pair[0];
+  let p = pair[1];
+  print(f"  \"{t}\" ~ \"{p}\" -> {show_ints(rabin_karp(t, p))}");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(rabin_karp("hello world foo world", "world"), [6, 16]);
+assert_eq(rabin_karp("abcabcabcababc", "abc"), [0, 3, 6, 11]);
+assert_eq(rabin_karp("aaaaaaa", "aa"), [0, 1, 2, 3, 4, 5]);
+assert_eq(rabin_karp("hello world", "xyz"), []);
+assert_eq(rabin_karp("single", "single"), [0]);
+assert_eq(rabin_karp("abc", "abcd"), []);
+assert_eq(rabin_karp("abc", ""), []);
+print("All assertions passed.");

@@ -1,0 +1,105 @@
+// modular_exp.ae
+// ==============
+// Modular exponentiation: compute a^b mod m efficiently using
+// the square-and-multiply algorithm. Naively, computing 2^100
+// directly would overflow any reasonable integer type; we keep
+// every intermediate reduced mod m, so the answer is exact.
+//
+// Algorithm (right-to-left binary method):
+//   result = 1, base = a mod m
+//   while b > 0:
+//     if b is odd:  result = (result * base) mod m
+//     base = (base * base) mod m
+//     b = b >> 1     (i.e., b = b / 2)
+//
+// We compute 2^100 mod 1000000007 (a common modulus in
+// programming contests), which is 976371285. We also exercise
+// a few smaller cases for sanity-checking.
+
+// Integer modular exponentiation. Returns (a^b) mod m for
+// non-negative b and positive m. We compute the multiplication
+// mod m via a separate `mod_mul` (russian-peasant / binary
+// multiplication) helper. Why? Because (base * base) mod m with
+// m up to 1e9 would yield a product up to 1e18, which exceeds
+// float64's safe-integer range (2^53 ≈ 9.0e15) and would silently
+// lose precision. `mod_mul` keeps every addition under 2m, so
+// nothing overflows.
+fn mod_mul(a: int, b: int, m: int) -> int {
+  let mut result = 0;
+  let mut x = a % m;
+  if x < 0 {
+    x = x + m;
+  };
+  let mut y = b;
+  while y > 0 {
+    if (y % 2) == 1 {
+      result = (result + x) % m;
+    };
+    x = (x + x) % m;
+    y = int(y / 2);
+  }
+  result
+}
+
+fn mod_pow(a: int, b: int, m: int) -> int {
+  let mut result = 1;
+  let mut base = a % m;
+  if base < 0 {
+    base = base + m;
+  };
+  let mut k = b;
+  while k > 0 {
+    if (k % 2) == 1 {
+      result = mod_mul(result, base, m);
+    };
+    base = mod_mul(base, base, m);
+    k = int(k / 2);
+  }
+  result
+}
+
+print("== Modular exponentiation ==");
+print("");
+
+let a = 2;
+let b = 100;
+let m = 1000000007;
+let r = mod_pow(a, b, m);
+print(f"a = {a}");
+print(f"b = {b}");
+print(f"m = {m}");
+print(f"a^b mod m = {r}");
+print("");
+
+// Trace the algorithm on a small input: 3^13 mod 7.
+// 3^13 = 1594323; 1594323 mod 7 = 1594323 - 227760*7 = 1594323 - 1594320 = 3.
+let small = mod_pow(3, 13, 7);
+print(f"3^13 mod 7 = {small}");
+print("");
+
+// A few more cases (each verified against the obvious answer).
+let cases = [
+  [2, 10, 1000000007, 1024],
+  [3, 0, 1000000007, 1],
+  [5, 3, 1000, 125],
+  [7, 2, 49, 0],
+  [10, 9, 1000000007, 1000000000]
+];
+let mut k = 0;
+while k < len(cases) {
+  let c = cases[k];
+  let got = mod_pow(c[0], c[1], c[2]);
+  let mark = if got == c[3] { "ok" } else { "MISMATCH" };
+  print(f"  {c[0]}^{c[1]} mod {c[2]} = {got}  (expected {c[3]}) [{mark}]");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(mod_pow(2, 100, 1000000007), 976371285);
+assert_eq(mod_pow(2, 10, 1000000007), 1024);
+assert_eq(mod_pow(3, 0, 1000000007), 1);
+assert_eq(mod_pow(5, 3, 1000), 125);
+assert_eq(mod_pow(7, 2, 49), 0);
+assert_eq(mod_pow(10, 9, 1000000007), 1000000000);
+print("All assertions passed.");

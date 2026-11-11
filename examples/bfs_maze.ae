@@ -1,0 +1,149 @@
+// bfs_maze.ae
+// ===========
+// Breadth-first search on a 5x5 grid maze. The maze is a hardcoded
+// 2D array of 0 (open) / 1 (wall) cells. BFS finds the shortest
+// path (in number of steps) from (0, 0) to (4, 4), if one exists,
+// and prints it as a sequence of (row, col) pairs.
+//
+// We flatten 2D coordinates to a 1D index `r*5+c` for the visited
+// and parent tables, which keeps the queue logic simple. Neighbors
+// are visited in the order up, down, left, right (deterministic).
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n {
+    push(out, v);
+    i = i + 1;
+  }
+  out
+}
+
+// Render a flat path (list of `r*5+c` indices) as "(0,0) -> (0,1) -> ..."
+fn show_path(path: [int], cols: int) -> string {
+  reduce(path, fn(acc: string, idx: int) -> string {
+    let r = int(idx / cols);
+    let c = idx % cols;
+    let cell = "(" + str(r) + ", " + str(c) + ")";
+    if acc == "" { cell } else { acc + " -> " + cell }
+  }, "")
+}
+
+// BFS over the maze. Returns the list of cell indices from src to
+// dst, or an empty list if unreachable.
+fn bfs_maze(maze: [[int]], rows: int, cols: int, src: int, dst: int) -> [int] {
+  let n = rows * cols;
+  let mut visited = repeat(n, 0);
+  let mut parent = repeat(n, -1);
+  let mut queue = [src];
+  visited[src] = 1;
+  let mut head = 0;
+  let mut found = false;
+  while (head < len(queue)) && (!found) {
+    let cur = queue[head];
+    head = head + 1;
+    if cur == dst {
+      found = true;
+    } else {
+      let r = int(cur / cols);
+      let c = cur % cols;
+      // 4 neighbor offsets. We walk each one explicitly to keep
+      // the code dependency-free of `[[int]]` arrays.
+      let offsets = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+      let mut d = 0;
+      while d < 4 {
+        let off = offsets[d];
+        let nr = r + off[0];
+        let nc = c + off[1];
+        if (nr >= 0) && (nr < rows) && (nc >= 0) && (nc < cols) {
+          if maze[nr][nc] == 0 {
+            let ni = nr * cols + nc;
+            if visited[ni] == 0 {
+              visited[ni] = 1;
+              parent[ni] = cur;
+              push(queue, ni);
+            }
+          }
+        };
+        d = d + 1;
+      }
+    }
+  }
+  // Reconstruct path: walk back from dst to src via parent, then reverse.
+  if !found {
+    return [];
+  };
+  let mut rev = [];
+  let mut cur = dst;
+  let mut safety = 0;
+  while (cur != -1) && (safety < n + 5) {
+    push(rev, cur);
+    cur = parent[cur];
+    safety = safety + 1;
+  }
+  let mut out = [];
+  let mut i = len(rev) - 1;
+  while i >= 0 {
+    push(out, rev[i]);
+    i = i - 1;
+  }
+  out
+}
+
+print("== BFS on a 5x5 maze ==");
+print("");
+
+// Maze layout: 0 = open, 1 = wall. S = start (0,0), E = end (4,4).
+//   0 1 2 3 4
+// 0 S . # . .
+// 1 # . # . #
+// 2 . . . . .
+// 3 . # # # .
+// 4 . . . . E
+let maze = [
+  [0, 0, 1, 0, 0],
+  [1, 0, 1, 0, 1],
+  [0, 0, 0, 0, 0],
+  [0, 1, 1, 1, 0],
+  [0, 0, 0, 0, 0]
+];
+let rows = 5;
+let cols = 5;
+let src = 0;
+let dst = 4 * 5 + 4;
+
+print("maze (# = wall, . = open):");
+let mut r = 0;
+while r < rows {
+  let mut row_str = "  ";
+  let mut c = 0;
+  while c < cols {
+    let ch = if maze[r][c] == 0 { "." } else { "#" };
+    row_str = row_str + ch + " ";
+    c = c + 1;
+  }
+  print(row_str);
+  r = r + 1;
+}
+print("");
+
+let path = bfs_maze(maze, rows, cols, src, dst);
+print(f"start: (0, 0), end: (4, 4)");
+print(f"path ({len(path) - 1} steps): {show_path(path, cols)}");
+print("");
+
+// A second maze where the destination is walled off (no path).
+let maze2 = [
+  [0, 0, 1],
+  [1, 0, 1],
+  [0, 1, 0]
+];
+let path2 = bfs_maze(maze2, 3, 3, 0, 8);
+print(f"unreachable maze path: {show_path(path2, 3)} (empty = no path)");
+print("");
+
+// Sanity assertions.
+assert_eq(bfs_maze(maze, 5, 5, 0, 24), [0, 1, 6, 11, 12, 13, 14, 19, 24]);
+assert_eq(bfs_maze(maze2, 3, 3, 0, 8), []);
+print("All assertions passed.");
