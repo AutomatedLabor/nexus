@@ -32,6 +32,17 @@ export { run } from "./eval/eval";
 export type { RunOptions, RunResult, Value, Env } from "./eval/eval";
 export { display as displayValue, valueEq } from "./eval/eval";
 
+// --- v2: Bytecode VM pipeline ---
+export { lowerToIr, checkIrWellFormed } from "./ir/ir";
+export type { IrProgram, IrFunc, IrBlock, IrOp, BinKind, UnKind, IrWellFormedIssue } from "./ir/ir";
+export { compileToBytecode } from "../vm/codegen/codegen";
+export type { BytecodeModule } from "../vm/bytecode/bytecode";
+export { runBytecode } from "../vm/interpreter/vm";
+export type { VmOptions, VmResult } from "../vm/interpreter/vm";
+export { Op } from "../vm/bytecode/bytecode";
+export { assemble, disassemble, verifyBytecode } from "../vm/bytecode/bytecode";
+export type { Instr, BytecodeFunc, Constant } from "../vm/bytecode/bytecode";
+
 export interface CompileResult {
   /** Lexed tokens (empty if lexer hit a fatal error). */
   tokens: Token[];
@@ -105,6 +116,74 @@ export function compile(source: string, opts: RunOptions = {}): CompileResult {
 /** Alias of {@link compile}. */
 export function compileAndRun(source: string, opts: RunOptions = {}): CompileResult {
   return compile(source, opts);
+}
+
+// --- v2: Bytecode VM pipeline public API ---
+import { lowerToIr, type IrProgram } from "./ir/ir";
+import { compileToBytecode, type BytecodeModule } from "../vm/codegen/codegen";
+import { runBytecode, type VmOptions, type VmResult } from "../vm/interpreter/vm";
+
+export interface CompileVmResult {
+  /** Lexed tokens. */
+  tokens: Token[];
+  /** Parsed program. */
+  ast: Program;
+  /** Type-checker errors (non-blocking). */
+  typeErrors: TypeError[];
+  /** Lowered IR. */
+  ir: IrProgram;
+  /** Compiled bytecode module. */
+  bytecode: BytecodeModule;
+  /** VM runtime result (null if lowering/codegen threw). */
+  runtime: VmResult | null;
+  /** True iff every stage succeeded cleanly. */
+  ok: boolean;
+}
+
+/**
+ * Compile and run Aether source on the v2 bytecode VM (AST → IR → bytecode → interpreter).
+ *
+ * The bytecode VM is faster than the tree-walking evaluator and is the production
+ * runtime target for v2. The tree-walker remains the default for the REPL/LSP
+ * where latency dominates; this function is for batch execution.
+ */
+export function compileToVm(source: string, opts: VmOptions = {}): CompileVmResult {
+  const errors: CompileResult["errors"] = [];
+  const { tokens, errors: lexErrs } = lexWithErrors(source, "<aether>");
+  for (const e of lexErrs) errors.push({ stage: "lex", message: e.message });
+  const { program, errors: parseErrs } = parse(tokens, "<aether>");
+  for (const e of parseErrs) errors.push({ stage: "parse", message: e.message });
+  let typeErrors: TypeError[] = [];
+  try {
+    typeErrors = check(program).errors;
+    for (const e of typeErrors) errors.push({ stage: "type", message: e.message });
+  } catch (e) {
+    typeErrors = [{ message: (e as Error).message, loc: program.loc }];
+  }
+  let ir: IrProgram | null = null;
+  let bytecode: BytecodeModule | null = null;
+  let runtime: VmResult | null = null;
+  if (program.body.length > 0 && lexErrs.length === 0) {
+    try {
+      ir = lowerToIr(program);
+      bytecode = compileToBytecode(ir);
+      runtime = runBytecode(bytecode, "<main>", [], opts);
+      if (runtime.error) errors.push({ stage: "runtime", message: runtime.error.message });
+    } catch (e) {
+      runtime = runtime ?? { value: null, output: [], steps: 0, error: { message: (e as Error).message } };
+      errors.push({ stage: "runtime", message: (e as Error).message });
+    }
+  }
+  const ok = errors.length === 0;
+  return {
+    tokens,
+    ast: program,
+    typeErrors,
+    ir: ir ?? lowerToIr(program),
+    bytecode: bytecode ?? compileToBytecode(lowerToIr(program)),
+    runtime,
+    ok,
+  };
 }
 
 /** Walk an AST node — re-export the visitor helpers. */
