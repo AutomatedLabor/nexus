@@ -1,0 +1,129 @@
+// cellular_automaton.ae
+// =====================
+// Elementary cellular automaton rule 30 (Wolfram).  Run 10
+// generations on a 21-cell grid, printing each generation.
+//
+// Rule 30 is a 1D CA where each cell's new state is determined
+// by the 3-cell neighbourhood (left, self, right) according to
+// the 8-bit lookup table:
+//   111 110 101 100 011 010 001 000
+//    0   0   0   1   1   1   1   0
+//
+// Rule 30 is famous for its chaotic, pseudo-random-looking
+// behaviour — Wolfram uses it for Mathematica's random number
+// generator.  Starting from a single live cell in the middle,
+// the triangle pattern looks random.
+
+// Build an N-cell row of zeros.
+fn zeros_row(n: int) -> [int] {
+  let row = [];
+  let mut i = 0;
+  while i < n {
+    push(row, 0);
+    i = i + 1;
+  }
+  row
+}
+
+// Apply rule 30 to compute the next row from the current one.
+// We use periodic (wraparound) boundaries so the grid stays
+// the same width.
+fn step_row(row: [int]) -> [int] {
+  let n = len(row);
+  let next = zeros_row(n);
+  let mut i = 0;
+  while i < n {
+    let left = row[(i - 1 + n) % n];
+    let me = row[i];
+    let right = row[(i + 1) % n];
+    // The 3-bit neighbourhood as a number 0..7.
+    let pat = left * 4 + me * 2 + right;
+    // Rule 30 = 00011110 in binary (from pat=7 down to pat=0).
+    // So new = 1 for pat in {1, 2, 3, 4}, else 0.
+    let new_state =
+      if pat == 4 { 1 } else {
+      if pat == 3 { 1 } else {
+      if pat == 2 { 1 } else {
+      if pat == 1 { 1 } else {
+      0 } } } };
+    next[i] = new_state;
+    i = i + 1;
+  }
+  next
+}
+
+// Pretty-print a row as "#" and ".".
+fn print_row(label: string, row: [int]) {
+  let mut line = label;
+  let mut i = 0;
+  while i < len(row) {
+    let c =
+      if row[i] == 1 { "#" } else { "." };
+    line = line + c;
+    i = i + 1;
+  }
+  print(line);
+}
+
+print("== Elementary CA: rule 30 ==");
+print("");
+
+// 21-cell grid, single live cell in the middle (index 10).
+let n = 21;
+let row0 = zeros_row(n);
+row0[10] = 1;
+
+print_row("gen  0: ", row0);
+
+let mut row = row0;
+let mut gen = 1;
+while gen <= 10 {
+  row = step_row(row);
+  // Pad generation number with a space if single-digit.
+  let label =
+    if gen < 10 { "gen  " + str(gen) + ": " } else { "gen " + str(gen) + ": " };
+  print_row(label, row);
+  gen = gen + 1;
+}
+print("");
+
+// Sanity assertions.
+// - Generation 1 should have 3 live cells (positions 9, 10, 11).
+let r1 = step_row(row0);
+assert_eq(r1[9], 1);
+assert_eq(r1[10], 1);
+assert_eq(r1[11], 1);
+// All other cells in r1 should be 0.
+let mut i = 0;
+let mut others = 0;
+while i < 21 {
+  if i != 9 && i != 10 && i != 11 {
+    if r1[i] == 1 { others = others + 1 };
+  };
+  i = i + 1;
+}
+assert_eq(others, 0);
+
+// - Generation 0 has 1 live cell.
+assert_eq(row0[10], 1);
+let mut live0 = 0;
+let mut k = 0;
+while k < 21 {
+  if row0[k] == 1 { live0 = live0 + 1 };
+  k = k + 1;
+}
+assert_eq(live0, 1);
+
+// - Wraparound: a single live cell at position 0 should affect
+//   positions 20, 0, 1 in the next generation.
+let row_edge = zeros_row(n);
+row_edge[0] = 1;
+let r_edge = step_row(row_edge);
+// pat at i=0: left=row[n-1]=0, self=1, right=row[1]=0  => pat=2 => 1
+assert_eq(r_edge[0], 1);
+// pat at i=1: left=row[0]=1, self=0, right=row[2]=0   => pat=4 => 1
+assert_eq(r_edge[1], 1);
+// pat at i=20: left=row[19]=0, self=0, right=row[0]=1 => pat=1 => 1
+assert_eq(r_edge[20], 1);
+
+print("All assertions passed.");

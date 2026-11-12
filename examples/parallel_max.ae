@@ -1,0 +1,65 @@
+// parallel_max.ae
+// ===============
+// Find the maximum of an array via a tournament recursion: split
+// the array in half, find the max of each half recursively, and
+// return the larger of the two. This is the same shape that a
+// parallel max would use — at each level the two halves could be
+// computed in parallel.
+
+fn max2(a: int, b: int) -> int {
+  if a > b { a } else { b }
+}
+
+// Slice the array from `lo` (inclusive) to `hi` (exclusive)
+// using a fresh array; we want to avoid in-place slicing because
+// Aether doesn't expose a `slice(arr, lo, hi)` builtin for arrays
+// directly (only for strings).  We do it manually.
+fn slice_arr(xs: [int], lo: int, hi: int) -> [int] {
+  let out = [];
+  let mut i = lo;
+  while i < hi {
+    push(out, xs[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// Tournament max: max over the subarray xs[lo..hi).
+fn max_range(xs: [int], lo: int, hi: int) -> int {
+  if hi - lo == 1 {
+    xs[lo]
+  } else {
+    let mid = lo + int((hi - lo) / 2);
+    max2(max_range(xs, lo, mid), max_range(xs, mid, hi))
+  }
+}
+
+// Tournament max over the whole array.
+fn tmax(xs: [int]) -> int {
+  max_range(xs, 0, len(xs))
+}
+
+print("== Parallel max via tournament recursion ==");
+print("");
+
+let xs = [3, 7, 2, 9, 4, 8, 1, 5];
+print("array: " + str(xs));
+let m = tmax(xs);
+print("max = " + str(m) + " (expected 9)");
+
+// Edge cases.
+print("");
+print("single element: " + str(tmax([42])) + " (expected 42)");
+print("two elements: " + str(tmax([1, 99])) + " (expected 99)");
+print("two elements descending: " + str(tmax([99, 1])) + " (expected 99)");
+print("negatives: " + str(tmax([-5, -1, -10])) + " (expected -1)");
+
+// Sanity assertions.
+assert_eq(tmax(xs), 9);
+assert_eq(tmax([42]), 42);
+assert_eq(tmax([1, 99]), 99);
+assert_eq(tmax([99, 1]), 99);
+assert_eq(tmax([-5, -1, -10]), -1);
+assert_eq(tmax([3, 1, 4, 1, 5, 9, 2, 6]), 9);
+print("");
+print("All assertions passed.");

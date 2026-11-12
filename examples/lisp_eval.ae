@@ -1,0 +1,231 @@
+// lisp_eval.ae
+// =============
+// A tiny Lisp evaluator.  Supports:
+//   - int literals:  42, -7
+//   - symbols:       +, -, *, =, <, if, quote, list, head, tail
+//   - lists:         (a b c) — represented as Aether arrays
+//   - special forms: (if cond then else), (quote x), (list a b c)
+//
+// Examples:
+//   (eval (+ 1 2))                -> 3
+//   (eval (* (+ 1 2) 4))          -> 12
+//   (eval (if (= 1 1) 42 0))      -> 42
+//   (eval (head (list 1 2 3)))    -> 1
+//   (eval (tail (list 1 2 3)))    -> [2, 3]
+//
+// The interpreter is a single eval function with a tag switch on
+// the head symbol.  No environment, no user-defined functions —
+// just the built-in arithmetic and list operations.
+
+// Type check: is this expression an integer?
+fn is_int_expr(e: any) -> bool {
+  type_of(e) == "int"
+}
+
+fn is_list_expr(e: any) -> bool {
+  type_of(e) == "array"
+}
+
+// Apply a binary arithmetic operator.
+fn apply_arith(op: string, args: [any]) -> int {
+  if op == "+" {
+    let mut s = 0;
+    let mut i = 0;
+    while i < len(args) {
+      s = s + eval_int(args[i]);
+      i = i + 1;
+    }
+    s
+  } else {
+    if op == "-" {
+      if len(args) == 1 {
+        -eval_int(args[0])
+      } else {
+        let mut s = eval_int(args[0]);
+        let mut i = 1;
+        while i < len(args) {
+          s = s - eval_int(args[i]);
+          i = i + 1;
+        }
+        s
+      }
+    } else {
+      if op == "*" {
+        let mut p = 1;
+        let mut i = 0;
+        while i < len(args) {
+          p = p * eval_int(args[i]);
+          i = i + 1;
+        }
+        p
+      } else {
+        panic("unknown arith op: " + op)
+      }
+    }
+  }
+}
+
+// Evaluate an expression expected to be an int.
+fn eval_int(e: any) -> int {
+  let v = eval(e);
+  if type_of(v) == "int" { v } else { panic("expected int") }
+}
+
+// Evaluate a Lisp expression.
+fn eval(e: any) -> any {
+  if is_int_expr(e) {
+    e
+  } else {
+    if is_list_expr(e) {
+      if len(e) == 0 {
+        panic("cannot eval empty list")
+      } else {
+        let head = e[0];
+        if type_of(head) != "string" {
+          panic("expected symbol at head")
+        } else {
+          if head == "quote" {
+            e[1]
+          } else {
+            if head == "if" {
+              let cond = eval(e[1]);
+              if cond != 0 {
+                eval(e[2])
+              } else {
+                if len(e) > 3 { eval(e[3]) } else { 0 }
+              }
+            } else {
+              if head == "list" {
+                // Evaluate each argument and collect into a list.
+                let out = [];
+                let mut i = 1;
+                while i < len(e) {
+                  push(out, eval(e[i]));
+                  i = i + 1;
+                }
+                out
+              } else {
+                if head == "head" {
+                  let lst = eval(e[1]);
+                  if type_of(lst) != "array" || len(lst) == 0 {
+                    panic("head: expected non-empty list")
+                  } else {
+                    lst[0]
+                  }
+                } else {
+                  if head == "tail" {
+                    let lst = eval(e[1]);
+                    if type_of(lst) != "array" {
+                      panic("tail: expected list")
+                    } else {
+                      let out = [];
+                      let mut i = 1;
+                      while i < len(lst) {
+                        push(out, lst[i]);
+                        i = i + 1;
+                      }
+                      out
+                    }
+                  } else {
+                    if head == "=" {
+                      let a = eval(e[1]);
+                      let b = eval(e[2]);
+                      if a == b { 1 } else { 0 }
+                    } else {
+                      if head == "<" {
+                        let a = eval_int(e[1]);
+                        let b = eval_int(e[2]);
+                        if a < b { 1 } else { 0 }
+                      } else {
+                        if head == ">" {
+                          let a = eval_int(e[1]);
+                          let b = eval_int(e[2]);
+                          if a > b { 1 } else { 0 }
+                        } else {
+                          // Built-in arithmetic.
+                          let args = [];
+                          let mut i = 1;
+                          while i < len(e) {
+                            push(args, e[i]);
+                            i = i + 1;
+                          }
+                          apply_arith(head, args)
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } else {
+      panic("eval: cannot evaluate " + str(e))
+    }
+  }
+}
+
+// Render a Lisp value as a string (for printing).
+fn render(v: any) -> string {
+  if type_of(v) == "int" {
+    str(v)
+  } else {
+    if type_of(v) == "array" {
+      let mut s = "[";
+      let mut i = 0;
+      while i < len(v) {
+        s = s + render(v[i]);
+        if i + 1 < len(v) { s = s + ", " };
+        i = i + 1;
+      }
+      s = s + "]"
+    } else {
+      str(v)
+    }
+  }
+}
+
+print("== Tiny Lisp evaluator ==");
+print("");
+
+let cases = [
+  ["+", 1, 2],
+  ["*", ["+", 1, 2], 4],
+  ["-", 10, 3],
+  ["-", 5],
+  ["if", ["=", 1, 1], 42, 0],
+  ["if", ["=", 1, 2], 42, 0],
+  ["if", ["<", 2, 5], 100, 200],
+  ["if", [">", 2, 5], 100, 200],
+  ["head", ["list", 1, 2, 3]],
+  ["tail", ["list", 1, 2, 3]],
+  ["list", 1, 2, ["+", 3, 4]],
+  ["+", ["+", 1, 2], ["+", 3, 4]],
+  ["*", 2, 3, 4],
+  ["quote", ["a", "b", "c"]],
+];
+
+let mut i = 0;
+while i < len(cases) {
+  let e = cases[i];
+  let v = eval(e);
+  print("eval(" + str(e) + ") = " + render(v));
+  i = i + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(eval(["+", 1, 2]), 3);
+assert_eq(eval(["*", ["+", 1, 2], 4]), 12);
+assert_eq(eval(["-", 10, 3]), 7);
+assert_eq(eval(["-", 5]), -5);
+assert_eq(eval(["if", ["=", 1, 1], 42, 0]), 42);
+assert_eq(eval(["if", ["=", 1, 2], 42, 0]), 0);
+assert_eq(eval(["if", ["<", 2, 5], 100, 200]), 100);
+assert_eq(eval(["if", [">", 2, 5], 100, 200]), 200);
+assert_eq(eval(["head", ["list", 1, 2, 3]]), 1);
+assert_eq(eval(["tail", ["list", 1, 2, 3]]), [2, 3]);
+assert_eq(eval(["*", 2, 3, 4]), 24);
+assert_eq(eval(["quote", ["a", "b", "c"]]), ["a", "b", "c"]);
+print("All assertions passed.");

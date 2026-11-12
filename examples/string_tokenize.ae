@@ -1,0 +1,109 @@
+// string_tokenize.ae
+// ==================
+// A tiny tokenizer: split a string into a list of tokens, each
+// tagged with a kind ("word" | "punct" | "ws").  Whitespace runs
+// collapse into a single "ws" token.  Punctuation is single-char
+// (, . ! ? ; : etc).  Words are maximal runs of letters / digits /
+// underscore.
+//
+// Token kinds:
+//   - "word"  — [a-zA-Z0-9_]+
+//   - "punct" — , . ! ? ; : (and any other non-ws non-word char)
+//   - "ws"    — runs of spaces / tabs / newlines
+
+fn is_ws(c: string) -> bool {
+  c == " " || c == "\t" || c == "\n" || c == "\r"
+}
+
+fn is_word_char(c: string) -> bool {
+  let n = charCode(c, 0);
+  // [a-zA-Z0-9_]
+  (n >= 48 && n <= 57) || (n >= 65 && n <= 90) || (n >= 97 && n <= 122) || n == 95
+}
+
+// Build a token record as a 2-element array: [kind, text].
+fn mk_token(kind: string, text: string) -> [any] {
+  [kind, text]
+}
+
+fn tokenize(s: string) -> [[any]] {
+  let tokens = [];
+  let mut i = 0;
+  let n = len(s);
+  while i < n {
+    let c = strSlice(s, i, i + 1);
+    if is_ws(c) {
+      let mut j = i;
+      while j < n && is_ws(strSlice(s, j, j + 1)) {
+        j = j + 1;
+      }
+      push(tokens, mk_token("ws", strSlice(s, i, j)));
+      i = j;
+    } else {
+      if is_word_char(c) {
+        let mut j = i;
+        while j < n && is_word_char(strSlice(s, j, j + 1)) {
+          j = j + 1;
+        }
+        push(tokens, mk_token("word", strSlice(s, i, j)));
+        i = j;
+      } else {
+        push(tokens, mk_token("punct", c));
+        i = i + 1;
+      }
+    }
+  }
+  tokens
+}
+
+// Pretty-print the tokens, skipping "ws" tokens.
+fn print_tokens(tokens: [[any]]) {
+  let mut i = 0;
+  while i < len(tokens) {
+    let t = tokens[i];
+    if t[0] != "ws" {
+      print("[" + str(t[0]) + "] " + str(t[1]));
+    };
+    i = i + 1;
+  }
+}
+
+print("== Tiny tokenizer ==");
+print("");
+
+let input = "hello, world! foo";
+print("input: " + str(input));
+print("");
+
+print("tokens (excluding whitespace):");
+print_tokens(tokenize(input));
+print("");
+
+// Additional cases.
+print("--- Edge cases ---");
+let t1 = tokenize("");
+print("empty: " + str(len(t1)) + " tokens");
+
+let t2 = tokenize("a");
+print("\"a\": " + str(len(t2)) + " tokens (expected 1)");
+
+let t3 = tokenize("a b");
+print("\"a b\": " + str(len(t3)) + " tokens (expected 3: word, ws, word)");
+
+let t4 = tokenize("foo123_bar");
+print("\"foo123_bar\": 1 word token? " + str(t4[0][0] == "word"));
+
+let t5 = tokenize("Hello, world! Foo. Bar?");
+print("\"Hello, world! Foo. Bar?\":");
+print_tokens(t5);
+
+// Sanity assertions.
+assert_eq(len(tokenize("")), 0);
+assert_eq(tokenize("a")[0][0], "word");
+assert_eq(tokenize("a")[0][1], "a");
+assert_eq(tokenize(" ")[0][0], "ws");
+assert_eq(tokenize(",")[0][0], "punct");
+assert_eq(tokenize(",")[0][1], ",");
+assert_eq(len(tokenize("a b")), 3);
+print("");
+print("All assertions passed.");

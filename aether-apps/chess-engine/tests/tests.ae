@@ -1,0 +1,223 @@
+// aether-apps/chess-engine/tests/tests.ae
+// =======================================
+// 25+ assertions covering the chess engine: FEN parsing /
+// serialisation, piece movement, captures, check, and
+// checkmate.
+
+import {
+  new, fromFen, toFen, printBoard, makeMove, legalMoves, inCheck, isCheckmate,
+} from "../src/chess.ae";
+
+//----------------------------------------------------------------------------
+// FEN round-trip
+//----------------------------------------------------------------------------
+
+// new() matches the standard starting-position FEN.
+assert_eq(toFen(new()), "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+
+// fromFen + toFen round-trips.
+let f1 = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+assert_eq(toFen(fromFen(f1)), f1);
+
+let f2 = "8/8/8/3k4/8/3K4/8/8 w - - 0 1";
+assert_eq(toFen(fromFen(f2)), f2);
+
+// Empty board fields are correctly counted.
+let b_empty = fromFen("8/8/8/8/8/8/8/8 w - - 0 1");
+assert_eq(b_empty.squares[0][0], ".");
+assert_eq(b_empty.squares[7][7], ".");
+
+//----------------------------------------------------------------------------
+// Piece movement: pawn
+//----------------------------------------------------------------------------
+
+// Pawn double-step from the starting position.
+let b1 = new();
+let b2 = makeMove(b1, "e2", "e4");
+assert_eq(b2.squares[6][4], ".");    // e2 empty
+assert_eq(b2.squares[4][4], "P");    // e4 = white pawn
+assert_eq(b2.en_passant, "e3");      // en passant square set
+assert_eq(b2.turn, "b");              // black to makeMove
+
+// Pawn single-step.
+let b3 = new();
+let b4 = makeMove(b3, "d2", "d3");
+assert_eq(b4.squares[6][3], ".");
+assert_eq(b4.squares[5][3], "P");
+assert_eq(b4.en_passant, "-");
+
+// Pawn capture.
+let b5 = fromFen("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2");
+let b6 = makeMove(b5, "e4", "d5");
+assert_eq(b6.squares[3][3], "P");    // captured square
+assert_eq(b6.squares[3][4], ".");    // original square empty
+
+// Pawn promotion (auto-queen).
+let b7 = fromFen("8/4P3/8/8/8/8/8/4k2K w - - 0 1");
+let b8 = makeMove(b7, "e7", "e8");
+assert_eq(b8.squares[0][4], "Q");    // promoted to queen
+
+//----------------------------------------------------------------------------
+// Piece movement: knight
+//----------------------------------------------------------------------------
+
+let bn = fromFen("8/8/8/3N4/8/8/8/4k2K w - - 0 1");
+let nmoves = legalMoves(bn, "d5");
+// Knight on d5 has 8 moves (if all on board): b4, b6, c3, c7, e3, e7, f4, f6.
+assert_eq(len(nmoves), 8);
+
+//----------------------------------------------------------------------------
+// Piece movement: bishop
+//----------------------------------------------------------------------------
+
+let bb = fromFen("8/8/8/8/3B4/8/8/4k2K w - - 0 1");
+let bmoves = legalMoves(bb, "d4");
+// Bishop on d4 in an empty board: 13 moves (diagonals to edges).
+assert_eq(len(bmoves), 13);
+
+//----------------------------------------------------------------------------
+// Piece movement: rook
+//----------------------------------------------------------------------------
+
+let br = fromFen("8/8/8/8/8/8/8/R3k2K w - - 0 1");
+let rmoves = legalMoves(br, "a1");
+// Rook on a1, enemy (black) king on e1, white king on h1. Pseudo-legal
+// moves: right b1,c1,d1,e1 (capture king) = 4; up a2..a8 = 7. Total 11.
+assert_eq(len(rmoves), 11);
+
+//----------------------------------------------------------------------------
+// Piece movement: queen
+//----------------------------------------------------------------------------
+
+let bq = fromFen("8/8/8/8/3Q4/8/8/4k2K w - - 0 1");
+let qmoves = legalMoves(bq, "d4");
+// Queen in the centre of empty board: 8 directions * 7 - squares
+// = 27 moves (rook 14 + bishop 13).
+assert_eq(len(qmoves), 27);
+
+//----------------------------------------------------------------------------
+// Piece movement: king
+//----------------------------------------------------------------------------
+
+let bk = fromFen("8/8/8/8/3K4/8/8/4k3 w - - 0 1");
+let kmoves = legalMoves(bk, "d4");
+// King on d4 in an open board: 8 surrounding squares.
+assert_eq(len(kmoves), 8);
+
+//----------------------------------------------------------------------------
+// Castling rights update
+//----------------------------------------------------------------------------
+
+// White king moves -> loses both K and Q rights.
+let bc1 = new();
+let bc2 = makeMove(bc1, "e1", "e2");
+assert_eq(bc2.castling, "kq");
+
+// White rook on a1 moves -> loses Q.
+let bc3 = new();
+let bc4 = makeMove(bc3, "a1", "b1");
+assert_eq(bc4.castling, "Kkq");
+
+// Black rook on h8 moves -> loses k.
+let bc5 = new();
+let bc6 = makeMove(bc5, "h8", "h6");
+assert_eq(bc6.castling, "KQq");
+
+//----------------------------------------------------------------------------
+// Check detection
+//----------------------------------------------------------------------------
+
+// Fool's mate position: black queen on h4 checks white king on e1
+// (after the moves f3 e5 g4 Qh4#).
+let bm1 = makeMove(new(), "f2", "f3");
+let bm2 = makeMove(bm1, "e7", "e5");
+let bm3 = makeMove(bm2, "g2", "g4");
+let bm4 = makeMove(bm3, "d8", "h4");
+assert_eq(inCheck(bm4, "w"), true);
+assert_eq(isCheckmate(bm4, "w"), true);
+
+// Starting position: neither side is in check.
+assert_eq(inCheck(new(), "w"), false);
+assert_eq(inCheck(new(), "b"), false);
+
+// A direct check by a rook.
+let bck = fromFen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
+let bck2 = makeMove(bck, "a1", "a8");
+assert_eq(inCheck(bck2, "b"), true);
+
+//----------------------------------------------------------------------------
+// Checkmate detection
+//----------------------------------------------------------------------------
+
+// Fool's mate.
+assert_eq(isCheckmate(bm4, "w"), true);
+
+// Back-rank mate: white rook delivers checkmate on the 8th rank
+// against a black king with no escape.
+let bbm = fromFen("6k1/5ppp/8/8/8/8/8/4R1K1 w - - 0 1");
+let bbm2 = makeMove(bbm, "e1", "e8");
+assert_eq(isCheckmate(bbm2, "b"), true);
+
+//----------------------------------------------------------------------------
+// En passant capture
+//----------------------------------------------------------------------------
+
+// White pawn on e5, black plays d7-d5: en-passant available on d6.
+let bpe = fromFen("rnbqkbnr/pppp1ppp/8/4P3/8/8/8/4K3 w kq - 0 1");
+// Set up a clean en passant: black pawn on d5 (just moved d7-d5, en
+// passant target = d6), white pawn on e5. White plays e5xd6 e.p.
+let bpe2 = fromFen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+let bpe3 = makeMove(bpe2, "e5", "d6");
+// After en passant, the pawn on d5 is captured (same row as fr, col tc).
+assert_eq(bpe3.squares[3][3], ".");   // captured black pawn gone
+assert_eq(bpe3.squares[2][3], "P");  // white pawn now on d6
+assert_eq(bpe3.squares[3][4], ".");  // e5 empty
+
+//----------------------------------------------------------------------------
+// Move counter (fullmove / halfmove)
+//----------------------------------------------------------------------------
+
+let bcnt1 = new();
+let bcnt2 = makeMove(bcnt1, "e2", "e4");    // white makeMove: fullmove still 1
+assert_eq(bcnt2.fullmove, 1);
+let bcnt3 = makeMove(bcnt2, "e7", "e5");    // black makeMove: fullmove = 2
+assert_eq(bcnt3.fullmove, 2);
+// Half-makeMove clock resets on pawn moves.
+assert_eq(bcnt3.halfmove, 0);
+
+// Knight makeMove does not reset the clock.
+let bcnt4 = makeMove(bcnt3, "g1", "f3");
+assert_eq(bcnt4.halfmove, 1);
+
+//----------------------------------------------------------------------------
+// Turn flip
+//----------------------------------------------------------------------------
+
+let bt1 = new();
+assert_eq(bt1.turn, "w");
+let bt2 = makeMove(bt1, "e2", "e4");
+assert_eq(bt2.turn, "b");
+let bt3 = makeMove(bt2, "e7", "e5");
+assert_eq(bt3.turn, "w");
+
+//----------------------------------------------------------------------------
+// legalMoves on an empty square
+//----------------------------------------------------------------------------
+
+let be = new();
+let no_moves = legalMoves(be, "e4");
+assert_eq(len(no_moves), 0);
+
+//----------------------------------------------------------------------------
+// Many moves from a queen in the starting position
+//----------------------------------------------------------------------------
+
+let bq2 = new();
+let qmoves2 = legalMoves(bq2, "d1");
+// Queen on d1 in the starting position: only can go to e2, f3, g4 (along
+// the e1-h4 diagonal blocked by own pawn on d2). Actually d1 queen is
+// blocked by d2 pawn; can only makeMove along the c2-... diagonal but c1
+// bishop is there. So actually no moves at all from d1.
+assert_eq(len(qmoves2), 0);
+
+print("All chess tests passed.");

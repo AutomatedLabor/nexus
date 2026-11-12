@@ -1,0 +1,79 @@
+// ackermann_memo.ae
+// ==================
+// The Ackermann function — a classic example of a total
+// computable function that grows faster than any primitive
+// recursive function.  Plain recursion explodes for A(3, n);
+// memoization keeps the work tractable.
+//
+//   A(0, n) = n + 1
+//   A(m, 0) = A(m-1, 1)
+//   A(m, n) = A(m-1, A(m, n-1))   for m > 0, n > 0
+//
+// Memo: a 2D array `memo[m][n]`, grown lazily.  -1 means "not yet
+// computed".  Lookup is O(1) — important here, because the
+// recursion visits many (m, n) pairs.
+
+let memo = [];
+
+fn ensure_size(m: int, n: int) {
+  while len(memo) <= m {
+    push(memo, []);
+  };
+  while len(memo[m]) <= n {
+    push(memo[m], -1);
+  }
+}
+
+fn get(m: int, n: int) -> int {
+  ensure_size(m, n);
+  memo[m][n]
+}
+
+fn set_mem(m: int, n: int, v: int) {
+  ensure_size(m, n);
+  memo[m][n] = v;
+}
+
+fn ack(m: int, n: int) -> int {
+  let v0 = get(m, n);
+  if v0 != -1 {
+    v0
+  } else {
+    let r =
+      if m == 0 {
+        n + 1
+      } else {
+        if n == 0 {
+          ack(m - 1, 1)
+        } else {
+          ack(m - 1, ack(m, n - 1))
+        }
+      };
+    set_mem(m, n, r);
+    r
+  }
+}
+
+print("== Ackermann with memoization ==");
+print("");
+
+print("A(0, 0) = " + str(ack(0, 0)));
+print("A(0, 5) = " + str(ack(0, 5)));
+print("A(1, 5) = " + str(ack(1, 5)));
+print("A(2, 3) = " + str(ack(2, 3)));
+print("A(2, 10) = " + str(ack(2, 10)));
+print("A(3, 3) = " + str(ack(3, 3)));
+print("A(3, 4) = " + str(ack(3, 4)));
+print("A(3, 5) = " + str(ack(3, 5)));
+
+// Sanity assertions.
+assert_eq(ack(0, 0), 1);
+assert_eq(ack(0, 5), 6);
+assert_eq(ack(1, 5), 7);
+assert_eq(ack(2, 3), 9);
+assert_eq(ack(2, 10), 23);
+assert_eq(ack(3, 3), 61);
+assert_eq(ack(3, 4), 125);
+assert_eq(ack(3, 5), 253);
+print("");
+print("All assertions passed.");

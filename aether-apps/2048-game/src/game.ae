@@ -1,0 +1,442 @@
+// aether-apps/2048-game/src/game.ae
+// =================================
+// The 2048 game logic in pure Aether.  Provides a deterministic,
+// side-effect-free 2048 implementation: a 4x4 board, slide/merge in
+// all four directions, deterministic tile spawning, score tracking,
+// and game-over detection.
+//
+// Board representation
+// --------------------
+// The board is a 4x4 array of integers.  Each cell holds a power-of-2
+// tile value (2, 4, 8, ..., 2048, ...) or 0 for empty.  We do not
+// store the exponent — we store the literal tile value, which is
+// simpler for the merge logic and for printing.
+//
+// Movement
+// --------
+// The slide-left operation is the core; the other three directions
+// are implemented by rotating the board, sliding left, then rotating
+// back.  This keeps the merge logic in one place and is the standard
+// implementation trick for 2048.
+//
+//   - makeMove(b, "L") — slide left
+//   - makeMove(b, "R") — slide right (rotate 180, slide, rotate back)
+//   - makeMove(b, "U") — slide up    (rotate 90 clockwise, slide, rotate back)
+//   - makeMove(b, "D") — slide down  (rotate 90 counter-clockwise, slide, rotate back)
+//
+// Spawning
+// --------
+// `spawn(b)` inserts a single 2 (with probability 0.9) or 4 (0.1) at
+// the first empty cell in row-major order.  This is DETERMINISTIC —
+// we use a pseudo-random bit based on the board's checksum, not a
+// real RNG — so that test runs are reproducible.  A "real" 2048 game
+// would use the stdlib `random` module; this implementation
+// intentionally stays in the pure-functional core.
+//
+// Game-over detection
+// -------------------
+// `isGameOver(b)` returns true when no move is possible: every cell is
+// non-zero AND no two adjacent cells have the same value.  We check
+// both horizontal and vertical adjacency.
+//
+// Score
+// ----
+// `score(b)` returns the sum of all tile values.  (The classic 2048
+// score adds the value of each newly-merged tile; we return the sum
+// of the board, which is exactly 2x the merged-tile sum at any
+// stable state, and is monotonic in moves.)
+//
+// `makeMove(b, dir)` returns a record `{board, score, moved;}` where
+// `score` is the *delta* — the sum of the merged-tile values for
+// this move.  The caller can accumulate the score across moves.
+
+//----------------------------------------------------------------------------
+// Types
+//----------------------------------------------------------------------------
+
+struct MoveResult {
+  board: any,    // 4x4 array of ints
+  score: int,    // delta score from merges on this move
+  moved: bool,   // did any tile actually move?
+}
+
+// Result of sliding a single row: the new row, the merge score, and
+// whether the row actually changed.
+struct RowSlide {
+  row: any,      // 4-element array of ints
+  score: int,    // merge score for this row
+  moved: bool,   // did this row actually change?
+}
+
+// Result of sliding the whole board (before re-orientation).
+struct BoardSlide {
+  board: any,    // 4x4 array of ints
+  score: int,    // total merge score for the slide
+  moved: bool,   // did any row change?
+}
+
+//----------------------------------------------------------------------------
+// Construction
+//----------------------------------------------------------------------------
+
+// An empty 4x4 board (all zeros).
+pub fn new() -> any {
+  [
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+  ]
+}
+
+// Deep-copy a board (4x4).
+fn copy_board(b: any) -> any {
+  let out = [];
+  let mut i = 0;
+  while i < 4 {
+    let row = [];
+    let mut j = 0;
+    while j < 4 {
+      push(row, b[i][j]);
+      j = j + 1;
+    };
+    push(out, row);
+    i = i + 1;
+  };
+  out
+}
+
+//----------------------------------------------------------------------------
+// Spawning
+//----------------------------------------------------------------------------
+
+// A simple deterministic pseudo-random "RNG" based on the board's
+// checksum.  Returns 2 with 90% probability and 4 with 10% (we
+// mod by 10; 0 means 4, anything else means 2).
+fn checksum(b: any) -> int {
+  let mut s = 0;
+  let mut i = 0;
+  while i < 4 {
+    let mut j = 0;
+    while j < 4 {
+      s = s + b[i][j] * (i * 4 + j + 1);
+      j = j + 1;
+    };
+    i = i + 1;
+  };
+  s
+}
+
+// Insert a new tile (2 or 4) at the first empty cell in row-major
+// order.  Returns a new board; does NOT mutate the input.  If the
+// board is full, returns the input unchanged.
+pub fn spawn(b: any) -> any {
+  // First check if there's any empty cell.
+  let mut has_empty = false;
+  let mut i = 0;
+  while i < 4 && (!has_empty) {
+    let mut j = 0;
+    while j < 4 && (!has_empty) {
+      if b[i][j] == 0 { has_empty = true; };
+      j = j + 1;
+    };
+    i = i + 1;
+  };
+  if !has_empty {
+    b
+  } else {
+    let nb = copy_board(b);
+    let cs = checksum(b);
+    // Pseudo-random value: 2 (90%) or 4 (10%).
+    let val = if cs % 10 == 0 { 4; } else { 2; };
+    // Find first empty cell.
+    let mut placed = false;
+    let mut i2 = 0;
+    while i2 < 4 && (!placed) {
+      let mut j2 = 0;
+      while j2 < 4 && (!placed) {
+        if nb[i2][j2] == 0 {
+          nb[i2][j2] = val;
+          placed = true;
+        };
+        j2 = j2 + 1;
+      };
+      i2 = i2 + 1;
+    };
+    nb
+  };
+}
+
+//----------------------------------------------------------------------------
+// Slide-left core
+//----------------------------------------------------------------------------
+
+// Slide a single row to the left, merging equal adjacent tiles.
+// Returns `{row, score, moved;}`.
+//   - The merged tile is placed at the leftmost available slot.
+//   - A tile that has just been merged is "locked" and cannot merge
+//     again in the same move (classic 2048 rule).
+//   - `score` is the sum of the merged-tile values (e.g., merging
+//     2+2=4 gives score 4).
+fn slide_row_left(row: any) -> any {
+  // Pack non-zero tiles to the left.
+  let packed = [];
+  let mut k = 0;
+  while k < 4 {
+    if row[k] != 0 { push(packed, row[k]); };
+    k = k + 1;
+  };
+  // Merge adjacent equal tiles (left to right).
+  let merged = [];
+  let mut score = 0;
+  let mut idx = 0;
+  while idx < len(packed) {
+    if idx + 1 < len(packed) && packed[idx] == packed[idx + 1] {
+      let v = packed[idx] * 2;
+      push(merged, v);
+      score = score + v;
+      idx = idx + 2;
+    } else {
+      push(merged, packed[idx]);
+      idx = idx + 1;
+    };
+  };
+  // Pad with zeros to length 4.
+  let mut out = [];
+  let mut m = 0;
+  while m < len(merged) {
+    push(out, merged[m]);
+    m = m + 1;
+  };
+  while len(out) < 4 {
+    push(out, 0);
+  };
+  // Determine if anything moved.
+  let mut moved = false;
+  let mut p = 0;
+  while p < 4 {
+    if row[p] != out[p] { moved = true; };
+    p = p + 1;
+  };
+  { row: out, score: score, moved: moved }
+}
+
+// Slide the whole board left.  Returns `{board, score, moved;}`.
+fn slide_left(b: any) -> any {
+  let nb = [];
+  let mut total_score = 0;
+  let mut any_moved = false;
+  let mut i = 0;
+  while i < 4 {
+    let r = slide_row_left(b[i]);
+    push(nb, r.row);
+    total_score = total_score + r.score;
+    if r.moved { any_moved = true; };
+    i = i + 1;
+  };
+  { board: nb, score: total_score, moved: any_moved }
+}
+
+//----------------------------------------------------------------------------
+// Rotation
+//----------------------------------------------------------------------------
+
+// Rotate the board 90 degrees clockwise.
+fn rotate_cw(b: any) -> any {
+  let nb = new();
+  let mut i = 0;
+  while i < 4 {
+    let mut j = 0;
+    while j < 4 {
+      // (i, j) -> (j, 3 - i)
+      nb[j][3 - i] = b[i][j];
+      j = j + 1;
+    };
+    i = i + 1;
+  };
+  nb
+}
+
+// Rotate the board 90 degrees counter-clockwise.
+fn rotate_ccw(b: any) -> any {
+  let nb = new();
+  let mut i = 0;
+  while i < 4 {
+    let mut j = 0;
+    while j < 4 {
+      // (i, j) -> (3 - j, i)
+      nb[3 - j][i] = b[i][j];
+      j = j + 1;
+    };
+    i = i + 1;
+  };
+  nb
+}
+
+// Rotate the board 180 degrees.
+fn rotate_180(b: any) -> any {
+  let nb = new();
+  let mut i = 0;
+  while i < 4 {
+    let mut j = 0;
+    while j < 4 {
+      nb[3 - i][3 - j] = b[i][j];
+      j = j + 1;
+    };
+    i = i + 1;
+  };
+  nb
+}
+
+//----------------------------------------------------------------------------
+// The public move
+//----------------------------------------------------------------------------
+
+// Apply a move in direction `dir` (one of "L", "R", "U", "D").
+// Returns `MoveResult { board, score, moved; }`.
+//   - board: the new board after the move (NOT spawned)
+//   - score: the delta score from this move's merges
+//   - moved: whether any tile actually moved (caller should spawn only if true)
+pub fn makeMove(b: any, dir: string) -> MoveResult {
+  // Validate direction.
+  if dir != "L" && dir != "R" && dir != "U" && dir != "D" {
+    panic("move: direction must be one of L/R/U/D, got " + dir)
+  } else {
+    // Rotate the board so the move is always a slide-left.
+    let oriented =
+      if dir == "L" { b; } else {
+        if dir == "R" { rotate_180(b); } else {
+          if dir == "U" { rotate_cw(b); } else {
+            // dir == "D"
+            rotate_ccw(b)
+          };
+        };
+      };
+    let slid = slide_left(oriented);
+    // Rotate back.
+    let final_board =
+      if dir == "L" { slid.board; } else {
+        if dir == "R" { rotate_180(slid.board); } else {
+          if dir == "U" { rotate_ccw(slid.board); } else {
+            rotate_cw(slid.board)
+          };
+        };
+      };
+    MoveResult { board: final_board, score: slid.score, moved: slid.moved }
+  };
+}
+
+//----------------------------------------------------------------------------
+// Score, game-over
+//----------------------------------------------------------------------------
+
+// Sum of all tile values on the board.
+pub fn score(b: any) -> int {
+  let mut s = 0;
+  let mut i = 0;
+  while i < 4 {
+    let mut j = 0;
+    while j < 4 {
+      s = s + b[i][j];
+      j = j + 1;
+    };
+    i = i + 1;
+  };
+  s
+}
+
+// Has any empty cell?
+fn has_empty(b: any) -> bool {
+  let mut found = false;
+  let mut i = 0;
+  while i < 4 && (!found) {
+    let mut j = 0;
+    while j < 4 && (!found) {
+      if b[i][j] == 0 { found = true; };
+      j = j + 1;
+    };
+    i = i + 1;
+  };
+  found
+}
+
+// Are there two adjacent equal tiles (horizontally or vertically)?
+// If yes, a merge is possible and the game is not over.
+fn has_adjacent_equal(b: any) -> bool {
+  let mut found = false;
+  let mut i = 0;
+  while i < 4 && (!found) {
+    let mut j = 0;
+    while j < 4 && (!found) {
+      if j + 1 < 4 && b[i][j] == b[i][j + 1] && b[i][j] != 0 { found = true; };
+      if i + 1 < 4 && b[i][j] == b[i + 1][j] && b[i][j] != 0 { found = true; };
+      j = j + 1;
+    };
+    i = i + 1;
+  };
+  found
+}
+
+// The game is over when there's no empty cell AND no adjacent equal
+// tiles (so no merge is possible).
+pub fn isGameOver(b: any) -> bool {
+  if has_empty(b) {
+    false
+  } else {
+    if has_adjacent_equal(b) {
+      false
+    } else {
+      true
+    };
+  };
+}
+
+//----------------------------------------------------------------------------
+// Printing
+//----------------------------------------------------------------------------
+
+// Pretty-print the board with a header showing the score.
+pub fn printBoard(b: any) {
+  print("+----+----+----+----+");
+  let mut i = 0;
+  while i < 4 {
+    let mut line = "|";
+    let mut j = 0;
+    while j < 4 {
+      let v = b[i][j];
+      let s = if v == 0 { "    "; } else {
+        if v < 10 { "  " + str(v) + " "; } else {
+          if v < 100 { " " + str(v) + " "; } else {
+            if v < 1000 { " " + str(v); } else { str(v); };
+          };
+        };
+      };
+      line = line + s + "|";
+      j = j + 1;
+    };
+    print(line);
+    print("+----+----+----+----+");
+    i = i + 1;
+  };
+  print("score: " + str(score(b)));
+  print("");
+}
+
+//----------------------------------------------------------------------------
+// has_won — did we reach the 2048 tile?
+//----------------------------------------------------------------------------
+
+// Returns true if any cell holds the value 2048 (or higher).
+pub fn hasWon(b: any) -> bool {
+  let mut found = false;
+  let mut i = 0;
+  while i < 4 && (!found) {
+    let mut j = 0;
+    while j < 4 && (!found) {
+      if b[i][j] >= 2048 { found = true; };
+      j = j + 1;
+    };
+    i = i + 1;
+  };
+  found
+}

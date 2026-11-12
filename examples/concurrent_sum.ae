@@ -1,0 +1,45 @@
+// concurrent_sum.ae
+// ==================
+// Compute the sum of 1..1000 using a divide-and-conquer recursion.
+// The problem is split in half at each level: sum(lo, hi) =
+// sum(lo, mid) + sum(mid+1, hi), with a base case when lo == hi.
+// This is the same shape as a fork/join parallel sum — the work
+// at each level could be dispatched to separate workers. (We
+// run it sequentially here, but the recursion shape mirrors the
+// parallel structure that a runtime like Rayon or TBB would
+// execute.)
+//
+// The function deliberately uses recursion (and not `for` loops)
+// to avoid the v1 evaluator's for-loop-scope quirk and to make
+// the divide-and-conquer structure explicit.
+
+fn sum_range(lo: int, hi: int) -> int {
+  if lo == hi {
+    lo
+  } else {
+    let mid = lo + int((hi - lo) / 2);
+    sum_range(lo, mid) + sum_range(mid + 1, hi)
+  }
+}
+
+print("== Concurrent sum 1..1000 via divide-and-conquer ==");
+print("");
+
+let total = sum_range(1, 1000);
+print("sum 1..1000 = " + str(total));
+print("(expected: 500500)");
+
+// Sanity assertion.
+assert_eq(total, 500500);
+
+// Try a smaller case to make the recursion structure visible.
+print("");
+print("Smaller cases:");
+print("sum 1..10  = " + str(sum_range(1, 10)) + " (expected 55)");
+print("sum 1..100 = " + str(sum_range(1, 100)) + " (expected 5050)");
+assert_eq(sum_range(1, 10), 55);
+assert_eq(sum_range(1, 100), 5050);
+assert_eq(sum_range(7, 7), 7);
+assert_eq(sum_range(1, 1), 1);
+print("");
+print("All assertions passed.");

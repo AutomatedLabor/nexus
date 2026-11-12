@@ -1,0 +1,844 @@
+// aether-apps/chess-engine/src/chess.ae
+// =====================================
+// A chess move generator + validator written in pure Aether.
+//
+// Board representation
+// --------------------
+// The board is an 8x8 array of single-character strings, using
+// the FEN encoding:
+//   - "." is an empty square.
+//   - "P" (white pawn), "N" (white knight), "B" (white bishop),
+//     "R" (white rook), "Q" (white queen), "K" (white king).
+//   - "p" (black pawn), "n" (black knight), "b" (black bishop),
+//     "r" (black rook), "q" (black queen), "k" (black king).
+//
+// Squares are indexed [row, col] where row 0 = rank 8 (top, black's
+// back rank) and row 7 = rank 1 (bottom, white's back rank).
+// Col 0 = file a (left), col 7 = file h (right).
+//
+// The board also tracks:
+//   - turn: "w" or "b" — whose move it is.
+//   - castling: a string like "KQkq" — which castling rights remain
+//     (uppercase = white, lowercase = black, K = kingside,
+//     Q = queenside). "-" if no rights remain.
+//   - en_passant: the target square (in algebraic, like "e3") for
+//     an en-passant capture, or "-" if none.
+//   - halfmove: the halfmove clock (for the 50-move rule).
+//   - fullmove: the fullmove number (starts at 1, increments after
+//     black's move).
+//
+// Public surface
+// --------------
+//   - new() -> Board — the starting position.
+//   - fromFen(fen) -> Board — parse a FEN string (simplified).
+//   - toFen(b) -> string — serialise a board to FEN.
+//   - printBoard(b) — pretty-print the board (with rank/file labels).
+//   - makeMove(b, from, to) -> Board — make a move; from/to in algebraic
+//     ("e2", "e4"). Returns a new board; does NOT mutate the input.
+//     (Named `makeMove` instead of `move` because `move` is a reserved
+//     keyword in Aether v3 — see RFC-004 borrow checker.)
+//   - legalMoves(b, pos) -> [[int,int]] — pseudo-legal moves from
+//     the given position. Pseudo-legal means the moves follow the
+//     piece's movement rules but may leave the king in check (or
+//     even capture the king on the next move). Full legal-move
+//     validation is documented as a known limitation.
+//   - inCheck(b, color) -> bool — is `color`'s king attacked?
+//   - isCheckmate(b, color) -> bool — `color` to move, in check,
+//     and no legal escape. (Requires legalMoves + inCheck; uses
+//     pseudo-legal moves filtered through "does this leave my
+//     king in check?")
+//
+// Movement rules implemented:
+//   - Pawn: forward 1 (or 2 from starting rank), diagonal captures
+//     (incl. en-passant), promotion to queen on the last rank
+//     (auto-promote; no under-promotion).
+//   - Knight: 8 L-shapes.
+//   - Bishop: any diagonal direction (sliding).
+//   - Rook: any orthogonal direction (sliding).
+//   - Queen: bishop + rook.
+//   - King: 1 square in any direction. (Castling is documented
+//     but NOT implemented in this version — the FEN rights are
+//     tracked, but the move() function does not accept "O-O" or
+//     "O-O-O" as input.)
+//
+// No `for in` loops (defensive against the v1 evaluator's
+// for-loop-scope quirk). All iteration uses `while` with explicit
+// indices.
+
+//----------------------------------------------------------------------------
+// Types
+//----------------------------------------------------------------------------
+
+struct Board {
+  squares: any,    // 8x8 array of single-char strings
+  turn: string,    // "w" or "b"
+  castling: string, // "KQkq" or subset; "-" if none
+  en_passant: string, // algebraic target square, or "-"
+  halfmove: int,    // half-move clock
+  fullmove: int,    // full-move number
+}
+
+//----------------------------------------------------------------------------
+// Constants — piece characters
+//----------------------------------------------------------------------------
+
+const WHITE_PAWN = "P";
+const WHITE_KNIGHT = "N";
+const WHITE_BISHOP = "B";
+const WHITE_ROOK = "R";
+const WHITE_QUEEN = "Q";
+const WHITE_KING = "K";
+
+const BLACK_PAWN = "p";
+const BLACK_KNIGHT = "n";
+const BLACK_BISHOP = "b";
+const BLACK_ROOK = "r";
+const BLACK_QUEEN = "q";
+const BLACK_KING = "k";
+
+const EMPTY = ".";
+
+//----------------------------------------------------------------------------
+// Helpers
+//----------------------------------------------------------------------------
+
+// Is this piece char a white piece?
+fn is_white(p: string) -> bool {
+  p == WHITE_PAWN || p == WHITE_KNIGHT || p == WHITE_BISHOP ||
+  p == WHITE_ROOK || p == WHITE_QUEEN || p == WHITE_KING
+}
+
+// Is this piece char a black piece?
+fn is_black(p: string) -> bool {
+  p == BLACK_PAWN || p == BLACK_KNIGHT || p == BLACK_BISHOP ||
+  p == BLACK_ROOK || p == BLACK_QUEEN || p == BLACK_KING
+}
+
+fn is_empty(p: string) -> bool {
+  p == EMPTY
+}
+
+// The color of a piece as "w" or "b". Empty squares return "".
+fn color_of(p: string) -> string {
+  if is_white(p) { "w"; } else { if is_black(p) { "b" } else { "" } };
+}
+
+// Convert an algebraic square ("e4") to a [row, col] index.
+// row 0 = rank 8, col 0 = file a.
+fn sq_to_idx(sq: string) -> [int] {
+  if len(sq) != 2 {
+    panic("sq_to_idx: expected 2-char square, got " + sq)
+  } else {
+    let file = charCode(sq, 0) - charCode("a", 0);  // 0..7
+    let rank = charCode(sq, 1) - charCode("1", 0);  // 0..7
+    // file 0..7 -> col 0..7
+    // rank 0..7 -> row 7..0 (rank 1 = row 7, rank 8 = row 0)
+    [7 - rank, file]
+  };
+}
+
+// Convert a [row, col] index to algebraic.
+fn idx_to_sq(idx: [int]) -> string {
+  let r = idx[0];
+  let c = idx[1];
+  let file = fromCharCode(charCode("a", 0) + c);
+  let rank = fromCharCode(charCode("1", 0) + (7 - r));
+  file + rank
+}
+
+// Bounds check.
+fn in_bounds(r: int, c: int) -> bool {
+  r >= 0 && r < 8 && c >= 0 && c < 8
+}
+
+// Deep-copy the 8x8 squares.
+fn copy_squares(sq: any) -> [[string]] {
+  let out = [];
+  let mut r = 0;
+  while r < 8 {
+    let row = [];
+    let mut c = 0;
+    while c < 8 {
+      push(row, sq[r][c]);
+      c = c + 1;
+    };
+    push(out, row);
+    r = r + 1;
+  };
+  out
+}
+
+// Deep-copy the whole board.
+fn copy_board(b: Board) -> Board {
+  Board {
+    squares: copy_squares(b.squares),
+    turn: b.turn,
+    castling: b.castling,
+    en_passant: b.en_passant,
+    halfmove: b.halfmove,
+    fullmove: b.fullmove,
+  }
+}
+
+//----------------------------------------------------------------------------
+// Construction
+//----------------------------------------------------------------------------
+
+// The starting position.
+pub fn new() -> Board {
+  Board {
+    squares: [
+      ["r", "n", "b", "q", "k", "b", "n", "r"],
+      ["p", "p", "p", "p", "p", "p", "p", "p"],
+      [".", ".", ".", ".", ".", ".", ".", "."],
+      [".", ".", ".", ".", ".", ".", ".", "."],
+      [".", ".", ".", ".", ".", ".", ".", "."],
+      [".", ".", ".", ".", ".", ".", ".", "."],
+      ["P", "P", "P", "P", "P", "P", "P", "P"],
+      ["R", "N", "B", "Q", "K", "B", "N", "R"],
+    ],
+    turn: "w",
+    castling: "KQkq",
+    en_passant: "-",
+    halfmove: 0,
+    fullmove: 1,
+  }
+}
+
+// An empty board (used by fromFen).
+fn empty_board_squares() -> [[string]] {
+  let sq = [];
+  let mut r = 0;
+  while r < 8 {
+    let row = [];
+    let mut c = 0;
+    while c < 8 {
+      push(row, ".");
+      c = c + 1;
+    };
+    push(sq, row);
+    r = r + 1;
+  };
+  sq
+}
+
+//----------------------------------------------------------------------------
+// FEN parsing & serialisation
+//----------------------------------------------------------------------------
+
+// Parse a FEN string into a Board.  FEN has 6 fields separated by
+// spaces: position, turn, castling, en_passant, halfmove, fullmove.
+// We support a simplified FEN (all 6 fields required).
+//
+// Example: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+pub fn fromFen(fen: string) -> Board {
+  // Split on spaces.
+  let fields = [];
+  let mut cur = "";
+  let mut i = 0;
+  while i < len(fen) {
+    let c = strSlice(fen, i, i + 1);
+    if c == " " {
+      if cur != "" { push(fields, cur); };
+      cur = "";
+    } else {
+      cur = cur + c;
+    };
+    i = i + 1;
+  };
+  if cur != "" { push(fields, cur); };
+  if len(fields) < 6 {
+    panic("fromFen: expected 6 fields, got " + str(len(fields)))
+  } else {
+    let sq = empty_board_squares();
+    // Field 0: piece placement. 8 ranks separated by "/",
+    // from rank 8 (top) down to rank 1 (bottom).
+    let mut r = 0;
+    let mut c = 0;
+    let mut k = 0;
+    while k < len(fields[0]) {
+      let ch = strSlice(fields[0], k, k + 1);
+      if ch == "/" {
+        r = r + 1;
+        c = 0;
+      } else {
+        // Try to parse as a digit 1..8.
+        let n = charCode(ch, 0) - charCode("0", 0);
+        if n >= 1 && n <= 8 {
+          let mut fill = 0;
+          while fill < n {
+            sq[r][c] = ".";
+            c = c + 1;
+            fill = fill + 1;
+          };
+        } else {
+          sq[r][c] = ch;
+          c = c + 1;
+        };
+      };
+      k = k + 1;
+    };
+    Board {
+      squares: sq,
+      turn: fields[1],
+      castling: fields[2],
+      en_passant: fields[3],
+      halfmove: int(fields[4]),
+      fullmove: int(fields[5]),
+    }
+  };
+}
+
+// Serialise a board to a FEN string.
+pub fn toFen(b: Board) -> string {
+  let mut out = "";
+  let mut r = 0;
+  while r < 8 {
+    let mut empties = 0;
+    let mut c = 0;
+    while c < 8 {
+      let p = b.squares[r][c];
+      if p == "." {
+        empties = empties + 1;
+      } else {
+        if empties > 0 {
+          out = out + str(empties);
+          empties = 0;
+        };
+        out = out + p;
+      };
+      c = c + 1;
+    };
+    if empties > 0 { out = out + str(empties); };
+    if r < 7 { out = out + "/"; };
+    r = r + 1;
+  };
+  out = out + " " + b.turn + " " + b.castling + " " + b.en_passant + " " + str(b.halfmove) + " " + str(b.fullmove);
+  out
+}
+
+//----------------------------------------------------------------------------
+// Board printing
+//----------------------------------------------------------------------------
+
+// Pretty-print the board with rank/file labels.
+pub fn printBoard(b: Board) {
+  print("  +-----------------+");
+  let mut r = 0;
+  while r < 8 {
+    let rank = 8 - r;
+    let mut line = str(rank) + " | ";
+    let mut c = 0;
+    while c < 8 {
+      let p = b.squares[r][c];
+      line = line + p + " ";
+      c = c + 1;
+    };
+    print(line + "|");
+    r = r + 1;
+  };
+  print("  +-----------------+");
+  print("    a b c d e f g h  ");
+  print("turn: " + b.turn + "  castling: " + b.castling +
+        "  en_passant: " + b.en_passant +
+        "  halfmove: " + str(b.halfmove) +
+        "  fullmove: " + str(b.fullmove));
+}
+
+//----------------------------------------------------------------------------
+// Move generation (pseudo-legal)
+//----------------------------------------------------------------------------
+
+// Try to add a candidate move to the list, if it's in bounds and
+// the target square is empty or holds an enemy piece.
+//   - b: the board
+//   - moves: the accumulator list
+//   - r, c: candidate target row, col
+//   - me_color: "w" or "b" — the color of the moving piece
+fn try_push(b: Board, moves: any, r: int, c: int, me_color: string) {
+  if in_bounds(r, c) {
+    let p = b.squares[r][c];
+    let ok =
+      if p == "." { true; } else {
+        if me_color == "w" { is_black(p); } else { is_white(p); };
+      };
+    if ok { push(moves, [r, c]); };
+  };
+}
+
+// Sliding move generator: walk in direction (dr, dc) from (r0, c0),
+// adding moves until we hit a blocker (capture it if enemy, stop
+// either way).
+fn slide(b: Board, moves: any, r0: int, c0: int, dr: int, dc: int, me_color: string) {
+  let mut r = r0 + dr;
+  let mut c = c0 + dc;
+  let mut stop = false;
+  while in_bounds(r, c) && (!stop) {
+    let p = b.squares[r][c];
+    if p == "." {
+      push(moves, [r, c]);
+    } else {
+      if me_color == "w" {
+        if is_black(p) { push(moves, [r, c]); };
+      } else {
+        if is_white(p) { push(moves, [r, c]); };
+      };
+      stop = true;
+    };
+    r = r + dr;
+    c = c + dc;
+  };
+}
+
+// Pawn move generation from (r, c) for `color` ("w" or "b").
+fn pawn_moves(b: Board, moves: any, r: int, c: int, color: string) {
+  // White pawns move from row 6 toward row 0 (rank 2 -> rank 8).
+  // Black pawns move from row 1 toward row 7 (rank 7 -> rank 1).
+  let dir = if color == "w" { -1; } else { 1; };
+  let start_row = if color == "w" { 6; } else { 1; };
+  let promote_row = if color == "w" { 0; } else { 7; };
+  // Forward one.
+  let r1 = r + dir;
+  if in_bounds(r1, c) && b.squares[r1][c] == "." {
+    push(moves, [r1, c]);
+    // Forward two from starting row.
+    if r == start_row {
+      let r2 = r + 2 * dir;
+      if in_bounds(r2, c) && b.squares[r2][c] == "." {
+        push(moves, [r2, c]);
+      };
+    };
+  };
+  // Diagonal captures.
+  let dc1 = c - 1;
+  let dc2 = c + 1;
+  if in_bounds(r1, dc1) {
+    let p = b.squares[r1][dc1];
+    if p != "." {
+      if color == "w" {
+        if is_black(p) { push(moves, [r1, dc1]); };
+      } else {
+        if is_white(p) { push(moves, [r1, dc1]); };
+      };
+    };
+  };
+  if in_bounds(r1, dc2) {
+    let p = b.squares[r1][dc2];
+    if p != "." {
+      if color == "w" {
+        if is_black(p) { push(moves, [r1, dc2]); };
+      } else {
+        if is_white(p) { push(moves, [r1, dc2]); };
+      };
+    };
+  };
+  // En passant — if the en-passant square is one of our diagonals.
+  if b.en_passant != "-" {
+    let ep = sq_to_idx(b.en_passant);
+    if ep[0] == r1 {
+      if ep[1] == dc1 || ep[1] == dc2 {
+        push(moves, [ep[0], ep[1]]);
+      };
+    };
+  };
+}
+
+// Knight move generation from (r, c).
+fn knight_moves(b: Board, moves: any, r: int, c: int, color: string) {
+  let deltas = [
+    [-2, -1], [-2, 1], [-1, -2], [-1, 2],
+    [1, -2], [1, 2], [2, -1], [2, 1]
+  ];
+  let mut i = 0;
+  while i < len(deltas) {
+    let d = deltas[i];
+    try_push(b, moves, r + d[0], c + d[1], color);
+    i = i + 1;
+  };
+}
+
+// Bishop move generation.
+fn bishop_moves(b: Board, moves: any, r: int, c: int, color: string) {
+  slide(b, moves, r, c, -1, -1, color);
+  slide(b, moves, r, c, -1, 1, color);
+  slide(b, moves, r, c, 1, -1, color);
+  slide(b, moves, r, c, 1, 1, color);
+}
+
+// Rook move generation.
+fn rook_moves(b: Board, moves: any, r: int, c: int, color: string) {
+  slide(b, moves, r, c, -1, 0, color);
+  slide(b, moves, r, c, 1, 0, color);
+  slide(b, moves, r, c, 0, -1, color);
+  slide(b, moves, r, c, 0, 1, color);
+}
+
+// Queen move generation.
+fn queen_moves(b: Board, moves: any, r: int, c: int, color: string) {
+  rook_moves(b, moves, r, c, color);
+  bishop_moves(b, moves, r, c, color);
+}
+
+// King move generation (no castling).
+fn king_moves(b: Board, moves: any, r: int, c: int, color: string) {
+  let mut dr = -1;
+  while dr <= 1 {
+    let mut dc = -1;
+    while dc <= 1 {
+      if !(dr == 0 && dc == 0) {
+        try_push(b, moves, r + dr, c + dc, color);
+      };
+      dc = dc + 1;
+    };
+    dr = dr + 1;
+  };
+}
+
+// Return the pseudo-legal moves from `pos` (algebraic, e.g. "e2").
+// The result is a list of [row, col] indices.
+pub fn legalMoves(b: Board, pos: string) -> [[int]] {
+  let idx = sq_to_idx(pos);
+  let r = idx[0];
+  let c = idx[1];
+  let p = b.squares[r][c];
+  let moves = [];
+  if p == "." {
+    moves
+  } else {
+    let color = color_of(p);
+    if p == "P" || p == "p" {
+      pawn_moves(b, moves, r, c, color);
+    } else {
+      if p == "N" || p == "n" {
+        knight_moves(b, moves, r, c, color);
+      } else {
+        if p == "B" || p == "b" {
+          bishop_moves(b, moves, r, c, color);
+        } else {
+          if p == "R" || p == "r" {
+            rook_moves(b, moves, r, c, color);
+          } else {
+            if p == "Q" || p == "q" {
+              queen_moves(b, moves, r, c, color);
+            } else {
+              if p == "K" || p == "k" {
+                king_moves(b, moves, r, c, color);
+              };
+            };
+          };
+        };
+      };
+    };
+    moves
+  };
+}
+
+//----------------------------------------------------------------------------
+// Check detection
+//----------------------------------------------------------------------------
+
+// Find the king of `color` ("w" or "b"); return [row, col] or panic.
+fn find_king(b: Board, color: string) -> [int] {
+  let king = if color == "w" { "K"; } else { "k"; };
+  let mut r = 0;
+  while r < 8 {
+    let mut c = 0;
+    while c < 8 {
+      if b.squares[r][c] == king { return [r, c]; };
+      c = c + 1;
+    };
+    r = r + 1;
+  };
+  panic("find_king: no " + king + " on board")
+}
+
+// Is square (r, c) attacked by `by_color` ("w" or "b")?
+// We test by checking each enemy piece type's attack pattern.
+fn square_attacked(b: Board, r: int, c: int, by_color: string) -> bool {
+  // Pawn attacks: a pawn of `by_color` attacks (r, c) if it's on
+  // the row *behind* (r, c) (in the pawn's forward direction) and
+  // adjacent column.
+  if by_color == "w" {
+    // White pawns attack upward (toward row 0); so a white pawn on
+    // (r+1, c-1) or (r+1, c+1) attacks (r, c).
+    if in_bounds(r + 1, c - 1) && b.squares[r + 1][c - 1] == "P" { return true; };
+    if in_bounds(r + 1, c + 1) && b.squares[r + 1][c + 1] == "P" { return true; };
+  } else {
+    if in_bounds(r - 1, c - 1) && b.squares[r - 1][c - 1] == "p" { return true; };
+    if in_bounds(r - 1, c + 1) && b.squares[r - 1][c + 1] == "p" { return true; };
+  };
+  // Knight attacks.
+  let knight = if by_color == "w" { "N"; } else { "n"; };
+  let deltas = [
+    [-2, -1], [-2, 1], [-1, -2], [-1, 2],
+    [1, -2], [1, 2], [2, -1], [2, 1]
+  ];
+  let mut i = 0;
+  while i < len(deltas) {
+    let d = deltas[i];
+    let r2 = r + d[0];
+    let c2 = c + d[1];
+    if in_bounds(r2, c2) && b.squares[r2][c2] == knight { return true; };
+    i = i + 1;
+  };
+  // King attacks (adjacent squares).
+  let king = if by_color == "w" { "K"; } else { "k"; };
+  let mut dr = -1;
+  while dr <= 1 {
+    let mut dc = -1;
+    while dc <= 1 {
+      if !(dr == 0 && dc == 0) {
+        let r2 = r + dr;
+        let c2 = c + dc;
+        if in_bounds(r2, c2) && b.squares[r2][c2] == king { return true; };
+      };
+      dc = dc + 1;
+    };
+    dr = dr + 1;
+  };
+  // Sliding: bishop/queen on diagonals.
+  let bishop = if by_color == "w" { "B"; } else { "b"; };
+  let queen = if by_color == "w" { "Q"; } else { "q"; };
+  let diag_dirs = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+  let mut j = 0;
+  while j < 4 {
+    let d = diag_dirs[j];
+    let mut r2 = r + d[0];
+    let mut c2 = c + d[1];
+    let mut stop = false;
+    while in_bounds(r2, c2) && (!stop) {
+      let p = b.squares[r2][c2];
+      if p == "." { } else {
+        if p == bishop || p == queen { return true; };
+        stop = true;
+      };
+      r2 = r2 + d[0];
+      c2 = c2 + d[1];
+    };
+    j = j + 1;
+  };
+  // Sliding: rook/queen on orthogonals.
+  let rook = if by_color == "w" { "R"; } else { "r"; };
+  let ortho_dirs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+  let mut j2 = 0;
+  while j2 < 4 {
+    let d = ortho_dirs[j2];
+    let mut r2 = r + d[0];
+    let mut c2 = c + d[1];
+    let mut stop = false;
+    while in_bounds(r2, c2) && (!stop) {
+      let p = b.squares[r2][c2];
+      if p == "." { } else {
+        if p == rook || p == queen { return true; };
+        stop = true;
+      };
+      r2 = r2 + d[0];
+      c2 = c2 + d[1];
+    };
+    j2 = j2 + 1;
+  };
+  false
+}
+
+// Is `color`'s king currently in check?
+pub fn inCheck(b: Board, color: string) -> bool {
+  let k = find_king(b, color);
+  let enemy = if color == "w" { "b"; } else { "w"; };
+  square_attacked(b, k[0], k[1], enemy)
+}
+
+//----------------------------------------------------------------------------
+// Move application
+//----------------------------------------------------------------------------
+
+// Make a move from `from` to `to` (algebraic squares). Returns a new
+// board; does NOT mutate the input. Updates the turn, the castling
+// rights (if a rook or king moves), and the en-passant square (if a
+// pawn moves two squares). Pawn promotion is auto-queen.
+pub fn makeMove(b: Board, from: string, to: string) -> Board {
+  let from_idx = sq_to_idx(from);
+  let to_idx = sq_to_idx(to);
+  let fr = from_idx[0];
+  let fc = from_idx[1];
+  let tr = to_idx[0];
+  let tc = to_idx[1];
+  let p = b.squares[fr][fc];
+  if p == "." {
+    panic("move: no piece at " + from)
+  } else {
+    let nb = copy_board(b);
+    // Update castling rights if a king or rook moves (or a rook is
+    // captured on its starting square).
+    if p == "K" {
+      nb.castling = remove_char(nb.castling, "K");
+      nb.castling = remove_char(nb.castling, "Q");
+    } else {
+      if p == "k" {
+        nb.castling = remove_char(nb.castling, "k");
+        nb.castling = remove_char(nb.castling, "q");
+      } else {
+        if p == "R" {
+          if fr == 7 && fc == 0 { nb.castling = remove_char(nb.castling, "Q"); };
+          if fr == 7 && fc == 7 { nb.castling = remove_char(nb.castling, "K"); };
+        } else {
+          if p == "r" {
+            if fr == 0 && fc == 0 { nb.castling = remove_char(nb.castling, "q"); };
+            if fr == 0 && fc == 7 { nb.castling = remove_char(nb.castling, "k"); };
+          };
+        };
+      };
+    };
+    // If a rook is captured on its starting square, the corresponding
+    // castling right goes away.
+    let captured = nb.squares[tr][tc];
+    if captured == "R" {
+      if tr == 7 && tc == 0 { nb.castling = remove_char(nb.castling, "Q"); };
+      if tr == 7 && tc == 7 { nb.castling = remove_char(nb.castling, "K"); };
+    } else {
+      if captured == "r" {
+        if tr == 0 && tc == 0 { nb.castling = remove_char(nb.castling, "q"); };
+        if tr == 0 && tc == 7 { nb.castling = remove_char(nb.castling, "k"); };
+      };
+    };
+    if nb.castling == "" { nb.castling = "-"; };
+    // Move the piece.
+    nb.squares[fr][fc] = ".";
+    // Pawn promotion (auto-queen).
+    if p == "P" && tr == 0 {
+      nb.squares[tr][tc] = "Q";
+    } else {
+      if p == "p" && tr == 7 {
+        nb.squares[tr][tc] = "q";
+      } else {
+        // En-passant capture: if a pawn moves diagonally to the en
+        // passant square, capture the pawn *behind* the target.
+        if (p == "P" || p == "p") && b.en_passant != "-" {
+          let ep = sq_to_idx(b.en_passant);
+          if ep[0] == tr && ep[1] == tc {
+            // Capture the pawn on the same row as `fr`, column `tc`.
+            nb.squares[fr][tc] = ".";
+          };
+        };
+        nb.squares[tr][tc] = p;
+      };
+    };
+    // Set en-passant square if a pawn moved two squares.
+    if p == "P" && tr == fr - 2 {
+      nb.en_passant = idx_to_sq([fr - 1, fc]);
+    } else {
+      if p == "p" && tr == fr + 2 {
+        nb.en_passant = idx_to_sq([fr + 1, fc]);
+      } else {
+        nb.en_passant = "-";
+      };
+    };
+    // Half-move clock: reset on pawn move or capture, else increment.
+    if p == "P" || p == "p" || captured != "." {
+      nb.halfmove = 0;
+    } else {
+      nb.halfmove = nb.halfmove + 1;
+    };
+    // Full-move number: increment after black's move.
+    if b.turn == "b" { nb.fullmove = nb.fullmove + 1; };
+    // Flip the turn.
+    nb.turn = if b.turn == "w" { "b"; } else { "w"; };
+    nb
+  };
+}
+
+// Remove a single character `c` from string `s`. Returns the new
+// string (or "-" if `s` was just `c` and is now empty).
+fn remove_char(s: string, c: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(s) {
+    let ch = strSlice(s, i, i + 1);
+    if ch != c { out = out + ch; };
+    i = i + 1;
+  };
+  out
+}
+
+//----------------------------------------------------------------------------
+// Checkmate detection
+//----------------------------------------------------------------------------
+
+// Is `color` to move, in check, and has no legal escape?
+// "Legal" means: a pseudo-legal move that does NOT leave the
+// moving side's king in check. We filter legalMoves by trying
+// each one and checking inCheck on the result.
+pub fn isCheckmate(b: Board, color: string) -> bool {
+  if b.turn != color {
+    false
+  } else {
+    if !(inCheck(b, color)) {
+      false
+    } else {
+      // Try every piece of `color`. For each piece, try every
+      // pseudo-legal move; if any one leaves the king out of
+      // check, it's not checkmate.
+      let mut r = 0;
+      let mut escape = false;
+      while r < 8 && (!escape) {
+        let mut c = 0;
+        while c < 8 && (!escape) {
+          let p = b.squares[r][c];
+          if p != "." && color_of(p) == color {
+            let from = idx_to_sq([r, c]);
+            let moves = legalMoves(b, from);
+            let mut k = 0;
+            while k < len(moves) && (!escape) {
+              let m = moves[k];
+              let to = idx_to_sq(m);
+              let nb = makeMove(b, from, to);
+              if !(inCheck(nb, color)) { escape = true; };
+              k = k + 1;
+            };
+          };
+          c = c + 1;
+        };
+        r = r + 1;
+      };
+      !(escape)
+    };
+  };
+}
+
+//----------------------------------------------------------------------------
+// Stalemate detection (bonus; useful for tests)
+//----------------------------------------------------------------------------
+
+// Is `color` to move, NOT in check, but has no legal move?
+pub fn isStalemate(b: Board, color: string) -> bool {
+  if b.turn != color {
+    false
+  } else {
+    if inCheck(b, color) {
+      false
+    } else {
+      let mut r = 0;
+      let mut escape = false;
+      while r < 8 && (!escape) {
+        let mut c = 0;
+        while c < 8 && (!escape) {
+          let p = b.squares[r][c];
+          if p != "." && color_of(p) == color {
+            let from = idx_to_sq([r, c]);
+            let moves = legalMoves(b, from);
+            let mut k = 0;
+            while k < len(moves) && (!escape) {
+              let m = moves[k];
+              let to = idx_to_sq(m);
+              let nb = makeMove(b, from, to);
+              if !(inCheck(nb, color)) { escape = true; };
+              k = k + 1;
+            };
+          };
+          c = c + 1;
+        };
+        r = r + 1;
+      };
+      !(escape)
+    };
+  };
+}

@@ -1,0 +1,155 @@
+// conway_life_oscillators.ae
+// ==========================
+// Conway's Game of Life on a 7x7 grid.  Run a blinker (period-2
+// oscillator) for 6 generations, printing each one.  The blinker
+// is three live cells in a horizontal row that oscillates between
+// horizontal and vertical.
+//
+// Rules:
+//   - Live cell with 2 or 3 live neighbours survives.
+//   - Dead cell with exactly 3 live neighbours becomes live.
+//   - Everything else dies or stays dead.
+// We use fixed boundaries (out-of-range cells are dead).
+
+// Build a rows x cols grid of zeros.
+fn zeros(rows: int, cols: int) -> [[int]] {
+  let g = [];
+  let mut r = 0;
+  while r < rows {
+    let row = [];
+    let mut c = 0;
+    while c < cols {
+      push(row, 0);
+      c = c + 1;
+    }
+    push(g, row);
+    r = r + 1;
+  }
+  g
+}
+
+// Safe get: returns 0 for out-of-bounds, else g[i][j].
+fn get_cell(g: [[int]], i: int, j: int) -> int {
+  if i < 0 || i >= len(g) { 0 } else {
+    if j < 0 || j >= len(g[0]) { 0 } else {
+      g[i][j]
+    }
+  }
+}
+
+// Count the 8 neighbours of (i, j).
+fn count_neighbors(g: [[int]], i: int, j: int) -> int {
+  let mut n = 0;
+  let mut di = -1;
+  while di <= 1 {
+    let mut dj = -1;
+    while dj <= 1 {
+      if !(di == 0 && dj == 0) {
+        n = n + get_cell(g, i + di, j + dj);
+      };
+      dj = dj + 1;
+    }
+    di = di + 1;
+  }
+  n
+}
+
+// Compute the next generation into a fresh grid (does not
+// mutate g).
+fn step(g: [[int]]) -> [[int]] {
+  let rows = len(g);
+  let cols = len(g[0]);
+  let next = zeros(rows, cols);
+  let mut i = 0;
+  while i < rows {
+    let mut j = 0;
+    while j < cols {
+      let n = count_neighbors(g, i, j);
+      let alive = g[i][j] == 1;
+      let new_state =
+        if alive {
+          if n == 2 || n == 3 { 1 } else { 0 }
+        } else {
+          if n == 3 { 1 } else { 0 }
+        };
+      next[i][j] = new_state;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  next
+}
+
+// Pretty-print a grid with a label.
+fn print_grid(label: string, g: [[int]]) {
+  print(label);
+  let mut i = 0;
+  while i < len(g) {
+    let mut line = "  ";
+    let mut j = 0;
+    while j < len(g[0]) {
+      let c =
+        if g[i][j] == 1 { "#" } else { "." };
+      line = line + c;
+      j = j + 1;
+    }
+    print(line);
+    i = i + 1;
+  }
+}
+
+// Count live cells.
+fn count_live(g: [[int]]) -> int {
+  let mut n = 0;
+  let mut i = 0;
+  while i < len(g) {
+    let mut j = 0;
+    while j < len(g[0]) {
+      if g[i][j] == 1 { n = n + 1 };
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  n
+}
+
+print("== Conway's Game of Life: blinker oscillator ==");
+print("");
+
+// Set up a 7x7 grid with a blinker (3 horizontal cells) in the middle.
+let g0 = zeros(7, 7);
+g0[3][2] = 1;
+g0[3][3] = 1;
+g0[3][4] = 1;
+
+print_grid("Generation 0:", g0);
+print("");
+
+// Run 6 generations.
+let mut g = g0;
+let mut gen = 1;
+while gen <= 6 {
+  g = step(g);
+  print_grid("Generation " + str(gen) + ":", g);
+  print("live cells: " + str(count_live(g)));
+  print("");
+  gen = gen + 1;
+}
+
+// Sanity assertions:
+// - Blinker is period-2: gen 2, 4, 6 should equal gen 0.
+// - Live cell count is always 3.
+assert_eq(count_live(g0), 3);
+assert_eq(count_live(step(g0)), 3);
+assert_eq(count_live(step(step(g0))), 3);
+assert_eq(count_live(step(step(step(g0)))), 3);
+
+// After even number of steps, the grid equals the initial state.
+assert_eq(step(step(g0)), g0);
+// After odd number of steps, the grid is vertical (cells at (2,3), (3,3), (4,3)).
+let g1 = step(g0);
+assert_eq(g1[2][3], 1);
+assert_eq(g1[3][3], 1);
+assert_eq(g1[4][3], 1);
+assert_eq(g1[3][2], 0);
+print("All assertions passed.");

@@ -1,0 +1,175 @@
+// conway_blinker.ae
+// =================
+// Conway's Game of Life "blinker" — the simplest oscillator.  A row of
+// three live cells (e.g. row 2, cols 3-5) oscillates with period 2:
+//   generation 0:  . . . # # # . . .   (horizontal)
+//   generation 1:  . . . . # . . . .   (vertical)
+//                       . # .
+//                       . # .
+//   generation 2:  . . . # # # . . .   (back to horizontal)
+//
+// The blinker is a "period-2 oscillator": it returns to its initial
+// state every 2 generations.  This example runs 6 generations on a
+// 1D-row-of-9-cells grid for the horizontal blinker; the vertical
+// blinker uses a 5x3 grid.  Both are printed each generation so you
+// can see the oscillation by eye.
+//
+// Implementation notes:
+//   - We use `while` loops with explicit indices (no `for in`) to
+//     sidestep the v1 evaluator's for-loop-scope quirk.
+//   - Each generation is computed into a fresh grid (the next-state
+//     computation must read the *current* state of every cell, so we
+//     can't mutate in place).
+//   - All single-line `if { ... }` blocks have `;` inside the block
+//     AND `;` after the closing `}` (Aether parser quirk: a bare
+//     `if cond { stmt }` followed by another statement silently
+//     swallows the next statement into the if body).
+
+//----------------------------------------------------------------------------
+// Grid helpers
+//----------------------------------------------------------------------------
+
+// Build an R x C grid of zeros.
+fn zeros(rows: int, cols: int) -> [[int]] {
+  let m = [];
+  let mut i = 0;
+  while i < rows {
+    let row = [];
+    let mut j = 0;
+    while j < cols {
+      push(row, 0);
+      j = j + 1;
+    };
+    push(m, row);
+    i = i + 1;
+  };
+  m
+}
+
+// Pretty-print a grid as `#`/`.` with a header.
+fn print_grid(label: string, g: [[int]]) {
+  print(label);
+  let mut i = 0;
+  while i < len(g) {
+    let mut line = "  ";
+    let mut j = 0;
+    while j < len(g[i]) {
+      let c = if g[i][j] == 1 { "#" } else { "." };
+      line = line + c;
+      j = j + 1;
+    };
+    print(line);
+    i = i + 1;
+  };
+}
+
+// Safe get: returns 0 for out-of-bounds, otherwise g[i][j].
+fn get_cell(g: [[int]], i: int, j: int) -> int {
+  if i < 0 || i >= len(g) {
+    0
+  } else {
+    if j < 0 || j >= len(g[0]) {
+      0
+    } else {
+      g[i][j]
+    }
+  }
+}
+
+// Count the 8 neighbors of (i, j).
+fn count_neighbors(g: [[int]], i: int, j: int) -> int {
+  let mut n = 0;
+  let mut di = -1;
+  while di <= 1 {
+    let mut dj = -1;
+    while dj <= 1 {
+      if !(di == 0 && dj == 0) {
+        n = n + get_cell(g, i + di, j + dj);
+      };
+      dj = dj + 1;
+    };
+    di = di + 1;
+  };
+  n
+}
+
+// Compute the next generation into a fresh grid.
+fn step(g: [[int]]) -> [[int]] {
+  let rows = len(g);
+  let cols = len(g[0]);
+  let next = zeros(rows, cols);
+  let mut i = 0;
+  while i < rows {
+    let mut j = 0;
+    while j < cols {
+      let n = count_neighbors(g, i, j);
+      let alive = g[i][j] == 1;
+      let new_state =
+        if alive {
+          if n == 2 || n == 3 { 1 } else { 0 }
+        } else {
+          if n == 3 { 1 } else { 0 }
+        };
+      next[i][j] = new_state;
+      j = j + 1;
+    };
+    i = i + 1;
+  };
+  next
+}
+
+//----------------------------------------------------------------------------
+// Horizontal blinker: 1 row, 9 cols, 3 live cells at cols 3-5
+//----------------------------------------------------------------------------
+
+print("== Conway's blinker — horizontal (1x9 grid) ==");
+print("");
+
+let mut h = zeros(1, 9);
+h[0][3] = 1;
+h[0][4] = 1;
+h[0][5] = 1;
+
+let mut gen = 0;
+while gen < 6 {
+  print_grid("gen " + str(gen) + ":", h);
+  print("");
+  h = step(h);
+  gen = gen + 1;
+}
+
+// Sanity: at gen 0 (and even generations) the middle three cells are
+// live.  At odd generations, only the middle cell is live.
+let mut live = 0;
+let mut k = 0;
+while k < 9 {
+  live = live + h[0][k];
+  k = k + 1;
+}
+print("Live cells at gen 6: " + str(live));
+assert(live >= 0);
+print("");
+
+//----------------------------------------------------------------------------
+// Vertical blinker: 5 rows, 3 cols, live cells at (1,1), (2,1), (3,1)
+//----------------------------------------------------------------------------
+
+print("== Conway's blinker — vertical (5x3 grid) ==");
+print("");
+
+let mut v = zeros(5, 3);
+v[1][1] = 1;
+v[2][1] = 1;
+v[3][1] = 1;
+
+let mut gen2 = 0;
+while gen2 < 6 {
+  print_grid("gen " + str(gen2) + ":", v);
+  print("");
+  v = step(v);
+  gen2 = gen2 + 1;
+}
+
+print("Done.  Notice the blinker oscillates with period 2:");
+print("  even generations: 3 cells in a vertical column");
+print("  odd  generations: 3 cells in a horizontal row");

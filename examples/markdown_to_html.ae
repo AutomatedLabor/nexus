@@ -1,0 +1,188 @@
+// markdown_to_html.ae
+// ===================
+// A tiny Markdown-to-HTML renderer.  Supported syntax:
+//   # h1, ## h2, ### h3            -> <h1>…</h1> etc.
+//   * item                          -> <ul><li>…</li></ul>  (consecutive *)
+//   **bold**                        -> <strong>bold</strong>
+//   [text](url)                     -> <a href="url">text</a>
+//   plain paragraph                 -> <p>…</p>
+//
+// Inline formatting is applied within paragraphs and list items;
+// headings are rendered plain (no inline formatting) for simplicity.
+
+fn is_ws(c: string) -> bool {
+  c == " " || c == "\t" || c == "\n" || c == "\r"
+}
+
+// Trim leading and trailing whitespace.
+fn trim(s: string) -> string {
+  let mut lo = 0;
+  let mut hi = len(s);
+  while lo < hi && is_ws(strSlice(s, lo, lo + 1)) { lo = lo + 1 };
+  while hi > lo && is_ws(strSlice(s, hi - 1, hi)) { hi = hi - 1 };
+  strSlice(s, lo, hi)
+}
+
+// Slice `s` from `lo` (inclusive) to `hi` (exclusive).
+fn slice_str(s: string, lo: int, hi: int) -> string {
+  strSlice(s, lo, hi)
+}
+
+// Find the index of `sub` in `s` starting at `from`, or -1.
+fn index_of(s: string, sub: string, from: int) -> int {
+  let n = len(s);
+  let m = len(sub);
+  let mut i = from;
+  let mut found = -1;
+  while (i + m <= n) && (found == -1) {
+    let mut j = 0;
+    let mut ok = true;
+    while (j < m) && ok {
+      if strSlice(s, i + j, i + j + 1) == strSlice(sub, j, j + 1) { } else { ok = false };
+      j = j + 1;
+    }
+    if ok { found = i };
+    i = i + 1;
+  }
+  found
+}
+
+// Count leading `#` chars (heading level, capped at 3).
+fn heading_level(line: string) -> int {
+  let mut lvl = 0;
+  let mut i = 0;
+  while (i < len(line)) && (strSlice(line, i, i + 1) == "#") && (lvl < 6) {
+    lvl = lvl + 1;
+    i = i + 1;
+  }
+  if (lvl > 0) && (i < len(line)) && (strSlice(line, i, i + 1) == " ") {
+    lvl
+  } else {
+    0
+  }
+}
+
+// Render `**bold**` and `[text](url)` inline.  Recursive on the
+// inner of <strong>.
+fn render_inline(text: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  let n = len(text);
+  while i < n {
+    let c = strSlice(text, i, i + 1);
+    // **bold** -> <strong>...</strong>
+    if c == "*" && i + 1 < n && strSlice(text, i + 1, i + 2) == "*" {
+      let close = index_of(text, "**", i + 2);
+      if close != -1 {
+        let inner = slice_str(text, i + 2, close);
+        out = out + "<strong>" + render_inline(inner) + "</strong>";
+        i = close + 2;
+      } else {
+        out = out + c;
+        i = i + 1;
+      };
+    } else {
+      // [text](url) -> <a href="url">text</a>
+      if c == "[" {
+        let close_b = index_of(text, "]", i + 1);
+        if close_b != -1 && close_b + 1 < n && strSlice(text, close_b + 1, close_b + 2) == "(" {
+          let close_p = index_of(text, ")", close_b + 2);
+          if close_p != -1 {
+            let link_text = slice_str(text, i + 1, close_b);
+            let url = slice_str(text, close_b + 2, close_p);
+            out = out + "<a href=\"" + url + "\">" + render_inline(link_text) + "</a>";
+            i = close_p + 1;
+          } else {
+            out = out + c;
+            i = i + 1;
+          };
+        } else {
+          out = out + c;
+          i = i + 1;
+        };
+      } else {
+        out = out + c;
+        i = i + 1;
+      };
+    };
+  }
+  out
+}
+
+// Split a string on `\n` into a list of lines.
+fn split_lines(s: string) -> [string] {
+  let out = [];
+  let mut cur = "";
+  let mut i = 0;
+  while i < len(s) {
+    let c = strSlice(s, i, i + 1);
+    if c == "\n" {
+      push(out, cur);
+      cur = "";
+    } else {
+      if c != "\r" { cur = cur + c };
+    };
+    i = i + 1;
+  }
+  if cur != "" { push(out, cur) };
+  out
+}
+
+// Render a Markdown source string as HTML.
+fn render(md: string) -> string {
+  let mut html = "";
+  let lines = split_lines(md);
+  let mut i = 0;
+  let mut in_list = false;
+  while i < len(lines) {
+    let line = lines[i];
+    let lvl = heading_level(line);
+    if lvl > 0 {
+      if in_list { html = html + "</ul>\n"; in_list = false };
+      let body = trim(slice_str(line, lvl + 1, len(line)));
+      html = html + "<h" + str(lvl) + ">" + body + "</h" + str(lvl) + ">\n";
+    } else {
+      let first = strSlice(line, 0, 1);
+      let second = strSlice(line, 1, 2);
+      if len(line) >= 2 && first == "*" && second == " " {
+        if !in_list { html = html + "<ul>\n"; in_list = true };
+        let body = trim(slice_str(line, 2, len(line)));
+        html = html + "  <li>" + render_inline(body) + "</li>\n";
+      } else {
+        if trim(line) == "" {
+          if in_list { html = html + "</ul>\n"; in_list = false };
+        } else {
+          if in_list { html = html + "</ul>\n"; in_list = false };
+          html = html + "<p>" + render_inline(trim(line)) + "</p>\n";
+        };
+      };
+    };
+    i = i + 1;
+  }
+  if in_list { html = html + "</ul>\n" };
+  html
+}
+
+print("== Markdown -> HTML ==");
+print("");
+
+let md = "# Hello, Aether!\n\nThis is a **bold** paragraph with a [link](https://example.com).\n\n## Section 2\n\n* one\n* two with **bold** text\n* three with [a](https://b.io) link\n\n### Subsection\n\nFinal paragraph.\n";
+print("input markdown:");
+print(md);
+print("");
+
+let html = render(md);
+print("rendered HTML:");
+print(html);
+
+// Sanity assertions.
+assert_eq(heading_level("# H"), 1);
+assert_eq(heading_level("## H"), 2);
+assert_eq(heading_level("plain"), 0);
+assert_eq(render_inline("**hi**"), "<strong>hi</strong>");
+assert_eq(render_inline("a**b**c"), "a<strong>b</strong>c");
+assert_eq(render_inline("[txt](url)"), "<a href=\"url\">txt</a>");
+assert_eq(render_inline("see [docs](/d) now"), "see <a href=\"/d\">docs</a> now");
+let html2 = render("# T\np\n");
+assert_eq(html2, "<h1>T</h1>\n<p>p</p>\n");
+print("All assertions passed.");

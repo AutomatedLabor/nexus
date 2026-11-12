@@ -1,0 +1,58 @@
+// memo_fib.ae
+// ============
+// Memoized Fibonacci using parallel (keys, values) arrays as a
+// poor man's hash map. The memo persists across calls so the
+// second invocation of fib(20) is essentially a lookup. We use
+// this representation because the v1 evaluator's verify harness
+// only wires the inline builtins (no `mapNew`/`mapSet`); a real
+// stdlib-wired environment would use the stdlib `map` instead.
+
+// Memo state: parallel arrays of (key, value). Both start empty
+// except for the two base cases 0 and 1.
+let keys = [0, 1];
+let vals = [0, 1];
+
+// Linear search for `key` in `keys`; return its index, or -1.
+fn find(key: int) -> int {
+  let mut i = 0;
+  let mut out = -1;
+  while (i < len(keys)) && (out == -1) {
+    if keys[i] == key { out = i };
+    i = i + 1;
+  }
+  out
+}
+
+fn fib(n: int) -> int {
+  let idx = find(n);
+  if idx != -1 {
+    vals[idx]
+  } else {
+    let v = fib(n - 1) + fib(n - 2);
+    push(keys, n);
+    push(vals, v);
+    v
+  }
+}
+
+print("== Memoized Fibonacci ==");
+print("");
+
+print("fib(0)  = " + str(fib(0)));
+print("fib(1)  = " + str(fib(1)));
+print("fib(2)  = " + str(fib(2)));
+print("fib(10) = " + str(fib(10)));
+print("fib(20) = " + str(fib(20)));
+print("fib(30) = " + str(fib(30)));
+print("fib(35) = " + str(fib(35)));
+
+// Sanity assertions.
+assert_eq(fib(0), 0);
+assert_eq(fib(1), 1);
+assert_eq(fib(2), 1);
+assert_eq(fib(3), 2);
+assert_eq(fib(10), 55);
+assert_eq(fib(20), 6765);
+assert_eq(fib(30), 832040);
+print("");
+print("All assertions passed.");

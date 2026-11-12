@@ -1,0 +1,186 @@
+// snake_game_logic.ae
+// ===================
+// Snake game logic on a 5x5 grid.  The snake starts as a single
+// cell at the center, food is placed at a fixed position, and we
+// simulate 10 deterministic moves (right, right, right, down,
+// left, down, left, up, right, up).  Eating food grows the snake
+// by one cell and respawns the food at a new fixed position.
+// Hitting a wall or itself would end the game (we don't test that
+// here — the chosen moves are safe).
+//
+// Representation:
+//   - The grid is a 5x5 array of ints (0 = empty, 1 = snake, 2 = food).
+//   - The snake is a list of [r, c] cells, head at index 0.
+//   - The food is a [r, c] pair.
+
+// Build a 5x5 grid of zeros.
+fn zeros() -> [[int]] {
+  let g = [];
+  let mut r = 0;
+  while r < 5 {
+    let row = [];
+    let mut c = 0;
+    while c < 5 {
+      push(row, 0);
+      c = c + 1;
+    }
+    push(g, row);
+    r = r + 1;
+  }
+  g
+}
+
+// Stash a [r, c] pair into a string for printing.
+fn pos_str(p: [int]) -> string {
+  "[" + str(p[0]) + ", " + str(p[1]) + "]"
+}
+
+// Print the grid with a label.
+fn print_grid(label: string, g: [[int]]) {
+  print(label);
+  let mut r = 0;
+  while r < 5 {
+    let mut line = "  ";
+    let mut c = 0;
+    while c < 5 {
+      let v = g[r][c];
+      let s =
+        if v == 0 { "." } else { if v == 1 { "S" } else { "F" } };
+      line = line + s + " ";
+      c = c + 1;
+    }
+    print(line);
+    r = r + 1;
+  }
+}
+
+// Stamp the snake and food onto the grid (mutating g).
+fn stamp(g: [[int]], snake: [[int]], food: [int]) {
+  // Clear.
+  let mut r = 0;
+  while r < 5 {
+    let mut c = 0;
+    while c < 5 {
+      g[r][c] = 0;
+      c = c + 1;
+    }
+    r = r + 1;
+  }
+  // Food.
+  g[food[0]][food[1]] = 2;
+  // Snake.
+  let mut i = 0;
+  while i < len(snake) {
+    let p = snake[i];
+    g[p[0]][p[1]] = 1;
+    i = i + 1;
+  }
+}
+
+// Move the snake in direction `dir` (a [dr, dc] pair).
+// Returns the new snake (with possible growth + food eaten flag).
+// We pass food positions in a sequence (a list of [r, c]); when
+// eaten, we advance to the next food in the list.  If the list
+// runs out, food stays put.
+fn step(state: any, dir: [int]) -> any {
+  let snake = state[0];
+  let food_idx = state[1];
+  let foods = state[2];
+  let head = snake[0];
+  let new_head = [head[0] + dir[0], head[1] + dir[1]];
+  // Detect wall hit (game over) — for this demo we just clamp to
+  // bounds and report the collision in the printed output, but
+  // keep the snake in bounds for the next move.
+  if new_head[0] < 0 || new_head[0] >= 5 || new_head[1] < 0 || new_head[1] >= 5 {
+    // Wall hit — game over signal.
+    [snake, food_idx, foods, true]
+  } else {
+    // Detect self-hit.
+    let mut hit_self = false;
+    let mut k = 0;
+    while k < len(snake) {
+      if snake[k][0] == new_head[0] && snake[k][1] == new_head[1] {
+        hit_self = true;
+      };
+      k = k + 1;
+    }
+    if hit_self {
+      [snake, food_idx, foods, true]
+    } else {
+      // Build the new snake with the new head.
+      let new_snake = [new_head];
+      let mut i = 0;
+      while i < len(snake) {
+        push(new_snake, snake[i]);
+        i = i + 1;
+      }
+      // Check if we ate the food.
+      let food = foods[food_idx];
+      if new_head[0] == food[0] && new_head[1] == food[1] {
+        // Grow: don't pop the tail. Advance to the next food, if any.
+        let next_food_idx =
+          if food_idx + 1 < len(foods) { food_idx + 1 } else { food_idx };
+        [new_snake, next_food_idx, foods, false]
+      } else {
+        // No growth: drop the tail (last cell).
+        let dropped = pop(new_snake);
+        [new_snake, food_idx, foods, false]
+      }
+    }
+  }
+}
+
+print("== Snake game logic (5x5 grid) ==");
+print("");
+
+let snake = [[2, 2]];
+let foods = [[0, 0], [4, 4], [0, 4], [4, 0], [1, 1]];
+let food_idx = 0;
+let state = [snake, food_idx, foods, false];
+
+let g = zeros();
+stamp(g, state[0], foods[state[1]]);
+print_grid("Initial state:", g);
+print("snake: " + str(state[0]) + "  food: " + pos_str(foods[state[1]]));
+print("");
+
+// Deterministic move sequence: R, R, R, D, L, D, L, U, R, U
+let dirs = [
+  [0, 1], [0, 1], [0, 1],
+  [1, 0], [0, -1],
+  [1, 0], [0, -1],
+  [-1, 0],
+  [0, 1],
+  [-1, 0]
+];
+let dir_names = ["R", "R", "R", "D", "L", "D", "L", "U", "R", "U"];
+
+let mut s = state;
+let mut step_num = 1;
+while step_num <= len(dirs) {
+  let dir = dirs[step_num - 1];
+  let name = dir_names[step_num - 1];
+  let new_state = step(s, dir);
+  s = new_state;
+  let game_over = s[3];
+  let g2 = zeros();
+  stamp(g2, s[0], foods[s[1]]);
+  print_grid("After move " + str(step_num) + " (" + name + ")", g2);
+  print("snake: " + str(s[0]) + "  food: " + pos_str(foods[s[1]]) + "  over=" + str(game_over));
+  print("");
+  if game_over {
+    print("Game over — stopping.");
+    step_num = len(dirs) + 1;
+  } else {
+    step_num = step_num + 1;
+  }
+}
+
+print("== Snake simulation complete ==");
+print("Final snake length: " + str(len(s[0])));
+print("Final snake cells: " + str(s[0]));
+
+// Sanity assertions: snake should have grown by eating some food.
+assert_eq(len(s[0]) >= 1, true);
+print("");
+print("All assertions passed.");

@@ -1,0 +1,105 @@
+// aether-apps/chess-engine/examples/example.ae
+// ============================================
+// A demo of the chess engine: set up the starting position, make
+// 3 moves (1. e4 e5 2. Nf3), print the board and check status at
+// each step.
+
+import {
+  new, fromFen, toFen, printBoard, makeMove, legalMoves, inCheck, isCheckmate,
+} from "../src/chess.ae";
+
+print("== Aether chess engine ==");
+print("");
+
+// ----- Starting position -----
+print("--- Initial position ---");
+let b0 = new();
+printBoard(b0);
+print("");
+
+print("FEN: " + toFen(b0));
+print("White in check: " + str(inCheck(b0, "w")));
+print("Black in check: " + str(inCheck(b0, "b")));
+print("");
+
+// ----- 1. e4 (King's pawn opening) -----
+print("--- 1. e4 ---");
+let b1 = makeMove(b0, "e2", "e4");
+printBoard(b1);
+print("FEN: " + toFen(b1));
+print("");
+
+// ----- 1... e5 (Symmetric reply) -----
+print("--- 1... e5 ---");
+let b2 = makeMove(b1, "e7", "e5");
+printBoard(b2);
+print("FEN: " + toFen(b2));
+print("");
+
+// ----- 2. Nf3 (King's knight) -----
+print("--- 2. Nf3 ---");
+let b3 = makeMove(b2, "g1", "f3");
+printBoard(b3);
+print("FEN: " + toFen(b3));
+print("");
+
+// ----- Legal moves from Nf3 -----
+print("--- Legal moves from f3 (knight) ---");
+let m3 = legalMoves(b3, "f3");
+let mut i = 0;
+while i < len(m3) {
+  let m = m3[i];
+  print("  f3 -> " + str(m[0]) + "," + str(m[1]) + " (" +
+        fromFile(m[1]) + fromRank(m[0]) + ")");
+  i = i + 1;
+}
+print("");
+
+print("--- Status ---");
+print("White in check: " + str(inCheck(b3, "w")));
+print("Black in check: " + str(inCheck(b3, "b")));
+print("White checkmated: " + str(isCheckmate(b3, "w")));
+print("Black checkmated: " + str(isCheckmate(b3, "b")));
+print("");
+
+// ----- Fool's mate demo -----
+print("--- Fool's mate demo ---");
+let fm1 = makeMove(new(), "f2", "f3");
+let fm2 = makeMove(fm1, "e7", "e5");
+let fm3 = makeMove(fm2, "g2", "g4");
+let fm4 = makeMove(fm3, "d8", "h4");
+printBoard(fm4);
+print("FEN: " + toFen(fm4));
+print("White in check: " + str(inCheck(fm4, "w")));
+print("White checkmated: " + str(isCheckmate(fm4, "w")));
+print("");
+
+// ----- Set up a position from FEN -----
+print("--- Set up from FEN: Sicilian defense ---");
+let sic = fromFen("rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2");
+printBoard(sic);
+print("FEN: " + toFen(sic));
+print("");
+
+// ----- A legal knight makeMove demo -----
+print("--- Set up from FEN: empty board with a single white knight ---");
+let solo_knight = fromFen("8/8/8/3N4/8/8/8/4k2K w - - 0 1");
+printBoard(solo_knight);
+let knight_moves = legalMoves(solo_knight, "d5");
+print("Knight on d5 has " + str(len(knight_moves)) + " pseudo-legal moves");
+print("");
+
+// ----- Helpers -----
+print("== chess engine demo done ==");
+
+//----------------------------------------------------------------------------
+// helpers (file/rank labels)
+//----------------------------------------------------------------------------
+
+fn fromFile(c: int) -> string {
+  fromCharCode(charCode("a", 0) + c)
+}
+
+fn fromRank(r: int) -> string {
+  fromCharCode(charCode("8", 0) - r)
+}

@@ -67,6 +67,11 @@ import * as Sparse from "./sparse";
 import * as Memoize from "./memoize";
 import * as Cidr from "./cidr";
 import * as PQueue from "./pqueue";
+// New modules (V3-W14-EXPAND4):
+import * as Queue from "./queue";
+import * as Stack from "./stack";
+import * as Deque from "./deque";
+import * as RBTree from "./rbtree";
 
 export interface StdlibFn {
   name: string;
@@ -132,6 +137,11 @@ export function registerAll(register: (name: string, fn: any) => void): void {
   Memoize.register(register);
   Cidr.register(register);
   PQueue.register(register);
+  // New modules (V3-W14-EXPAND4):
+  Queue.register(register);
+  Stack.register(register);
+  Deque.register(register);
+  RBTree.register(register);
 }
 
 /** Build a {name -> fn} map (used by the evaluator's `opts.builtins`). */
@@ -188,6 +198,11 @@ export const STDLIB_MANIFEST: StdlibModuleManifest[] = [
   Memoize.MANIFEST as StdlibModuleManifest,
   Cidr.MANIFEST as StdlibModuleManifest,
   PQueue.MANIFEST as StdlibModuleManifest,
+  // New modules (V3-W14-EXPAND4):
+  Queue.MANIFEST as StdlibModuleManifest,
+  Stack.MANIFEST as StdlibModuleManifest,
+  Deque.MANIFEST as StdlibModuleManifest,
+  RBTree.MANIFEST as StdlibModuleManifest,
 ];
 
 /** Total function count across all modules (excluding async — not callable). */

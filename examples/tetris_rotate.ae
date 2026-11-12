@@ -1,0 +1,148 @@
+// tetris_rotate.ae
+// ================
+// Represent a Tetris piece as a 4x4 grid of ints (1 for filled,
+// 0 for empty).  Rotate the piece 90° clockwise and print the
+// before/after grids.  We demonstrate with the L, T, and S
+// pieces.
+//
+// Rotation: a 90° clockwise rotation of an NxN grid maps
+//   new[i][j] = old[N-1-j][i]   for 0 <= i, j < N.
+// For N=4 this is straightforward.
+
+// Pretty-print a 4x4 grid as `#` (filled) and `.` (empty).
+fn print_piece(label: string, p: [[int]]) {
+  print(label);
+  let mut r = 0;
+  while r < 4 {
+    let mut line = "  ";
+    let mut c = 0;
+    while c < 4 {
+      let s =
+        if p[r][c] == 1 { "#" } else { "." };
+      line = line + s + " ";
+      c = c + 1;
+    }
+    print(line);
+    r = r + 1;
+  }
+}
+
+// Rotate a 4x4 grid 90° clockwise.  Returns a fresh grid.
+fn rotate_cw(p: [[int]]) -> [[int]] {
+  let out = [];
+  let mut i = 0;
+  while i < 4 {
+    let row = [];
+    let mut j = 0;
+    while j < 4 {
+      // out[i][j] = p[N-1-j][i]
+      push(row, p[3 - j][i]);
+      j = j + 1;
+    }
+    push(out, row);
+    i = i + 1;
+  }
+  out
+}
+
+// 4 rotations should return to the original (round-trip).
+fn rotate_cw4(p: [[int]]) -> [[int]] {
+  let mut x = p;
+  let mut i = 0;
+  while i < 4 {
+    x = rotate_cw(x);
+    i = i + 1;
+  }
+  x
+}
+
+print("== Tetris piece rotation ==");
+print("");
+
+// L-piece (lying flat at the bottom).
+let l_piece = [
+  [0, 0, 0, 0],
+  [0, 0, 0, 0],
+  [0, 0, 0, 0],
+  [1, 1, 1, 1],
+];
+print_piece("L piece (initial):", l_piece);
+print("");
+let l_rot = rotate_cw(l_piece);
+print_piece("L piece (after 1 rotation CW):", l_rot);
+print("");
+let l_rot2 = rotate_cw(l_rot);
+print_piece("L piece (after 2 rotations CW):", l_rot2);
+print("");
+let l_rot3 = rotate_cw(l_rot2);
+print_piece("L piece (after 3 rotations CW):", l_rot3);
+print("");
+
+// T-piece.
+let t_piece = [
+  [0, 0, 0, 0],
+  [0, 1, 0, 0],
+  [1, 1, 1, 0],
+  [0, 0, 0, 0],
+];
+print_piece("T piece (initial):", t_piece);
+print("");
+let t_rot = rotate_cw(t_piece);
+print_piece("T piece (after 1 rotation CW):", t_rot);
+print("");
+
+// S-piece (Z actually — using S as the example).
+let s_piece = [
+  [0, 0, 0, 0],
+  [0, 1, 1, 0],
+  [1, 1, 0, 0],
+  [0, 0, 0, 0],
+];
+print_piece("S piece (initial):", s_piece);
+print("");
+let s_rot = rotate_cw(s_piece);
+print_piece("S piece (after 1 rotation CW):", s_rot);
+print("");
+
+// Sanity assertions:
+// - 4 rotations = identity.
+// - L-piece: filled cells at the bottom row; after 1 CW rotation,
+//   filled cells at the right column.
+assert_eq(rotate_cw4(l_piece), l_piece);
+assert_eq(rotate_cw4(t_piece), t_piece);
+assert_eq(rotate_cw4(s_piece), s_piece);
+
+// L-piece after 1 rotation: left column should be all 1s.
+assert_eq(l_rot[0][0], 1);
+assert_eq(l_rot[1][0], 1);
+assert_eq(l_rot[2][0], 1);
+assert_eq(l_rot[3][0], 1);
+
+// L-piece before rotation: bottom row should be all 1s.
+assert_eq(l_piece[3][0], 1);
+assert_eq(l_piece[3][1], 1);
+assert_eq(l_piece[3][2], 1);
+assert_eq(l_piece[3][3], 1);
+
+// T-piece after 1 rotation: top row should have middle column = 1.
+// Actually T-piece rotates CW so the "T" point faces left after 1 CW.
+// Just verify the counts are preserved (4 filled cells).
+let count_filled = fn(p: [[int]]) -> int {
+  let mut n = 0;
+  let mut r = 0;
+  while r < 4 {
+    let mut c = 0;
+    while c < 4 {
+      if p[r][c] == 1 { n = n + 1 };
+      c = c + 1;
+    }
+    r = r + 1;
+  }
+  n
+};
+assert_eq(count_filled(t_piece), 4);
+assert_eq(count_filled(rotate_cw(t_piece)), 4);
+assert_eq(count_filled(s_piece), 4);
+assert_eq(count_filled(rotate_cw(s_piece)), 4);
+
+print("All assertions passed.");

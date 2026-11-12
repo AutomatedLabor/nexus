@@ -1,0 +1,12 @@
+[package]
+name = "chess-engine"
+version = "0.1.0"
+description = "A chess move generator + validator written in pure Aether. 10 pub functions: new, fromFen, toFen, printBoard, makeMove, legalMoves, inCheck, isCheckmate, isStalemate, plus internal helpers. Board is an 8x8 array of single-char FEN piece codes with castling rights, en-passant square, halfmove/fullmove counters. Generates pseudo-legal moves for all 6 piece types; checkmate detection filters pseudo-legal moves through 'does this leave my king in check?'."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — uses Aether's core builtins only
+# (push, len, type_of, panic, str, int, charCode, fromCharCode, strSlice).
+
+[exports]
+# Exposed via `pub fn` declarations in src/chess.ae.
