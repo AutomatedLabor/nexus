@@ -1,0 +1,354 @@
+// aether-iterator/src/lib.ae
+// ==========================
+// Lazy iterator combinators for Aether. 18 pub functions implementing a
+// Rust/Haskell-style iterator API: iterFrom, iterMap, iterFilter,
+// iterTake, iterDrop, iterFold, iterCollect, iterCount, iterAny, iterAll,
+// iterFind, iterForEach, iterZip, iterChain, iterRange, iterRepeat,
+// iterEnumerate, iterCycle.
+//
+// Iterator type: an iterator is just a closure `fn() -> option<int>`. Each
+// call returns the next element (Option::Some(x)) or Option::None when
+// exhausted. All combinators are higher-order functions that take a
+// closure and return a new closure. The combinator chain is consumed
+// once — these are one-shot iterators; call iterCollect to materialize.
+//
+// Element type is `int` throughout (type-erased at runtime — the same
+// combinators work for any value the caller cares to encode as int).
+
+//----------------------------------------------------------------------------
+// Option helpers (pub so tests / callers can unwrap values from
+// iterFind / iterEnumerate etc.)
+//----------------------------------------------------------------------------
+pub fn some(x: int) -> option<int> { Option::Some(x) }
+pub fn none() -> option<int> { Option::None }
+pub fn is_some(o: option<int>) -> bool {
+  match o { Option::Some(_) => true, Option::None => false }
+}
+pub fn unwrap_or(o: option<int>, dflt: int) -> int {
+  match o { Option::Some(x) => x, Option::None => dflt }
+}
+
+// The iterator type — a closure that yields the next element (or None).
+// We use `Iter` as a type alias for `fn() -> option<int>` via a struct
+// trick: we expose each function as taking/returning `fn() -> option<int>`
+// directly.
+
+//----------------------------------------------------------------------------
+// iterFrom — build an iterator from an array.
+//----------------------------------------------------------------------------
+pub fn iterFrom(arr: [int]) -> fn() -> option<int> {
+  let mut idx = 0;
+  let n = len(arr);
+  fn() -> option<int> {
+    if idx < n {
+      let v = arr[idx];
+      idx = idx + 1;
+      some(v)
+    } else {
+      none()
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// iterRange — build an iterator over [start, end).
+//----------------------------------------------------------------------------
+pub fn iterRange(start: int, end: int) -> fn() -> option<int> {
+  let mut i = start;
+  fn() -> option<int> {
+    if i < end {
+      let v = i;
+      i = i + 1;
+      some(v)
+    } else {
+      none()
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// iterRepeat — infinite iterator yielding x forever.
+//----------------------------------------------------------------------------
+pub fn iterRepeat(x: int) -> fn() -> option<int> {
+  fn() -> option<int> { some(x) }
+}
+
+//----------------------------------------------------------------------------
+// iterMap — apply f to each element.
+//----------------------------------------------------------------------------
+pub fn iterMap(it: fn() -> option<int>, f: fn(int) -> int) -> fn() -> option<int> {
+  fn() -> option<int> {
+    let o = it();
+    match o {
+      Option::Some(x) => some(f(x)),
+      Option::None => none(),
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// iterFilter — keep only elements where pred(x) is true.
+//----------------------------------------------------------------------------
+pub fn iterFilter(it: fn() -> option<int>, pred: fn(int) -> bool) -> fn() -> option<int> {
+  fn() -> option<int> {
+    let mut keep_going = true;
+    let mut result = none();
+    while keep_going {
+      let o = it();
+      if is_some(o) {
+        let x = unwrap_or(o, 0);
+        if pred(x) {
+          result = some(x);
+          keep_going = false;
+        } else {
+          // skip and continue
+        };
+      } else {
+        result = none();
+        keep_going = false;
+      };
+    }
+    result
+  }
+}
+
+//----------------------------------------------------------------------------
+// iterTake — take the first n elements, then return None.
+//----------------------------------------------------------------------------
+pub fn iterTake(it: fn() -> option<int>, n: int) -> fn() -> option<int> {
+  let mut taken = 0;
+  fn() -> option<int> {
+    if taken >= n {
+      none()
+    } else {
+      let o = it();
+      match o {
+        Option::Some(x) => {
+          taken = taken + 1;
+          some(x)
+        },
+        Option::None => none(),
+      }
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// iterDrop — drop the first n elements, then yield the rest.
+//----------------------------------------------------------------------------
+pub fn iterDrop(it: fn() -> option<int>, n: int) -> fn() -> option<int> {
+  let mut dropped = 0;
+  fn() -> option<int> {
+    while dropped < n {
+      let o = it();
+      if is_some(o) {
+        dropped = dropped + 1;
+      } else {
+        dropped = n;
+      };
+    }
+    it()
+  }
+}
+
+//----------------------------------------------------------------------------
+// iterCollect — drain an iterator into an array.
+//----------------------------------------------------------------------------
+pub fn iterCollect(it: fn() -> option<int>) -> [int] {
+  let mut out = [];
+  let mut keep_going = true;
+  while keep_going {
+    let o = it();
+    match o {
+      Option::Some(x) => push(out, x),
+      Option::None => { keep_going = false; },
+    };
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// iterCount — count the number of elements (drains the iterator).
+//----------------------------------------------------------------------------
+pub fn iterCount(it: fn() -> option<int>) -> int {
+  let mut count = 0;
+  let mut keep_going = true;
+  while keep_going {
+    let o = it();
+    match o {
+      Option::Some(_) => { count = count + 1; },
+      Option::None => { keep_going = false; },
+    };
+  }
+  count
+}
+
+//----------------------------------------------------------------------------
+// iterFold — fold over an iterator with an accumulator function.
+//----------------------------------------------------------------------------
+pub fn iterFold(it: fn() -> option<int>, init: int, f: fn(int, int) -> int) -> int {
+  let mut acc = init;
+  let mut keep_going = true;
+  while keep_going {
+    let o = it();
+    match o {
+      Option::Some(x) => { acc = f(acc, x); },
+      Option::None => { keep_going = false; },
+    };
+  }
+  acc
+}
+
+//----------------------------------------------------------------------------
+// iterAny — true if any element satisfies pred (short-circuits).
+//----------------------------------------------------------------------------
+pub fn iterAny(it: fn() -> option<int>, pred: fn(int) -> bool) -> bool {
+  let mut found = false;
+  let mut keep_going = true;
+  while keep_going && !found {
+    let o = it();
+    match o {
+      Option::Some(x) => {
+        if pred(x) {
+          found = true;
+        };
+      },
+      Option::None => { keep_going = false; },
+    };
+  }
+  found
+}
+
+//----------------------------------------------------------------------------
+// iterAll — true if all elements satisfy pred (short-circuits on first false).
+//----------------------------------------------------------------------------
+pub fn iterAll(it: fn() -> option<int>, pred: fn(int) -> bool) -> bool {
+  let mut all_hold = true;
+  let mut keep_going = true;
+  while keep_going && all_hold {
+    let o = it();
+    match o {
+      Option::Some(x) => {
+        if !pred(x) {
+          all_hold = false;
+        };
+      },
+      Option::None => { keep_going = false; },
+    };
+  }
+  all_hold
+}
+
+//----------------------------------------------------------------------------
+// iterFind — first element satisfying pred, or None.
+//----------------------------------------------------------------------------
+pub fn iterFind(it: fn() -> option<int>, pred: fn(int) -> bool) -> option<int> {
+  let mut result = none();
+  let mut keep_going = true;
+  while keep_going && !is_some(result) {
+    let o = it();
+    match o {
+      Option::Some(x) => {
+        if pred(x) {
+          result = some(x);
+        };
+      },
+      Option::None => { keep_going = false; },
+    };
+  }
+  result
+}
+
+//----------------------------------------------------------------------------
+// iterForEach — call f on each element. Returns unit.
+//----------------------------------------------------------------------------
+pub fn iterForEach(it: fn() -> option<int>, f: fn(int) -> unit) -> unit {
+  let mut keep_going = true;
+  while keep_going {
+    let o = it();
+    match o {
+      Option::Some(x) => f(x),
+      Option::None => { keep_going = false; },
+    };
+  }
+  ()
+}
+
+//----------------------------------------------------------------------------
+// iterZip — combine two iterators element-wise into (a + b) (since element
+// type is int — use iterMap to decode if you need a tuple).
+//----------------------------------------------------------------------------
+pub fn iterZip(a: fn() -> option<int>, b: fn() -> option<int>) -> fn() -> option<int> {
+  fn() -> option<int> {
+    let oa = a();
+    let ob = b();
+    match oa {
+      Option::Some(x) => {
+        match ob {
+          Option::Some(y) => some(x + y),
+          Option::None => none(),
+        }
+      },
+      Option::None => none(),
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// iterChain — concatenate two iterators: yields all of a, then all of b.
+//----------------------------------------------------------------------------
+pub fn iterChain(a: fn() -> option<int>, b: fn() -> option<int>) -> fn() -> option<int> {
+  let mut first_done = false;
+  fn() -> option<int> {
+    if !first_done {
+      let o = a();
+      match o {
+        Option::Some(x) => some(x),
+        Option::None => {
+          first_done = true;
+          b()
+        },
+      }
+    } else {
+      b()
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// iterEnumerate — yield (index * 1_000_000 + value) so the caller can
+// recover both pieces via integer division/mod. (Single int channel.)
+//----------------------------------------------------------------------------
+pub fn iterEnumerate(it: fn() -> option<int>) -> fn() -> option<int> {
+  let mut idx = 0;
+  fn() -> option<int> {
+    let o = it();
+    match o {
+      Option::Some(x) => {
+        let encoded = idx * 1000000 + x;
+        idx = idx + 1;
+        some(encoded)
+      },
+      Option::None => none(),
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// iterCycle — repeat an iterator infinitely. Materializes the source into
+// an array first (iterators are one-shot in our model), then replays it.
+//----------------------------------------------------------------------------
+pub fn iterCycle(it: fn() -> option<int>) -> fn() -> option<int> {
+  let buf = iterCollect(it);
+  let n = len(buf);
+  let mut i = 0;
+  fn() -> option<int> {
+    if n == 0 {
+      none()
+    } else {
+      let v = buf[i];
+      i = (i + 1) % n;
+      some(v)
+    }
+  }
+}

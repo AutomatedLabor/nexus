@@ -477,6 +477,10 @@ function flatExpr(e: Expr): string | null {
       if (inner === null) return null;
       return "return " + inner;
     }
+    // v3-borrow (RFC-004): references / move are non-flat by default so the
+    // formatter falls back to multi-line printing through `printExpr`.
+    case "Borrow": case "Deref": case "Move":
+      return null;
   }
 }
 
@@ -1085,6 +1089,20 @@ class Printer {
       case "Return":
         this.emit("return");
         if (e.expr) { this.emit(" "); this.printExpr(e.expr, 0); }
+        return;
+      // v3-borrow (RFC-004): reference / move syntax.
+      case "Borrow":
+        this.emit("&");
+        if (e.mutable) this.emit("mut ");
+        this.printExpr(e.operand, UNARY_PREC);
+        return;
+      case "Deref":
+        this.emit("*");
+        this.printExpr(e.operand, UNARY_PREC);
+        return;
+      case "Move":
+        this.emit("move ");
+        this.printExpr(e.operand, UNARY_PREC);
         return;
     }
   }

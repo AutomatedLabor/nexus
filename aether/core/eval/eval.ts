@@ -808,6 +808,15 @@ class Evaluator {
         const v = e.expr ? this.eval(e.expr, env) : null;
         throw new ReturnSignal(v);
       }
+      // v3-borrow (RFC-004): references and `move` are static-analysis-only
+      // in v1 (GC) mode. At runtime we treat them as identity pass-throughs —
+      // the value is shared, not copied or moved — and the borrow checker
+      // enforces the rules statically. This keeps v1 GC programs that opt
+      // into `&`/`&mut` syntax working without behaviour change.
+      case "Borrow":
+      case "Deref":
+      case "Move":
+        return this.eval(e.operand, env);
     }
   }
 

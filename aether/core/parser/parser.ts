@@ -977,6 +977,32 @@ class Parser {
       const operand = this.parseUnary(allowStruct);
       return { kind: "Unary", loc: this.locFrom(t.loc), op, operand };
     }
+    // v3-borrow: `&x` or `&mut x` — borrow expression.
+    if (t.kind === "Punct" && t.value === "&") {
+      const start = t.loc;
+      this.advance();
+      let mutable = false;
+      if (this.isKeyword("mut")) {
+        this.advance();
+        mutable = true;
+      }
+      const operand = this.parseUnary(allowStruct);
+      return { kind: "Borrow", loc: this.locFrom(start), operand, mutable };
+    }
+    // v3-borrow: `*r` — dereference.
+    if (t.kind === "Punct" && t.value === "*") {
+      const start = t.loc;
+      this.advance();
+      const operand = this.parseUnary(allowStruct);
+      return { kind: "Deref", loc: this.locFrom(start), operand };
+    }
+    // v3-borrow: `move x` — explicit move.
+    if (t.kind === "Keyword" && t.value === "move") {
+      const start = t.loc;
+      this.advance();
+      const operand = this.parseUnary(allowStruct);
+      return { kind: "Move", loc: this.locFrom(start), operand };
+    }
     return this.parsePostfix(undefined, allowStruct);
   }
 
@@ -1437,9 +1463,26 @@ class Parser {
         this.expectPunct("}");
         return { kind: "MapExpr", loc: this.locFrom(start), entries };
       }
-      // It's a block. firstExpr is either ExprStmt or trailing.
+      // It's a block. firstExpr is either ExprStmt, AssignStmt, or trailing.
       const stmts: Stmt[] = [];
-      if (this.isPunct(";")) {
+      // v3-borrow-quirk: handle `Ident = value;` (or `target = value;`) as
+      // an AssignStmt when the brace-expr is in expression position (e.g.
+      // a match arm body or a parenthesized block). Previously this only
+      // worked in function-body blocks (parseBlock), not expression-position
+      // blocks — which made `{ r = 5; r }` inside a match arm fail with
+      // "expected ';' or '}' in block". Now both paths support assignments.
+      if (this.isPunct("=") || this.isPunct("+=") || this.isPunct("-=") ||
+          this.isPunct("*=") || this.isPunct("/=") || this.isPunct("%=")) {
+        const op = this.advance().value;
+        const value = this.parseExpr();
+        this.expectPunct(";");
+        if (op === "=") {
+          stmts.push({ kind: "AssignStmt", loc: this.locFrom(start), target: firstExpr, value });
+        } else {
+          stmts.push({ kind: "AssignStmt", loc: this.locFrom(start), target: firstExpr,
+            value: { kind: "CompoundAssign", loc: this.locFrom(start), op: op[0], target: firstExpr, value } });
+        }
+      } else if (this.isPunct(";")) {
         this.advance();
         if (isAssignmentExpr(firstExpr)) {
           stmts.push({ kind: "AssignStmt", loc: firstExpr.loc, target: (firstExpr as any).target, value: (firstExpr as any).value });
@@ -1463,7 +1506,20 @@ class Parser {
           continue;
         }
         const e = this.parseExpr();
-        if (this.isPunct(";")) {
+        // v3-borrow-quirk: support `target = value;` (and `target += value;`)
+        // in expression-position blocks (e.g. match arm bodies).
+        if (this.isPunct("=") || this.isPunct("+=") || this.isPunct("-=") ||
+            this.isPunct("*=") || this.isPunct("/=") || this.isPunct("%=")) {
+          const op = this.advance().value;
+          const value = this.parseExpr();
+          this.expectPunct(";");
+          if (op === "=") {
+            stmts.push({ kind: "AssignStmt", loc: this.locFrom(start), target: e, value });
+          } else {
+            stmts.push({ kind: "AssignStmt", loc: this.locFrom(start), target: e,
+              value: { kind: "CompoundAssign", loc: this.locFrom(start), op: op[0], target: e, value } });
+          }
+        } else if (this.isPunct(";")) {
           this.advance();
           if (isAssignmentExpr(e)) {
             stmts.push({ kind: "AssignStmt", loc: e.loc, target: (e as any).target, value: (e as any).value });
@@ -1494,7 +1550,20 @@ class Parser {
         continue;
       }
       const e = this.parseExpr();
-      if (this.isPunct(";")) {
+      // v3-borrow-quirk: support `target = value;` (and `target += value;`)
+      // in expression-position blocks (e.g. match arm bodies).
+      if (this.isPunct("=") || this.isPunct("+=") || this.isPunct("-=") ||
+          this.isPunct("*=") || this.isPunct("/=") || this.isPunct("%=")) {
+        const op = this.advance().value;
+        const value = this.parseExpr();
+        this.expectPunct(";");
+        if (op === "=") {
+          stmts.push({ kind: "AssignStmt", loc: this.locFrom(start), target: e, value });
+        } else {
+          stmts.push({ kind: "AssignStmt", loc: this.locFrom(start), target: e,
+            value: { kind: "CompoundAssign", loc: this.locFrom(start), op: op[0], target: e, value } });
+        }
+      } else if (this.isPunct(";")) {
         this.advance();
         if (isAssignmentExpr(e)) {
           stmts.push({ kind: "AssignStmt", loc: e.loc, target: (e as any).target, value: (e as any).value });

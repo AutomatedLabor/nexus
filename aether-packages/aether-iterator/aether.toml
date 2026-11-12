@@ -1,0 +1,12 @@
+[package]
+name = "aether-iterator"
+version = "0.1.0"
+description = "Lazy iterator combinators for Aether — 18 pub functions: iterFrom, iterMap, iterFilter, iterTake, iterDrop, iterFold, iterCollect, iterCount, iterAny, iterAll, iterFind, iterForEach, iterZip, iterChain, iterRange, iterRepeat, iterEnumerate, iterCycle. Iterators are closures fn() -> option<int>; combinators build new closures; iterCollect materializes."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — uses Aether's core builtins (push, len,
+# reduce, Option::Some / Option::None, match).
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

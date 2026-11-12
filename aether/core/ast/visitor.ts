@@ -364,6 +364,19 @@ function printNode(node: Node | null | undefined, ctx: Ctx): void {
       push(ctx, "...");
       printNode(node.expr, ctx);
       return;
+    case "Borrow":
+      push(ctx, "&");
+      if (node.mutable) push(ctx, "mut ");
+      printNode(node.operand, ctx);
+      return;
+    case "Deref":
+      push(ctx, "*");
+      printNode(node.operand, ctx);
+      return;
+    case "Move":
+      push(ctx, "move ");
+      printNode(node.operand, ctx);
+      return;
 
     // -- Statements --
     case "Let":

@@ -300,6 +300,12 @@ function analyzeScopes(program: Program): Binding[] {
       case "Return":
         if (e.expr) visitExpr(e.expr);
         return;
+      // v3-borrow (RFC-004): recurse into the operand so usage counts work.
+      case "Borrow":
+      case "Deref":
+      case "Move":
+        visitExpr(e.operand);
+        return;
       case "SelfExpr": case "IntLit": case "FloatLit":
       case "BoolLit": case "CharLit": case "UnitLit": case "StringLit":
         return;
@@ -522,6 +528,8 @@ function detectShadowing(program: Program): Array<{ binding: Binding; shadowed: 
       case "ErrorProp": visitExpr(e.expr); return;
       case "Spread": visitExpr(e.expr); return;
       case "Return": if (e.expr) visitExpr(e.expr); return;
+      // v3-borrow (RFC-004)
+      case "Borrow": case "Deref": case "Move": visitExpr(e.operand); return;
       case "SelfExpr": case "IntLit": case "FloatLit":
       case "BoolLit": case "CharLit": case "UnitLit": case "StringLit":
       case "Ident": return;

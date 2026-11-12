@@ -65,6 +65,8 @@ const KEYWORDS = new Set<string>([
   "or", "do",
   // v3: trait / impl / dyn
   "trait", "impl", "dyn",
+  // v3-borrow: move expression (RFC-004)
+  "move",
 ]);
 
 const PUNCT = [

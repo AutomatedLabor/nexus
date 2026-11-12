@@ -198,7 +198,11 @@ export type Expr =
   | TupleField
   | SelfExpr
   | Spread
-  | Return;
+  | Return
+  // v3-borrow: reference / move expressions
+  | Borrow
+  | Deref
+  | Move;
 
 export interface IntLit { kind: "IntLit"; loc: SourceLocation; value: number; }
 export interface FloatLit { kind: "FloatLit"; loc: SourceLocation; value: number; }
@@ -242,6 +246,21 @@ export interface ErrorProp { kind: "ErrorProp"; loc: SourceLocation; expr: Expr;
 export interface TupleField { kind: "TupleField"; loc: SourceLocation; object: Expr; index: number; }
 export interface SelfExpr { kind: "SelfExpr"; loc: SourceLocation; }
 export interface Spread { kind: "Spread"; loc: SourceLocation; expr: Expr; }
+/**
+ * v3-borrow: `&x` or `&mut x` — a borrow expression. `mutable: true` for
+ * `&mut x`. The operand must be a "place expression" (Ident, Index, Field).
+ * Borrowed by the borrow checker (RFC-004); at runtime in v1 GC mode this
+ * is an identity pass-through (the value is shared by reference).
+ */
+export interface Borrow { kind: "Borrow"; loc: SourceLocation; operand: Expr; mutable: boolean; }
+/** v3-borrow: `*r` — dereference a reference. Identity at runtime in v1 GC. */
+export interface Deref { kind: "Deref"; loc: SourceLocation; operand: Expr; }
+/**
+ * v3-borrow: `move x` — explicitly move an owned value into the surrounding
+ * expression (e.g. `consume(move x)`). Borrow checker treats this as a move
+ * site (x is moved). Runtime: identity pass-through.
+ */
+export interface Move { kind: "Move"; loc: SourceLocation; operand: Expr; }
 
 //-----------------------------------------------------------------------------
 // STATEMENTS
@@ -459,6 +478,8 @@ const EXPR_KINDS = new Set<string>([
   "MethodCall", "TupleExpr", "ArrayExpr", "MapExpr", "StructExpr", "EnumVariant",
   "Lambda", "If", "Match", "Block", "Paren", "Cast", "Range", "As", "ErrorProp",
   "TupleField", "SelfExpr", "Spread", "Return",
+  // v3-borrow
+  "Borrow", "Deref", "Move",
 ]);
 
 const STMT_KINDS = new Set<string>([

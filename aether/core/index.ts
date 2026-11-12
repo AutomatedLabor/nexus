@@ -47,6 +47,10 @@ export type { Instr, BytecodeFunc, Constant } from "../vm/bytecode/bytecode";
 export { compileIrToWasm, emitWasmText, emitWasmBinary, compileAndRunWasm, createHost, createWasmImports } from "../vm/wasm/wasm";
 export type { WasmModule, WasmFunc, WasmInstr, WasmValType, WasmHost, WasmRunResult } from "../vm/wasm/wasm";
 
+// --- v3: x86-64 native backend ---
+export { compileIrToX86, emitAsm, emitElfStub, compileAndRunNative } from "../vm/x86/x86";
+export type { X86Module, X86Func, X86Instr, X86Operand, CondCode, X86RunResult } from "../vm/x86/x86";
+
 export interface CompileResult {
   /** Lexed tokens (empty if lexer hit a fatal error). */
   tokens: Token[];

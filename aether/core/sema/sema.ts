@@ -993,6 +993,17 @@ export class Checker {
         this.setType(e, t);
         return t;
       }
+      // v3-borrow (RFC-004): references and move are static-analysis-only.
+      // Sema infers the operand's type and reports it as the expression's
+      // type; the actual borrow rules are enforced by the standalone borrow
+      // checker (`aether/core/borrow/borrow.ts`), which is opt-in.
+      case "Borrow":
+      case "Deref":
+      case "Move": {
+        const t = this.infer(e.operand);
+        this.setType(e, t);
+        return t;
+      }
     }
   }
 
@@ -1745,9 +1756,34 @@ export class Checker {
 //----------------------------------------------------------------------------
 // Public entry point
 //----------------------------------------------------------------------------
-export function check(program: Program): CheckResult {
+
+/**
+ * Optional flags for `check()`.
+ *
+ * `borrowCheck: true` enables the RFC-004 borrow checker pass
+ * (`aether/core/borrow/borrow.ts`). The pass runs after the standard type
+ * check and appends any borrow errors to `CheckResult.errors`. Defaults to
+ * `false` so existing v1 (GC) programs are unaffected — the borrow checker
+ * is opt-in (RFC-004 § Opt-in semantics).
+ */
+export interface CheckOptions {
+  borrowCheck?: boolean;
+}
+
+export function check(program: Program, opts?: CheckOptions): CheckResult {
   const c = new Checker();
-  return c.check(program);
+  const r = c.check(program);
+  // v3-borrow (RFC-004): opt-in borrow checker. Only run when the caller
+  // explicitly asks for it; otherwise existing v1 tests stay unaffected.
+  if (opts?.borrowCheck) {
+    // Lazy-import to avoid a circular dep at module-load time.
+    const { BorrowChecker } = require("../borrow/borrow");
+    const borrowErrors = new BorrowChecker().check(program);
+    for (const e of borrowErrors) {
+      r.errors.push({ message: e.message, loc: e.loc });
+    }
+  }
+  return r;
 }
 
 //----------------------------------------------------------------------------

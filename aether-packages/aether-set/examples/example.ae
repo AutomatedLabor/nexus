@@ -1,0 +1,44 @@
+// aether-set/examples/example.ae
+// ===============================
+import {
+  new, from_arr, add, remove, has, size, to_array, union, intersect,
+  difference, sym_diff, subset, superset, disjoint, equal, map, filter,
+  fold, any, all, to_string,
+} from "../src/lib.ae";
+
+print("== aether-set example ==");
+print("");
+
+let s1 = from_arr([1, 2, 3, 4, 5]);
+let s2 = from_arr([4, 5, 6, 7, 8]);
+print(f"s1 = {to_string(s1)}");
+print(f"s2 = {to_string(s2)}");
+print(f"union(s1, s2)        = {to_string(union(s1, s2))}");
+print(f"intersect(s1, s2)    = {to_string(intersect(s1, s2))}");
+print(f"difference(s1, s2)   = {to_string(difference(s1, s2))}");
+print(f"sym_diff(s1, s2)     = {to_string(sym_diff(s1, s2))}");
+
+print(f"add(s1, 6)           = {to_string(add(s1, 6))}");
+print(f"remove(s1, 3)        = {to_string(remove(s1, 3))}");
+print(f"has(s1, 3)           = {has(s1, 3)}");
+print(f"has(s1, 99)          = {has(s1, 99)}");
+print(f"size(s1)             = {size(s1)}");
+
+let s3 = from_arr([1, 2, 3]);
+let s4 = from_arr([1, 2, 3, 4]);
+print(f"subset({to_string(s3)}, {to_string(s4)}) = {subset(s3, s4)}");
+print(f"superset({to_string(s4)}, {to_string(s3)}) = {superset(s4, s3)}");
+print(f"disjoint(s1, from_arr([100, 200])) = {disjoint(s1, from_arr([100, 200]))}");
+print(f"equal(s1, from_arr([5, 4, 3, 2, 1])) = {equal(s1, from_arr([5, 4, 3, 2, 1]))}");
+
+let squared = map(s1, fn(x: int) -> int { x * x });
+print(f"map(s1, sq)          = {to_string(squared)}");
+let evens = filter(s1, fn(x: int) -> bool { x % 2 == 0 });
+print(f"filter(s1, even)     = {to_string(evens)}");
+let total = fold(s1, 0, fn(a: int, b: int) -> int { a + b });
+print(f"fold(s1, 0, +)       = {total}");
+print(f"any(s1, gt4)         = {any(s1, fn(x: int) -> bool { x > 4 })}");
+print(f"all(s1, pos)         = {all(s1, fn(x: int) -> bool { x > 0 })}");
+
+print("");
+print("All demos ran successfully.");

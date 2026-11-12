@@ -1,0 +1,71 @@
+// aether-iterator/examples/example.ae
+// =====================================
+// A demo of the aether-iterator package: builds a few iterator pipelines
+// and prints the collected results.
+import {
+  iterFrom, iterMap, iterFilter, iterTake, iterDrop, iterFold, iterCollect,
+  iterCount, iterAny, iterAll, iterFind, iterForEach, iterZip, iterChain,
+  iterRange, iterRepeat, iterEnumerate, iterCycle, unwrap_or,
+} from "../src/lib.ae";
+
+fn show(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== aether-iterator example ==");
+print("");
+
+let xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+print(f"xs              = {show(xs)}");
+
+let doubled = iterCollect(iterMap(iterFrom(xs), fn(x: int) -> int { x * 2 }));
+print(f"map(*2)         = {show(doubled)}");
+
+let evens = iterCollect(iterFilter(iterFrom(xs), fn(x: int) -> bool { x % 2 == 0 }));
+print(f"filter even     = {show(evens)}");
+
+let first3 = iterCollect(iterTake(iterFrom(xs), 3));
+print(f"take 3          = {show(first3)}");
+
+let after3 = iterCollect(iterDrop(iterFrom(xs), 3));
+print(f"drop 3          = {show(after3)}");
+
+let sum100 = iterFold(iterRange(1, 101), 0, fn(a: int, b: int) -> int { a + b });
+print(f"sum 1..100      = {sum100}");
+
+let count_evens = iterCount(iterFilter(iterFrom(xs), fn(x: int) -> bool { x % 2 == 0 }));
+print(f"count evens     = {count_evens}");
+
+let any_gt5 = iterAny(iterFrom(xs), fn(x: int) -> bool { x > 5 });
+print(f"any > 5         = {any_gt5}");
+
+let all_pos = iterAll(iterFrom(xs), fn(x: int) -> bool { x > 0 });
+print(f"all > 0         = {all_pos}");
+
+let found = iterFind(iterFrom(xs), fn(x: int) -> bool { x == 7 });
+print(f"find 7          = {unwrap_or(found, -1)}");
+
+let mut total = 0;
+iterForEach(iterFrom(xs), fn(x: int) -> unit { total = total + x; });
+print(f"forEach sum     = {total}");
+
+let zipped = iterCollect(iterZip(iterFrom([1, 2, 3]), iterFrom([10, 20, 30])));
+print(f"zip add         = {show(zipped)}");
+
+let chained = iterCollect(iterChain(iterFrom([1, 2]), iterFrom([3, 4])));
+print(f"chain           = {show(chained)}");
+
+let rep5 = iterCollect(iterTake(iterRepeat(42), 5));
+print(f"repeat 42 x5    = {show(rep5)}");
+
+let cyc = iterCollect(iterTake(iterCycle(iterFrom([1, 2, 3])), 7));
+print(f"cycle [1,2,3]x7= {show(cyc)}");
+
+let chained2 = iterCollect(iterTake(iterMap(iterFilter(iterRange(0, 20), fn(x: int) -> bool { x % 2 == 0 }), fn(x: int) -> int { x + 1 }), 5));
+print(f"evens+1 take5   = {show(chained2)}");
+
+print("");
+print("All demos ran successfully.");
