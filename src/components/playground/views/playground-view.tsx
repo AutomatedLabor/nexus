@@ -9,7 +9,6 @@ import {
   FileCode2,
   AlertTriangle,
   CheckCircle2,
-  ArrowRightLeft,
   ListTree,
   Braces,
   Clock,
@@ -18,6 +17,8 @@ import {
   Zap,
   ScanLine,
   Wand2,
+  Sparkles,
+  Boxes,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -34,11 +35,35 @@ import { Badge } from "@/components/ui/badge";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 import { useViewStore } from "@/lib/view-store";
 import { runAether, formatValue } from "@/lib/aether-worker";
-import type { CompileResult } from "@aether/core";
-import { compileToVm, type CompileVmResult } from "@aether/core";
+import type { CompileResult, Value, Program, Token } from "@aether/core";
+import {
+  compileToVm,
+  type CompileVmResult,
+  compileAndRunWasm,
+  compileAndRunNative,
+  compileIrToWasm,
+  compileIrToX86,
+  emitWasmText,
+  emitAsm,
+  lowerToIr,
+  lexWithErrors,
+  parse,
+  type WasmModule,
+  type X86Module,
+  type WasmRunResult,
+  type X86RunResult,
+} from "@aether/core";
 import { disassemble } from "@aether/vm/bytecode/bytecode";
 import { format } from "@aether/tools/formatter/formatter";
 import { lint, type LintDiagnostic, type Severity } from "@aether/tools/linter/linter";
@@ -53,10 +78,17 @@ interface ExampleEntry {
   size: number;
 }
 
-type RuntimeMode = "tree-walker" | "bytecode";
+/** All four runtime backends exposed in the playground. */
+type RuntimeMode = "tree-walker" | "bytecode" | "wasm" | "x86";
 
 const MODE_STORAGE_KEY = "aether.playground.runtimeMode";
 const LINT_ON_RUN_KEY = "aether.playground.lintOnRun";
+
+const ALL_MODES: RuntimeMode[] = ["tree-walker", "bytecode", "wasm", "x86"];
+
+function isMode(v: unknown): v is RuntimeMode {
+  return v === "tree-walker" || v === "bytecode" || v === "wasm" || v === "x86";
+}
 
 interface RunState {
   status: "idle" | "running" | "ok" | "error";
@@ -66,8 +98,24 @@ interface RunState {
   result: CompileResult | null;
   /** VM result (active when mode === "bytecode"). */
   vmResult: CompileVmResult | null;
-  /** Bytecode disassembly text (VM mode only). */
+  /** Bytecode disassembly text (bytecode mode only). */
   bytecodeText: string | null;
+  /** WASM disassembly text (wasm mode only). */
+  wasmText: string | null;
+  /** WASM module (wasm mode only). */
+  wasmModule: WasmModule | null;
+  /** WASM run result (wasm mode only). */
+  wasmResult: WasmRunResult | null;
+  /** x86 disassembly text (x86 mode only). */
+  x86Text: string | null;
+  /** x86 module (x86 mode only). */
+  x86Module: X86Module | null;
+  /** x86 run result (x86 mode only). */
+  x86Result: X86RunResult | null;
+  /** AST + tokens — populated in all modes via lex+parse, so the AST/Tokens
+   *  tabs work even when the runtime backend doesn't surface them. */
+  ast: Program | null;
+  tokens: Token[] | null;
   /** Flattened errors for the Errors tab — built from whichever mode ran. */
   errors: Array<{ stage: "lex" | "parse" | "type" | "runtime"; message: string }>;
   lastRunAt: number | null;
@@ -81,6 +129,14 @@ const INITIAL_RUN_STATE: RunState = {
   result: null,
   vmResult: null,
   bytecodeText: null,
+  wasmText: null,
+  wasmModule: null,
+  wasmResult: null,
+  x86Text: null,
+  x86Module: null,
+  x86Result: null,
+  ast: null,
+  tokens: null,
   errors: [],
   lastRunAt: null,
   mode: "tree-walker",
@@ -91,11 +147,27 @@ interface LintState {
   ranAt: number | null;
 }
 
+interface AsyncDemoState {
+  open: boolean;
+  running: boolean;
+  source: string | null;
+  output: string[];
+  error: string | null;
+}
+
+const INITIAL_ASYNC_DEMO: AsyncDemoState = {
+  open: false,
+  running: false,
+  source: null,
+  output: [],
+  error: null,
+};
+
 function readMode(): RuntimeMode {
   if (typeof window === "undefined") return "tree-walker";
   try {
     const v = window.localStorage.getItem(MODE_STORAGE_KEY);
-    return v === "bytecode" ? "bytecode" : "tree-walker";
+    return isMode(v) ? v : "tree-walker";
   } catch {
     return "tree-walker";
   }
@@ -112,16 +184,133 @@ function readLintOnRun(): boolean {
 }
 
 /**
+ * Lex + parse the source and return the AST + tokens, swallowing errors.
+ * Used to populate the AST/Tokens tabs in wasm/x86 mode (whose native
+ * backends don't return the AST).
+ */
+function quickParse(src: string): { ast: Program | null; tokens: Token[] | null } {
+  try {
+    const { tokens, errors: lexErrs } = lexWithErrors(src, "<aether>");
+    if (lexErrs.length > 0) return { ast: null, tokens };
+    const { program } = parse(tokens, "<aether>");
+    return { ast: program, tokens };
+  } catch {
+    return { ast: null, tokens: null };
+  }
+}
+
+/** Compile a source string to a WASM module and produce the wasm-text
+ *  disassembly. Returns both the module (for stats) and the text (for the
+ *  WASM tab). Throws on lex/parse/lower/compile failure. */
+function compileWasmForDisplay(src: string): { module: WasmModule; text: string } {
+  const { tokens, errors: lexErrs } = lexWithErrors(src, "<aether>");
+  if (lexErrs.length > 0) throw new Error(lexErrs[0].message);
+  const { program, errors: parseErrs } = parse(tokens, "<aether>");
+  if (parseErrs.length > 0 && program.body.length === 0) {
+    throw new Error(parseErrs[0].message);
+  }
+  const ir = lowerToIr(program);
+  const wasmModule = compileIrToWasm(ir);
+  const text = emitWasmText(wasmModule);
+  return { module: wasmModule, text };
+}
+
+/** Same as above for the x86 backend. */
+function compileX86ForDisplay(src: string): { module: X86Module; text: string } {
+  const { tokens, errors: lexErrs } = lexWithErrors(src, "<aether>");
+  if (lexErrs.length > 0) throw new Error(lexErrs[0].message);
+  const { program, errors: parseErrs } = parse(tokens, "<aether>");
+  if (parseErrs.length > 0 && program.body.length === 0) {
+    throw new Error(parseErrs[0].message);
+  }
+  const ir = lowerToIr(program);
+  const x86Module = compileIrToX86(ir);
+  const text = emitAsm(x86Module);
+  return { module: x86Module, text };
+}
+
+/** Aether source for the v3 async coroutine demo. Uses the real v3
+ *  CoroutineScheduler builtins (spawn / channel / send_ch / recv / join)
+ *  wired into the tree-walker via registerCoroutineBuiltins. */
+const ASYNC_DEMO_SOURCE = `// v3 async coroutine demo.
+// Real CoroutineScheduler builtins: spawn / channel / send_ch / recv / join.
+// Drives a producer + consumer through a buffered channel — fully
+// synchronous from the Aether caller's perspective; the scheduler
+// interleaves the coroutines underneath.
+
+let ch = channel(0);
+print("[main] channel created (capacity 0 = unbounded)");
+
+let producer = spawn(fn() -> int {
+  print("[producer] sending 1, 2, 3...");
+  send_ch(ch, 1);
+  send_ch(ch, 2);
+  send_ch(ch, 3);
+  print("[producer] done sending");
+  0
+});
+print("[main] producer spawned");
+
+let consumer = spawn(fn() -> int {
+  print("[consumer] awaiting values...");
+  let mut sum = 0;
+  let mut i = 0;
+  while i < 3 {
+    let v = recv(ch);
+    print("[consumer] received " + str(v));
+    sum = sum + v;
+    i = i + 1;
+  };
+  print("[consumer] sum = " + str(sum));
+  sum
+});
+print("[main] consumer spawned");
+
+let results = join([producer, consumer]);
+print("[main] join resolved: producer -> " + str(results[0]) + ", consumer -> " + str(results[1]));
+print("[main] demo complete.");`;
+
+/**
+ * Run the v3 async coroutine demo — real Aether execution in the
+ * browser. The demo source uses the v3 `CoroutineScheduler` builtins
+ * (`spawn`, `channel`, `send_ch`, `recv`, `join`) registered into the
+ * tree-walker via `registerCoroutineBuiltins`. Returns the runtime
+ * output (the program's `print` lines) plus the source for display.
+ *
+ * The sema (type checker) doesn't know about the coroutine builtins, so
+ * it reports a few "undefined name" warnings — these don't block
+ * execution (the playground's tree-walker is lenient), and we surface
+ * only the real program output to the dialog.
+ */
+async function runAsyncDemo(): Promise<{ source: string; output: string[]; error: string | null }> {
+  const out: string[] = [];
+  let runtimeError: string | null = null;
+  try {
+    const handle = await runAether(ASYNC_DEMO_SOURCE, {
+      maxSteps: 5_000_000,
+      onOutput: (line) => out.push(line),
+    });
+    if (handle.result.runtime?.error) {
+      runtimeError = handle.result.runtime.error.message;
+    }
+  } catch (e) {
+    runtimeError = (e as Error).message;
+  }
+  return { source: ASYNC_DEMO_SOURCE, output: out, error: runtimeError };
+}
+
+/**
  * PlaygroundView — the main interactive view of the Aether playground.
  *
  * Layout:
- *   toolbar (Run | Format | Lint | Clear | Runtime mode | Load Example | Share)
+ *   toolbar (Run | Format | Lint | Clear | Runtime mode | Load Example | Share | Async demo)
  *   ┌─ editor ──────┬─ output panel ──┐
  *   │  textarea     │  Tabs:         │
  *   │  + gutter     │  Output / AST  │
  *   │               │  / Tokens /    │
  *   │               │  Errors / Stats│
  *   │               │  / Bytecode /  │
+ *   │               │  WASM / x86 /  │
  *   │               │  Lint          │
  *   └───────────────┴────────────────┘
  *
@@ -143,17 +332,22 @@ export function PlaygroundView() {
   const [examplesLoading, setExamplesLoading] = React.useState(true);
   const [mode, setMode] = React.useState<RuntimeMode>(() => readMode());
   const [lintOnRun, setLintOnRun] = React.useState<boolean>(() => readLintOnRun());
+  const [asyncDemo, setAsyncDemo] = React.useState<AsyncDemoState>(INITIAL_ASYNC_DEMO);
 
   // Persist mode + lint toggle.
   React.useEffect(() => {
     try {
       window.localStorage.setItem(MODE_STORAGE_KEY, mode);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, [mode]);
   React.useEffect(() => {
     try {
       window.localStorage.setItem(LINT_ON_RUN_KEY, lintOnRun ? "1" : "0");
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, [lintOnRun]);
 
   // Run lint on the given source. Cheap and synchronous; never throws the
@@ -172,7 +366,11 @@ export function PlaygroundView() {
             message: "linter crashed: " + (e as Error).message,
             line: 1,
             col: 1,
-            loc: { file: "<synthetic>", start: { line: 1, col: 1, offset: 0 }, end: { line: 1, col: 1, offset: 0 } },
+            loc: {
+              file: "<synthetic>",
+              start: { line: 1, col: 1, offset: 0 },
+              end: { line: 1, col: 1, offset: 0 },
+            },
           },
         ],
         ranAt: Date.now(),
@@ -183,6 +381,8 @@ export function PlaygroundView() {
   // Compile + run the given source. Branches on the runtime mode:
   //   tree-walker → runAether (compileAndRun)
   //   bytecode    → compileToVm + disassemble
+  //   wasm        → compileWasmForDisplay (sync) + compileAndRunWasm (async)
+  //   x86         → compileX86ForDisplay + compileAndRunNative (sync)
   const runCode = React.useCallback(
     async (src?: string) => {
       const codeToRun = src ?? editorCode;
@@ -193,12 +393,21 @@ export function PlaygroundView() {
         result: null,
         vmResult: null,
         bytecodeText: null,
+        wasmText: null,
+        wasmModule: null,
+        wasmResult: null,
+        x86Text: null,
+        x86Module: null,
+        x86Result: null,
+        ast: null,
+        tokens: null,
         errors: [],
         lastRunAt: Date.now(),
         mode,
       }));
       const start =
         typeof performance !== "undefined" ? performance.now() : Date.now();
+
       if (mode === "tree-walker") {
         const out: string[] = [];
         const handle = await runAether(codeToRun, {
@@ -216,12 +425,19 @@ export function PlaygroundView() {
           result: handle.result,
           vmResult: null,
           bytecodeText: null,
+          wasmText: null,
+          wasmModule: null,
+          wasmResult: null,
+          x86Text: null,
+          x86Module: null,
+          x86Result: null,
+          ast: handle.result.ast,
+          tokens: handle.result.tokens,
           errors: handle.result.errors,
           lastRunAt: Date.now(),
           mode,
         });
-      } else {
-        // Bytecode VM mode.
+      } else if (mode === "bytecode") {
         const out: string[] = [];
         let vmResult: CompileVmResult;
         try {
@@ -239,6 +455,14 @@ export function PlaygroundView() {
             result: null,
             vmResult: null,
             bytecodeText: null,
+            wasmText: null,
+            wasmModule: null,
+            wasmResult: null,
+            x86Text: null,
+            x86Module: null,
+            x86Result: null,
+            ast: null,
+            tokens: null,
             errors: [
               {
                 stage: "runtime",
@@ -268,7 +492,10 @@ export function PlaygroundView() {
           errors.push({ stage: "type", message: te.message });
         }
         if (vmResult.runtime?.error) {
-          errors.push({ stage: "runtime", message: vmResult.runtime.error.message });
+          errors.push({
+            stage: "runtime",
+            message: vmResult.runtime.error.message,
+          });
         }
         setRun({
           status: vmResult.ok ? "ok" : "error",
@@ -277,6 +504,131 @@ export function PlaygroundView() {
           result: null,
           vmResult,
           bytecodeText,
+          wasmText: null,
+          wasmModule: null,
+          wasmResult: null,
+          x86Text: null,
+          x86Module: null,
+          x86Result: null,
+          ast: vmResult.ast,
+          tokens: vmResult.tokens,
+          errors,
+          lastRunAt: Date.now(),
+          mode,
+        });
+      } else if (mode === "wasm") {
+        // WASM mode: first compile for display (sync), then run (async).
+        const parsed = quickParse(codeToRun);
+        let wasmText: string | null = null;
+        let wasmModule: WasmModule | null = null;
+        let displayError: string | null = null;
+        try {
+          const { module, text } = compileWasmForDisplay(codeToRun);
+          wasmText = text;
+          wasmModule = module;
+        } catch (e) {
+          displayError = (e as Error).message;
+        }
+        // Stream an interim state so the user sees the disassembly appear.
+        setRun((r) => ({
+          ...r,
+          wasmText,
+          wasmModule,
+          ast: parsed.ast,
+          tokens: parsed.tokens,
+        }));
+
+        const out: string[] = [];
+        let wasmResult: WasmRunResult;
+        try {
+          wasmResult = await compileAndRunWasm(codeToRun, []);
+          // Stream the output lines as they appear (the WASM host doesn't
+          // support streaming, so we just push them all here).
+          for (const line of wasmResult.outputs) out.push(line);
+        } catch (e) {
+          wasmResult = {
+            output: null,
+            outputs: out,
+            error: (e as Error).message,
+          };
+        }
+        const end =
+          typeof performance !== "undefined" ? performance.now() : Date.now();
+        const errors: RunState["errors"] = [];
+        if (displayError) {
+          errors.push({ stage: "runtime", message: "wasm compile: " + displayError });
+        }
+        if (wasmResult.error) {
+          errors.push({ stage: "runtime", message: wasmResult.error });
+        }
+        setRun({
+          status: wasmResult.error || displayError ? "error" : "ok",
+          lastMs: end - start,
+          output: out,
+          result: null,
+          vmResult: null,
+          bytecodeText: null,
+          wasmText,
+          wasmModule,
+          wasmResult,
+          x86Text: null,
+          x86Module: null,
+          x86Result: null,
+          ast: parsed.ast,
+          tokens: parsed.tokens,
+          errors,
+          lastRunAt: Date.now(),
+          mode,
+        });
+      } else {
+        // x86 mode.
+        const parsed = quickParse(codeToRun);
+        let x86Text: string | null = null;
+        let x86Module: X86Module | null = null;
+        let displayError: string | null = null;
+        try {
+          const { module, text } = compileX86ForDisplay(codeToRun);
+          x86Text = text;
+          x86Module = module;
+        } catch (e) {
+          displayError = (e as Error).message;
+        }
+        const out: string[] = [];
+        let x86Result: X86RunResult;
+        try {
+          x86Result = compileAndRunNative(codeToRun, []);
+          for (const line of x86Result.outputs) out.push(line);
+        } catch (e) {
+          x86Result = {
+            output: null,
+            outputs: out,
+            error: (e as Error).message,
+          };
+        }
+        const end =
+          typeof performance !== "undefined" ? performance.now() : Date.now();
+        const errors: RunState["errors"] = [];
+        if (displayError) {
+          errors.push({ stage: "runtime", message: "x86 compile: " + displayError });
+        }
+        if (x86Result.error) {
+          errors.push({ stage: "runtime", message: x86Result.error });
+        }
+        setRun({
+          status: x86Result.error || displayError ? "error" : "ok",
+          lastMs: end - start,
+          output: out,
+          result: null,
+          vmResult: null,
+          bytecodeText: null,
+          wasmText: null,
+          wasmModule: null,
+          wasmResult: null,
+          x86Text,
+          x86Module,
+          x86Result,
+          ast: parsed.ast,
+          tokens: parsed.tokens,
           errors,
           lastRunAt: Date.now(),
           mode,
@@ -290,6 +642,35 @@ export function PlaygroundView() {
     },
     [editorCode, mode, lintOnRun, runLint],
   );
+
+  // Run the async coroutine demo (real Aether execution via the v3
+  // CoroutineScheduler builtins wired into the tree-walker).
+  const runAsyncDemoNow = React.useCallback(async () => {
+    setAsyncDemo((s) => ({
+      ...s,
+      open: true,
+      running: true,
+      source: null,
+      output: [],
+      error: null,
+    }));
+    try {
+      const result = await runAsyncDemo();
+      setAsyncDemo((s) => ({
+        ...s,
+        running: false,
+        source: result.source,
+        output: result.output,
+        error: result.error,
+      }));
+    } catch (e) {
+      setAsyncDemo((s) => ({
+        ...s,
+        running: false,
+        error: (e as Error).message,
+      }));
+    }
+  }, []);
 
   // Sync editor when a new example/share is loaded.
   React.useEffect(() => {
@@ -342,7 +723,7 @@ export function PlaygroundView() {
         // ignore
       }
     }
-  }, []);
+  }, [loadCode]);
 
   function clearAll() {
     setEditorCode("");
@@ -374,7 +755,8 @@ export function PlaygroundView() {
     if (typeof window === "undefined") return;
     try {
       const b64 = btoa(unescape(encodeURIComponent(editorCode)));
-      const url = window.location.origin + window.location.pathname + "#code=" + b64;
+      const url =
+        window.location.origin + window.location.pathname + "#code=" + b64;
       void navigator.clipboard?.writeText(url);
       window.history.replaceState(null, "", "#code=" + b64);
       toast.success("Share link copied to clipboard");
@@ -401,6 +783,7 @@ export function PlaygroundView() {
         onFormat={formatCode}
         onLint={lintCode}
         onShare={shareCode}
+        onAsyncDemo={runAsyncDemoNow}
         examples={examples}
         examplesLoading={examplesLoading}
         onExample={loadExample}
@@ -430,6 +813,11 @@ export function PlaygroundView() {
         <OutputPanel run={run} lint={lintState} />
       </div>
 
+      <AsyncDemoDialog
+        state={asyncDemo}
+        onClose={() => setAsyncDemo((s) => ({ ...s, open: false }))}
+      />
+
       {/* Hidden status relay — Header reads it from a shared store in v2. */}
       <span className="sr-only" aria-live="polite">
         Status: {run.status} · mode: {run.mode}
@@ -445,6 +833,7 @@ interface ToolbarProps {
   onFormat: () => void;
   onLint: () => void;
   onShare: () => void;
+  onAsyncDemo: () => void;
   examples: ExampleEntry[];
   examplesLoading: boolean;
   onExample: (slug: string) => void;
@@ -460,6 +849,7 @@ function Toolbar({
   onFormat,
   onLint,
   onShare,
+  onAsyncDemo,
   examples,
   examplesLoading,
   onExample,
@@ -478,12 +868,12 @@ function Toolbar({
         </span>
       </Button>
 
-      {/* Runtime mode toggle — Tree-walker vs Bytecode VM. */}
+      {/* Runtime mode toggle — Tree-walker / Bytecode VM / WASM / x86. */}
       <ToggleGroup
         type="single"
         value={mode}
         onValueChange={(v) => {
-          if (v === "tree-walker" || v === "bytecode") onModeChange(v);
+          if (isMode(v)) onModeChange(v);
         }}
         variant="outline"
         size="sm"
@@ -491,13 +881,31 @@ function Toolbar({
       >
         <ToggleGroupItem value="tree-walker" className="gap-1.5">
           <ListTree className="size-3.5" />
-          <span className="hidden sm:inline">Tree-walker</span>
+          <span className="hidden sm:inline">Tree</span>
         </ToggleGroupItem>
         <ToggleGroupItem value="bytecode" className="gap-1.5">
           <Cpu className="size-3.5" />
-          <span className="hidden sm:inline">Bytecode VM</span>
+          <span className="hidden sm:inline">VM</span>
+        </ToggleGroupItem>
+        <ToggleGroupItem value="wasm" className="gap-1.5">
+          <Boxes className="size-3.5" />
+          <span className="hidden sm:inline">WASM</span>
+        </ToggleGroupItem>
+        <ToggleGroupItem value="x86" className="gap-1.5">
+          <Zap className="size-3.5" />
+          <span className="hidden sm:inline">x86</span>
         </ToggleGroupItem>
       </ToggleGroup>
+
+      <Button
+        onClick={onAsyncDemo}
+        variant="outline"
+        size="default"
+        title="Run the v3 async coroutine demo (real AsyncRuntime execution in the browser)"
+      >
+        <Sparkles className="size-4" />
+        <span className="hidden sm:inline">Async demo</span>
+      </Button>
 
       <Button onClick={onFormat} variant="outline" size="default" title="Format code (parser-based)">
         <Wand2 className="size-4" />
@@ -564,15 +972,22 @@ interface OutputPanelProps {
   lint: LintState;
 }
 
+const MODE_LABELS: Record<RuntimeMode, string> = {
+  "tree-walker": "Tree-walker",
+  bytecode: "Bytecode VM",
+  wasm: "WASM backend",
+  x86: "x86-64 backend",
+};
+
 function OutputPanel({ run, lint }: OutputPanelProps) {
-  // The Bytecode tab only makes sense in VM mode.
+  // The disassembly tabs only make sense in their respective modes.
   const showBytecode = run.mode === "bytecode";
+  const showWasm = run.mode === "wasm";
+  const showX86 = run.mode === "x86";
   return (
     <div className="flex min-h-[280px] min-w-0 flex-col gap-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>
-          Output · {run.mode === "bytecode" ? "Bytecode VM" : "Tree-walker"}
-        </span>
+        <span>Output · {MODE_LABELS[run.mode]}</span>
         <RunStatus status={run.status} lastMs={run.lastMs} />
       </div>
       <Tabs defaultValue="output" className="flex min-h-0 flex-1 flex-col">
@@ -592,6 +1007,16 @@ function OutputPanel({ run, lint }: OutputPanelProps) {
           {showBytecode && (
             <TabsTrigger value="bytecode" className="gap-1.5">
               <Cpu className="size-3.5" /> Bytecode
+            </TabsTrigger>
+          )}
+          {showWasm && (
+            <TabsTrigger value="wasm" className="gap-1.5">
+              <Boxes className="size-3.5" /> WASM
+            </TabsTrigger>
+          )}
+          {showX86 && (
+            <TabsTrigger value="x86" className="gap-1.5">
+              <Zap className="size-3.5" /> x86
             </TabsTrigger>
           )}
           <TabsTrigger value="lint" className="gap-1.5">
@@ -616,6 +1041,16 @@ function OutputPanel({ run, lint }: OutputPanelProps) {
         {showBytecode && (
           <TabsContent value="bytecode" className="min-h-0 flex-1">
             <BytecodeTab run={run} />
+          </TabsContent>
+        )}
+        {showWasm && (
+          <TabsContent value="wasm" className="min-h-0 flex-1">
+            <WasmTab run={run} />
+          </TabsContent>
+        )}
+        {showX86 && (
+          <TabsContent value="x86" className="min-h-0 flex-1">
+            <X86Tab run={run} />
           </TabsContent>
         )}
         <TabsContent value="lint" className="min-h-0 flex-1">
@@ -678,12 +1113,32 @@ function OutputTab({ run }: { run: RunState }) {
 }
 
 function hasResult(run: RunState): boolean {
-  return run.result !== null || run.vmResult !== null;
+  return (
+    run.result !== null ||
+    run.vmResult !== null ||
+    run.wasmResult !== null ||
+    run.x86Result !== null
+  );
 }
 
 /** Return the AST from whichever mode ran. */
 function getAst(run: RunState) {
-  return run.result?.ast ?? run.vmResult?.ast ?? null;
+  return (
+    run.ast ??
+    run.result?.ast ??
+    run.vmResult?.ast ??
+    null
+  );
+}
+
+/** Return the tokens from whichever mode ran. */
+function getTokens(run: RunState) {
+  return (
+    run.tokens ??
+    run.result?.tokens ??
+    run.vmResult?.tokens ??
+    null
+  );
 }
 
 function AstTab({ run }: { run: RunState }) {
@@ -700,7 +1155,7 @@ function AstTab({ run }: { run: RunState }) {
 }
 
 function TokensTab({ run }: { run: RunState }) {
-  const tokens = run.result?.tokens ?? run.vmResult?.tokens ?? null;
+  const tokens = getTokens(run);
   if (!tokens) return <EmptyTab label="No tokens yet — run the code first." />;
   if (tokens.length === 0) {
     return <EmptyTab label="No tokens — the lexer produced nothing." />;
@@ -819,6 +1274,84 @@ function BytecodeTab({ run }: { run: RunState }) {
   );
 }
 
+function WasmTab({ run }: { run: RunState }) {
+  if (run.mode !== "wasm") {
+    return (
+      <EmptyTab label="Switch to the WASM mode and Run to see the wasm-text disassembly." />
+    );
+  }
+  if (run.status === "running") {
+    return (
+      <TabShell>
+        <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+          Compiling to WASM…
+        </div>
+      </TabShell>
+    );
+  }
+  if (!run.wasmText) {
+    return (
+      <EmptyTab label="No WASM disassembly yet — run the code in WASM mode." />
+    );
+  }
+  const fnCount = run.wasmModule?.funcs.length ?? 0;
+  const importCount = run.wasmModule?.imports.length ?? 0;
+  const exportCount = run.wasmModule?.exports.length ?? 0;
+  return (
+    <TabShell>
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <Boxes className="size-3.5" />
+        <span>
+          {fnCount} function(s) · {importCount} import(s) · {exportCount} export(s)
+        </span>
+      </div>
+      <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground">
+        {run.wasmText}
+      </pre>
+    </TabShell>
+  );
+}
+
+function X86Tab({ run }: { run: RunState }) {
+  if (run.mode !== "x86") {
+    return (
+      <EmptyTab label="Switch to the x86 mode and Run to see the NASM assembly." />
+    );
+  }
+  if (run.status === "running") {
+    return (
+      <TabShell>
+        <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+          Compiling to x86-64…
+        </div>
+      </TabShell>
+    );
+  }
+  if (!run.x86Text) {
+    return (
+      <EmptyTab label="No x86 assembly yet — run the code in x86 mode." />
+    );
+  }
+  const fnCount = run.x86Module?.funcs.length ?? 0;
+  const rodataCount = run.x86Module?.rodata.length ?? 0;
+  return (
+    <TabShell>
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <Zap className="size-3.5" />
+        <span>
+          {fnCount} function(s) · {rodataCount} rodata string(s) · entry ={" "}
+          {run.x86Module?.entry ?? "—"}
+        </span>
+      </div>
+      <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground">
+        {run.x86Text}
+      </pre>
+    </TabShell>
+  );
+}
+
 function severityTone(sev: Severity): string {
   switch (sev) {
     case "error":
@@ -831,9 +1364,26 @@ function severityTone(sev: Severity): string {
 }
 
 function severityBadge(sev: Severity) {
-  if (sev === "error") return <Badge variant="destructive" className="text-[10px] uppercase">error</Badge>;
-  if (sev === "warning") return <Badge variant="outline" className="text-[10px] uppercase text-amber-600 dark:text-amber-400">warn</Badge>;
-  return <Badge variant="outline" className="text-[10px] uppercase">info</Badge>;
+  if (sev === "error")
+    return (
+      <Badge variant="destructive" className="text-[10px] uppercase">
+        error
+      </Badge>
+    );
+  if (sev === "warning")
+    return (
+      <Badge
+        variant="outline"
+        className="text-[10px] uppercase text-amber-600 dark:text-amber-400"
+      >
+        warn
+      </Badge>
+    );
+  return (
+    <Badge variant="outline" className="text-[10px] uppercase">
+      info
+    </Badge>
+  );
 }
 
 function LintTab({ lint }: { lint: LintState }) {
@@ -864,10 +1414,14 @@ function LintTab({ lint }: { lint: LintState }) {
           {diags.length} diagnostic{diags.length === 1 ? "" : "s"}
         </Badge>
         {counts.error > 0 && (
-          <span className={severityTone("error")}>{counts.error} error{counts.error === 1 ? "" : "s"}</span>
+          <span className={severityTone("error")}>
+            {counts.error} error{counts.error === 1 ? "" : "s"}
+          </span>
         )}
         {counts.warning > 0 && (
-          <span className={severityTone("warning")}>{counts.warning} warning{counts.warning === 1 ? "" : "s"}</span>
+          <span className={severityTone("warning")}>
+            {counts.warning} warning{counts.warning === 1 ? "" : "s"}
+          </span>
         )}
         {counts.info > 0 && (
           <span className={severityTone("info")}>{counts.info} info</span>
@@ -899,24 +1453,48 @@ function LintTab({ lint }: { lint: LintState }) {
 function StatsTab({ run }: { run: RunState }) {
   if (!hasResult(run)) return <EmptyTab label="No stats yet — run the code first." />;
   const isVm = run.mode === "bytecode";
-  const steps = isVm
-    ? run.vmResult?.runtime?.steps ?? 0
-    : run.result?.runtime?.steps ?? 0;
-  const returnValue = isVm
-    ? run.vmResult?.runtime?.value
-    : run.result?.runtime?.value;
-  const tokensCount =
-    run.result?.tokens.length ?? run.vmResult?.tokens.length ?? 0;
+  const isWasm = run.mode === "wasm";
+  const isX86 = run.mode === "x86";
+
+  // Per-mode step / value extraction.
+  let steps = 0;
+  let returnValue: Value | null | undefined = null;
+  let ok = false;
+  if (isVm) {
+    steps = run.vmResult?.runtime?.steps ?? 0;
+    returnValue = run.vmResult?.runtime?.value;
+    ok = run.vmResult?.ok ?? false;
+  } else if (isWasm) {
+    returnValue = run.wasmResult?.output ?? null;
+    ok = !run.wasmResult?.error;
+  } else if (isX86) {
+    returnValue = run.x86Result?.output ?? null;
+    ok = !run.x86Result?.error;
+  } else {
+    steps = run.result?.runtime?.steps ?? 0;
+    returnValue = run.result?.runtime?.value;
+    ok = run.result?.ok ?? false;
+  }
+
+  const tokensCount = getTokens(run)?.length ?? 0;
   const stats: Array<{ label: string; value: string; icon: React.ReactNode }> = [
     {
       label: "Runtime mode",
-      value: isVm ? "Bytecode VM (v2)" : "Tree-walker (v1)",
-      icon: isVm ? <Cpu className="size-4" /> : <ListTree className="size-4" />,
+      value: MODE_LABELS[run.mode],
+      icon: isVm ? (
+        <Cpu className="size-4" />
+      ) : isWasm ? (
+        <Boxes className="size-4" />
+      ) : isX86 ? (
+        <Zap className="size-4" />
+      ) : (
+        <ListTree className="size-4" />
+      ),
     },
     {
       label: "Status",
-      value: (isVm ? run.vmResult?.ok : run.result?.ok) ? "ok" : "errors",
-      icon: (isVm ? run.vmResult?.ok : run.result?.ok) ? (
+      value: ok ? "ok" : "errors",
+      icon: ok ? (
         <CheckCircle2 className="size-4 text-emerald-500" />
       ) : (
         <AlertTriangle className="size-4 text-destructive" />
@@ -928,8 +1506,11 @@ function StatsTab({ run }: { run: RunState }) {
       icon: <Clock className="size-4" />,
     },
     {
-      label: isVm ? "VM steps" : "Eval steps",
-      value: steps.toLocaleString(),
+      label: isVm ? "VM steps" : isWasm || isX86 ? "Native ops" : "Eval steps",
+      value:
+        isWasm || isX86
+          ? "(native)"
+          : steps.toLocaleString(),
       icon: <Hash className="size-4" />,
     },
     {
@@ -939,9 +1520,12 @@ function StatsTab({ run }: { run: RunState }) {
     },
     {
       label: "Return value",
-      value: returnValue !== undefined && returnValue !== null
-        ? formatValue(returnValue as any)
-        : (returnValue === null ? "null" : "—"),
+      value:
+        returnValue !== undefined && returnValue !== null
+          ? formatValue(returnValue as Value)
+          : returnValue === null
+            ? "null"
+            : "—",
       icon: <Braces className="size-4" />,
     },
     {
@@ -950,10 +1534,20 @@ function StatsTab({ run }: { run: RunState }) {
       icon: <ListTree className="size-4" />,
     },
     {
-      label: "Bytecode funcs",
+      label: isVm
+        ? "Bytecode funcs"
+        : isWasm
+          ? "WASM funcs"
+          : isX86
+            ? "x86 funcs"
+            : "Bytecode funcs",
       value: isVm
         ? (run.vmResult?.bytecode?.funcs.length ?? 0).toLocaleString()
-        : "—",
+        : isWasm
+          ? (run.wasmModule?.funcs.length ?? 0).toLocaleString()
+          : isX86
+            ? (run.x86Module?.funcs.length ?? 0).toLocaleString()
+            : "—",
       icon: <Zap className="size-4" />,
     },
   ];
@@ -979,6 +1573,22 @@ function StatsTab({ run }: { run: RunState }) {
           Bytecode disassembly is in the Bytecode tab.
         </p>
       )}
+      {isWasm && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          WASM backend compiles IR → WebAssembly (binary), instantiates in the
+          browser via <code className="font-mono text-xs">WebAssembly.instantiate</code>,
+          and runs the main function natively. See the WASM tab for the
+          wasm-text disassembly.
+        </p>
+      )}
+      {isX86 && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          x86-64 backend compiles IR → NASM-syntax assembly (System V AMD64).
+          On systems without <code className="font-mono text-xs">nasm</code>, a
+          structured interpreter walks the same IR faithfully. See the x86 tab
+          for the assembly text.
+        </p>
+      )}
     </TabShell>
   );
 }
@@ -996,9 +1606,97 @@ function truncate(s: string, n: number): string {
   return s.slice(0, n - 1) + "…";
 }
 
-function describeString(t: { segments?: Array<{ kind: string; value: string }> }): string {
+function describeString(t: {
+  segments?: Array<{ kind: string; value: string }>;
+}): string {
   if (!t.segments) return "";
   return t.segments
     .map((seg) => (seg.kind === "interp" ? "{" + seg.value + "}" : seg.value))
     .join("");
+}
+
+/** Modal showing the v3 async coroutine demo output + source. */
+function AsyncDemoDialog({
+  state,
+  onClose,
+}: {
+  state: AsyncDemoState;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open={state.open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Sparkles className="size-4 text-primary" />
+            v3 Async Coroutine Demo
+          </DialogTitle>
+          <DialogDescription>
+            Real Aether execution in the browser. The source uses the v3{" "}
+            <code className="font-mono text-xs">CoroutineScheduler</code>{" "}
+            builtins (<code className="font-mono text-xs">spawn</code>,{" "}
+            <code className="font-mono text-xs">channel</code>,{" "}
+            <code className="font-mono text-xs">send_ch</code>,{" "}
+            <code className="font-mono text-xs">recv</code>,{" "}
+            <code className="font-mono text-xs">join</code>) wired into the
+            tree-walker via <code className="font-mono text-xs">registerCoroutineBuiltins</code>.
+            A producer coroutine sends 1, 2, 3 into a channel; a consumer
+            drains it and sums the values; the main program joins both.
+          </DialogDescription>
+        </DialogHeader>
+
+        <Tabs defaultValue="output" className="mt-2">
+          <TabsList>
+            <TabsTrigger value="output" className="gap-1.5">
+              <Sparkles className="size-3.5" /> Output
+            </TabsTrigger>
+            <TabsTrigger value="source" className="gap-1.5">
+              <FileCode2 className="size-3.5" /> Source
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent
+            value="output"
+            className="max-h-[55vh] overflow-auto rounded-md border bg-muted/30 p-3 scrollbar-thin"
+          >
+            {state.running && state.output.length === 0 ? (
+              <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+                Spawning coroutines…
+              </div>
+            ) : state.error ? (
+              <pre className="whitespace-pre-wrap break-words font-mono text-xs text-destructive">
+                {state.error}
+              </pre>
+            ) : state.output.length === 0 ? (
+              <pre className="whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground">
+                (no output yet)
+              </pre>
+            ) : (
+              <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+                {state.output.map((line, i) => (
+                  <div key={i} className="min-h-[1.25rem]">
+                    {line === "" ? "\u00A0" : line}
+                  </div>
+                ))}
+              </pre>
+            )}
+          </TabsContent>
+          <TabsContent
+            value="source"
+            className="max-h-[55vh] overflow-auto rounded-md border bg-muted/30 p-3 scrollbar-thin"
+          >
+            <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground">
+              {state.source ?? "// loading…"}
+            </pre>
+          </TabsContent>
+        </Tabs>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }

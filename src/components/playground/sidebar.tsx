@@ -9,6 +9,7 @@ import {
   Gauge,
   Info,
   Hexagon,
+  Package,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -26,6 +27,7 @@ export const NAV_ITEMS: NavItem[] = [
   { id: "explorer", label: "Explorer", icon: Compass, hint: "Browse the grammar & types" },
   { id: "stdlib", label: "Standard Library", icon: BookOpen, hint: "Browse built-in functions" },
   { id: "examples", label: "Examples", icon: FileCode2, hint: "Sample programs" },
+  { id: "packages", label: "Packages", icon: Package, hint: "Browse the Aether package registry" },
   { id: "benchmarks", label: "Benchmarks", icon: Gauge, hint: "Performance dashboard" },
   { id: "about", label: "About", icon: Info, hint: "About Aether & Project Nexus" },
 ];

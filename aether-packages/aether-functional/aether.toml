@@ -1,0 +1,12 @@
+[package]
+name = "aether-functional"
+version = "0.1.0"
+description = "Functional combinators for Aether — 18 pub functions: compose, pipe, curry, partial, flip, memoize, once, debounce, throttle, after, before, wrap, tap, identity, constant, try_, when, unless, cond."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — uses only Aether's core builtins
+# (push, len, while, recursion).
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

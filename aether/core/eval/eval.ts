@@ -63,6 +63,7 @@ import {
   type Type,
   T_INT, T_FLOAT, T_BOOL, T_STRING, T_CHAR, T_UNIT,
 } from "../types/types";
+import { registerCoroutineBuiltins } from "../../vm/coroutine/coroutine";
 
 //----------------------------------------------------------------------------
 // Public types
@@ -1479,6 +1480,21 @@ class Evaluator {
       for (let i = 0; i < arr.length; i++) acc = self.callValue(fn, [acc, arr[i], i]);
       return acc;
     });
+
+    // v3: coroutine builtins — register a singleton CoroutineScheduler
+    // and expose spawn/await/yield/resume/send/cancel/channel/send_ch/
+    // recv/select/join/race/timeout/coroutine_count/channel_count to
+    // Aether. See `aether/vm/coroutine/coroutine.ts` for the design.
+    // The `callValue` we pass lets the scheduler invoke Aether closures
+    // (which are tagged `{ __closure, fn, env }` objects, not JS funcs).
+    registerCoroutineBuiltins(
+      (name, fn) => {
+        // Don't clobber user-provided builtins.
+        if (self.root.vars.has(name)) return;
+        self.root.vars.set(name, { value: { __native: name, fn }, mut: false });
+      },
+      { callValue: (fn, args) => self.callValue(fn, args) },
+    );
   }
 }
 

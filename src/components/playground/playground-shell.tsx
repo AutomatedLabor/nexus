@@ -9,6 +9,7 @@ import { PlaygroundView } from "./views/playground-view";
 import { ExplorerView } from "./views/explorer-view";
 import { StdlibView } from "./views/stdlib-view";
 import { ExamplesView } from "./views/examples-view";
+import { PackagesView } from "./views/packages-view";
 import { BenchmarksView } from "./views/benchmarks-view";
 import { AboutView } from "./views/about-view";
 
@@ -55,6 +56,8 @@ function ViewSwitch({ view }: { view: string }) {
       return <StdlibView />;
     case "examples":
       return <ExamplesView />;
+    case "packages":
+      return <PackagesView />;
     case "benchmarks":
       return <BenchmarksView />;
     case "about":

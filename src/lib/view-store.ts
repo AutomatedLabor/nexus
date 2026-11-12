@@ -7,6 +7,7 @@ export type ViewId =
   | "explorer"
   | "stdlib"
   | "examples"
+  | "packages"
   | "benchmarks"
   | "about";
 

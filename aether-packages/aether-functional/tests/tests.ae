@@ -1,0 +1,166 @@
+// aether-functional/tests/tests.ae
+// ================================
+// 30+ assertions covering every pub function in aether-functional.
+import {
+  identity, constant,
+  compose, pipe,
+  curry, partial, flip,
+  memoize, once,
+  debounce, throttle,
+  after, before,
+  wrap, tap,
+  try_, when, unless, cond,
+} from "../src/lib.ae";
+
+// --- identity / constant ---
+assert_eq(identity(42), 42);
+assert_eq(identity(0), 0);
+let k = constant(99);
+assert_eq(k(), 99);
+assert_eq(k(), 99);
+
+// --- compose / pipe ---
+fn inc(x: int) -> int { x + 1 }
+fn dbl(x: int) -> int { x * 2 }
+let c = compose(dbl, inc);  // dbl(inc(x)) = 2*(x+1)
+assert_eq(c(5), 12);
+let p = pipe(inc, dbl);     // dbl(inc(x)) = 2*(x+1)
+assert_eq(p(5), 12);
+let c2 = compose(inc, dbl);  // inc(dbl(x)) = 2x+1
+assert_eq(c2(5), 11);
+
+// --- curry / partial / flip ---
+fn add(a: int, b: int) -> int { a + b }
+let g = curry(add);
+let g5 = g(5);
+assert_eq(g5(3), 8);
+assert_eq(g(10)(20), 30);
+let p10 = partial(add, 10);
+assert_eq(p10(7), 17);
+let sub_flip = flip(fn(a: int, b: int) -> int { a - b });
+assert_eq(sub_flip(3, 10), 7);  // flip makes it 10 - 3 = 7
+
+// --- memoize ---
+fn slow_sq(n: int) -> int { n * n }
+let m = memoize(slow_sq);
+assert_eq(m(5), 25);
+assert_eq(m(5), 25);
+assert_eq(m(7), 49);
+assert_eq(m(7), 49);
+assert_eq(m(5), 25);
+
+// --- once ---
+let counter = [0];
+let inc_counter = fn() -> int {
+  counter[0] = counter[0] + 1;
+  counter[0]
+};
+let o = once(inc_counter);
+assert_eq(o(), 1);
+assert_eq(o(), 1);
+assert_eq(o(), 1);
+
+// --- debounce ---
+let d_counter = [0];
+let d_fn = fn(x: int) -> int {
+  d_counter[0] = d_counter[0] + 1;
+  d_counter[0]
+};
+let d = debounce(d_fn, 3);
+// First two calls return the cached (0); third call fires.
+let r1 = d(1);
+let r2 = d(2);
+let r3 = d(3);  // fires here — returns 1
+assert_eq(r3, 1);
+let r4 = d(4);
+let r5 = d(5);
+let r6 = d(6);  // fires again — returns 2
+assert_eq(r6, 2);
+
+// --- throttle ---
+let t_counter = [0];
+let t_fn = fn(x: int) -> int {
+  t_counter[0] = t_counter[0] + 1;
+  t_counter[0]
+};
+let t = throttle(t_fn, 3);
+// First call fires.
+let a1 = t(1);  // fires — returns 1
+let a2 = t(2);  // skip
+let a3 = t(3);  // skip
+let a4 = t(4);  // fires — returns 2
+assert_eq(a1, 1);
+assert_eq(a4, 2);
+
+// --- after ---
+let after_counter = [0];
+let after_fn = fn(x: int) -> int {
+  after_counter[0] = after_counter[0] + 1;
+  after_counter[0]
+};
+let after3 = after(3, after_fn);
+assert_eq(after3(1), 0);  // call 1 — no-op
+assert_eq(after3(1), 0);  // call 2 — no-op
+assert_eq(after3(1), 1);  // call 3 — fires
+assert_eq(after3(1), 2);  // call 4 — fires
+
+// --- before ---
+let before_counter = [0];
+let before_fn = fn(x: int) -> int {
+  before_counter[0] = before_counter[0] + 1;
+  before_counter[0]
+};
+let before3 = before(3, before_fn);
+assert_eq(before3(1), 1);  // call 1 — fires
+assert_eq(before3(1), 2);  // call 2 — fires
+assert_eq(before3(1), 3);  // call 3 — fires
+assert_eq(before3(1), 0);  // call 4 — no-op
+assert_eq(before3(1), 0);  // call 5 — no-op
+
+// --- wrap ---
+let traced = wrap(inc, fn(f: fn(int) -> int, x: int) -> int { f(x) + 100 });
+assert_eq(traced(5), 106);  // inc(5) + 100 = 106
+
+// --- tap ---
+let side_log = [];
+let tapper = tap(fn(x: int) -> () { push(side_log, x) });
+let tapped = tapper(7);
+assert_eq(tapped, 7);  // tap returns x unchanged
+assert_eq(side_log[0], 7);
+assert_eq(side_log[len(side_log) - 1], 7);
+
+// --- try_ ---
+let try_fn = try_(fn(x: int) -> int { x + 1 }, fn(x: int) -> int { 0 });
+assert_eq(try_fn(5), 6);  // f succeeds, returns 6
+
+// --- when / unless ---
+let is_pos = fn(x: int) -> bool { x > 0 };
+let w = when(is_pos, fn(x: int) -> int { x * 100 });
+assert_eq(w(5), 500);   // pred true — f(5) = 500
+assert_eq(w(-3), -3);   // pred false — returns x unchanged
+let u = unless(is_pos, fn(x: int) -> int { x * 100 });
+assert_eq(u(5), 5);     // pred true — returns x unchanged
+assert_eq(u(-3), -300); // pred false — f(-3) = -300
+
+// --- cond ---
+let cases = [
+  fn(x: int) -> bool { x < 0 },
+  fn(x: int) -> int { -1 },
+  fn(x: int) -> bool { x == 0 },
+  fn(x: int) -> int { 0 },
+  fn(x: int) -> bool { x > 0 },
+  fn(x: int) -> int { 1 },
+];
+let classify = cond(cases, 99);
+assert_eq(classify(-5), -1);
+assert_eq(classify(0), 0);
+assert_eq(classify(42), 1);
+// No-match returns default
+let cases2 = [
+  fn(x: int) -> bool { x > 100 },
+  fn(x: int) -> int { 999 },
+];
+let cl2 = cond(cases2, 0);
+assert_eq(cl2(5), 0);  // default
+
+print("aether-functional: all 30+ assertions passed");
