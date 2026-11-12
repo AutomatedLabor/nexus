@@ -1,0 +1,61 @@
+// aether-text/examples/example.ae
+// =================================
+// A demo of the aether-text package.
+import {
+  lines, words, unlines, unwords,
+  indent, dedent, wrap,
+  center, left, right,
+  titleCase, camelCase, snake_case, kebabCase,
+  truncate, wordCount, charCount,
+} from "../src/lib.ae";
+
+fn q(s: string) -> string { "\"" + s + "\"" }
+
+print("== aether-text example ==");
+print("");
+
+let para = "the quick brown fox jumps over the lazy dog";
+print("paragraph = " + q(para));
+print("wordCount = " + str(wordCount(para)));
+print("charCount = " + str(charCount(para)));
+print("");
+
+print("titleCase:    " + titleCase(para));
+print("camelCase:    " + camelCase(para));
+print("snake_case:   " + snake_case(para));
+print("kebabCase:    " + kebabCase(para));
+print("");
+
+let poem = "roses are red\nviolets are blue\nsugar is sweet";
+print("poem:");
+print(poem);
+print("");
+print("indent(poem, 2):");
+print(indent(poem, 2));
+print("");
+
+let bloated = "    line one\n    line two\n      line three indented";
+print("bloated:");
+print(bloated);
+print("");
+print("dedent(bloated):");
+print(dedent(bloated));
+print("");
+
+print("wrap(paragraph, 20):");
+print(wrap(para, 20));
+print("");
+
+print("center(\"hi\", 6)  = " + q(center("hi", 6)));
+print("left(\"hi\", 5)    = " + q(left("hi", 5)));
+print("right(\"hi\", 5)   = " + q(right("hi", 5)));
+print("truncate(\"hello world\", 8) = " + q(truncate("hello world", 8)));
+print("");
+
+print("lines(poem) = " + lines(poem));
+print("words(para) = " + words(para));
+print("unlines([a,b,c]) = " + q(unlines(["a", "b", "c"])));
+print("unwords([hello,world]) = " + q(unwords(["hello", "world"])));
+
+print("");
+print("All demos ran successfully.");

@@ -1,0 +1,77 @@
+// aether-fs/tests/tests.ae
+// ==========================
+// 30+ assertions covering every pub function in aether-fs.
+// The IO functions (readFile, writeFile, fileExists) are host-bound and
+// not tested here — they throw on hosts without an FS. The path ops are
+// pure Aether and tested end-to-end.
+import {
+  pathJoin, pathSplit, pathExt, pathBase, pathDir, pathNormalize,
+} from "../src/lib.ae";
+
+// --- pathJoin ---
+assert_eq(pathJoin("a/b", "c"), "a/b/c");
+assert_eq(pathJoin("a/b/", "c"), "a/b/c");
+assert_eq(pathJoin("a", "/b"), "/b");
+assert_eq(pathJoin("", "b"), "b");
+assert_eq(pathJoin("a", ""), "a");
+assert_eq(pathJoin("a/", "b"), "a/b");
+assert_eq(pathJoin("/a", "b"), "/a/b");
+
+// --- pathSplit ---
+assert_eq(pathSplit("a/b/c"), ["a", "b", "c"]);
+assert_eq(pathSplit("/a/b/c"), ["a", "b", "c"]);
+assert_eq(pathSplit("a//b"), ["a", "b"]);
+assert_eq(pathSplit(""), []);
+assert_eq(pathSplit("a"), ["a"]);
+assert_eq(pathSplit("/"), []);
+assert_eq(pathSplit("a/b/"), ["a", "b"]);
+
+// --- pathExt ---
+assert_eq(pathExt("file.txt"), ".txt");
+assert_eq(pathExt("file.tar.gz"), ".gz");
+assert_eq(pathExt("file"), "");
+assert_eq(pathExt(".hidden"), "");
+assert_eq(pathExt("a/b/file.c"), ".c");
+assert_eq(pathExt("a.b/c"), "");   // directory, no ext on the trailing slash
+assert_eq(pathExt("/x.y.z"), ".z");
+assert_eq(pathExt(""), "");
+
+// --- pathBase ---
+assert_eq(pathBase("a/b/c.txt"), "c.txt");
+assert_eq(pathBase("c.txt"), "c.txt");
+assert_eq(pathBase("a/b/"), "b");   // trailing slash stripped before basename
+assert_eq(pathBase("/a"), "a");
+assert_eq(pathBase(""), "");
+assert_eq(pathBase("a.b.c"), "a.b.c");
+assert_eq(pathBase("a/"), "a");
+assert_eq(pathBase("/"), "");
+
+// --- pathDir ---
+assert_eq(pathDir("a/b/c.txt"), "a/b");
+assert_eq(pathDir("c.txt"), "");
+assert_eq(pathDir("/a"), "");
+assert_eq(pathDir("a/b/c"), "a/b");
+assert_eq(pathDir("a/b/"), "a/b");   // matches Python os.path.dirname
+assert_eq(pathDir("/a/b/c"), "/a/b");
+assert_eq(pathDir("a/"), "a");       // matches Python: dirname("a/") = "a"
+assert_eq(pathDir("/"), "");
+
+// --- pathNormalize ---
+assert_eq(pathNormalize("a/./b"), "a/b");
+assert_eq(pathNormalize("a//b"), "a/b");
+assert_eq(pathNormalize("a/b/.."), "a");
+assert_eq(pathNormalize("a/b/../c"), "a/c");
+assert_eq(pathNormalize("/a/./b"), "/a/b");
+assert_eq(pathNormalize("./a"), "a");
+assert_eq(pathNormalize(""), "");
+assert_eq(pathNormalize("."), "");
+assert_eq(pathNormalize(".."), "..");
+assert_eq(pathNormalize("a/b/../../c"), "c");
+assert_eq(pathNormalize("/a/b/../../c"), "/c");
+assert_eq(pathNormalize("/"), "/");
+assert_eq(pathNormalize("a/././b/./c"), "a/b/c");
+assert_eq(pathNormalize("a/b/c/../.."), "a");
+assert_eq(pathNormalize("a/b/c/../../.."), "");
+assert_eq(pathNormalize("/a/b/c/../../.."), "/");
+
+print("aether-fs: all 30+ assertions passed");

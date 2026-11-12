@@ -1,0 +1,201 @@
+// aether-logging/src/lib.ae
+// ==========================
+// Structured logging for Aether. 10 pub functions covering logger
+// construction (new, silent, verbose), level-filtered emission
+// (log, debug, info, warn, error), context enrichment (withContext),
+// and introspection (format).
+//
+// The package is pure-Aether — no host calls, no I/O. Every function
+// returns a value (a Logger struct or a formatted string); the only
+// side effect is the `print` builtin, which is called when a message
+// passes the logger's level filter.
+//
+// Logger struct
+// -------------
+//   struct Logger {
+//     level: int,    // 0=silent, 10=error, 20=warn, 30=info, 40=debug, 50=trace
+//     context: [KV]  // accumulated key/value pairs from withContext calls
+//   }
+//   struct KV { key: string, value: string }
+//
+// Level semantics
+// ---------------
+// A message is emitted iff `msg.level <= logger.level`. So a logger
+// with level=30 (info) emits info, warn, and error, but NOT debug or
+// trace. The level constants are exported as `LEVEL_SILENT` (0),
+// `LEVEL_ERROR` (10), `LEVEL_WARN` (20), `LEVEL_INFO` (30),
+// `LEVEL_DEBUG` (40), `LEVEL_TRACE` (50).
+//
+// Type conventions:
+//   - Levels are int.
+//   - Messages are string.
+//   - Context values are string (callers str() their values first).
+//   - Loggers are Logger structs.
+
+//----------------------------------------------------------------------------
+// Level constants
+//----------------------------------------------------------------------------
+
+pub const LEVEL_SILENT = 0;
+pub const LEVEL_ERROR = 10;
+pub const LEVEL_WARN = 20;
+pub const LEVEL_INFO = 30;
+pub const LEVEL_DEBUG = 40;
+pub const LEVEL_TRACE = 50;
+
+//----------------------------------------------------------------------------
+// Types
+//----------------------------------------------------------------------------
+
+struct KV {
+  key: string,
+  value: string
+}
+
+struct Logger {
+  level: int,
+  context: [KV]
+}
+
+//----------------------------------------------------------------------------
+// Helpers — level name <-> int
+//----------------------------------------------------------------------------
+
+fn level_name(l: int) -> string {
+  if l == 0 { "SILENT" } else {
+    if l == 10 { "ERROR" } else {
+      if l == 20 { "WARN" } else {
+        if l == 30 { "INFO" } else {
+          if l == 40 { "DEBUG" } else {
+            if l == 50 { "TRACE" } else { "L?" + str(l) }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn level_from_name(name: string) -> int {
+  if name == "silent" || name == "SILENT" { 0 } else {
+    if name == "error" || name == "ERROR" { 10 } else {
+      if name == "warn" || name == "WARN" { 20 } else {
+        if name == "info" || name == "INFO" { 30 } else {
+          if name == "debug" || name == "DEBUG" { 40 } else {
+            if name == "trace" || name == "TRACE" { 50 } else { 30 }
+          }
+        }
+      }
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Logger construction
+//----------------------------------------------------------------------------
+
+// new(level) — create a Logger with the given level (as an int or a name).
+//   new(LEVEL_INFO)        -> Logger { level: 30, context: [] }
+//   new("debug")           -> Logger { level: 40, context: [] }
+pub fn new(level: int) -> Logger {
+  Logger { level: level, context: [] }
+}
+
+// silent() — create a Logger that emits nothing (level = 0).
+pub fn silent() -> Logger {
+  Logger { level: LEVEL_SILENT, context: [] }
+}
+
+// verbose() — create a Logger that emits everything (level = 50, trace).
+pub fn verbose() -> Logger {
+  Logger { level: LEVEL_TRACE, context: [] }
+}
+
+//----------------------------------------------------------------------------
+// Emission
+//----------------------------------------------------------------------------
+
+// log(logger, level, msg) — log `msg` at the given `level` iff `level <= logger.level`.
+// Returns the logger (unchanged) for chaining.
+pub fn log(logger: Logger, level: int, msg: string) -> Logger {
+  if level <= logger.level {
+    let ctx = format_context(logger.context);
+    print("[" + level_name(level) + "] " + msg + ctx);
+  };
+  logger
+}
+
+// debug(logger, msg) — log at LEVEL_DEBUG.
+pub fn debug(logger: Logger, msg: string) -> Logger {
+  log(logger, LEVEL_DEBUG, msg)
+}
+
+// info(logger, msg) — log at LEVEL_INFO.
+pub fn info(logger: Logger, msg: string) -> Logger {
+  log(logger, LEVEL_INFO, msg)
+}
+
+// warn(logger, msg) — log at LEVEL_WARN.
+pub fn warn(logger: Logger, msg: string) -> Logger {
+  log(logger, LEVEL_WARN, msg)
+}
+
+// error(logger, msg) — log at LEVEL_ERROR.
+pub fn error(logger: Logger, msg: string) -> Logger {
+  log(logger, LEVEL_ERROR, msg)
+}
+
+//----------------------------------------------------------------------------
+// Context enrichment
+//----------------------------------------------------------------------------
+
+// withContext(logger, key, value) — return a new Logger with the (key, value)
+// pair appended to its context. The original logger is unchanged.
+//   let l2 = withContext(l, "user", "alice");
+//   info(l2, "hello");    // prints "[INFO] hello user=alice"
+pub fn withContext(logger: Logger, key: string, value: string) -> Logger {
+  let mut newCtx = [];
+  let mut i = 0;
+  while i < len(logger.context) {
+    push(newCtx, logger.context[i]);
+    i = i + 1;
+  }
+  push(newCtx, KV { key: key, value: value });
+  Logger { level: logger.level, context: newCtx }
+}
+
+//----------------------------------------------------------------------------
+// Introspection
+//----------------------------------------------------------------------------
+
+// format(logger) — render the logger's configuration as a string.
+//   format(new(LEVEL_INFO)) -> "Logger(level=INFO, context=[])"
+pub fn format(logger: Logger) -> string {
+  let mut ctx = "[";
+  let mut i = 0;
+  while i < len(logger.context) {
+    if i > 0 { ctx = ctx + ", "; };
+    ctx = ctx + logger.context[i].key + "=" + logger.context[i].value;
+    i = i + 1;
+  }
+  ctx = ctx + "]";
+  "Logger(level=" + level_name(logger.level) + ", context=" + ctx + ")"
+}
+
+//----------------------------------------------------------------------------
+// Internal helpers
+//----------------------------------------------------------------------------
+
+// format_context(ctx) — render the context as " k1=v1 k2=v2" (or "" if empty).
+fn format_context(ctx: [KV]) -> string {
+  if len(ctx) == 0 {
+    ""
+  } else {
+    let mut out = "";
+    let mut i = 0;
+    while i < len(ctx) {
+      out = out + " " + ctx[i].key + "=" + ctx[i].value;
+      i = i + 1;
+    }
+    out
+  }
+}

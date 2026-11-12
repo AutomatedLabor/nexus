@@ -1,0 +1,94 @@
+// aether-process/src/lib.ae
+// ==========================
+// Process interface for Aether. 8 pub functions covering process
+// introspection (argv, env, exit, cwd, pid, spawn) and timing
+// (sleep, time, now).
+//
+// The host-bound functions delegate to the host's `args`, `env`, `exit`,
+// `sleep`, and `now` builtins (captured by the helper module
+// `_host_process.ae`). `cwd`, `pid`, and `spawn` have no corresponding
+// host builtin and unconditionally panic — they're stubs that document
+// the gap and surface the limitation to the caller immediately.
+//
+// `exit` and `sleep` are host-bound; on hosts without a process model
+// (browser, sandboxed runtime), the host builtins throw their own
+// error; we let the error propagate. `time` and `now` are aliases for
+// the wall clock and return millisecond Unix timestamps.
+//
+// Type conventions:
+//   - argv() returns [string] (the process's command-line arguments,
+//     minus the binary and script path).
+//   - env(name) returns string ("" if the variable is unset).
+//   - exit(code) returns () (it terminates the process; never returns).
+//   - cwd() returns string (always panics in current build).
+//   - pid() returns int (always panics in current build).
+//   - spawn(cmd, args) returns int (always panics in current build).
+//   - sleep(ms) returns () (synchronously blocks for ms milliseconds).
+//   - time() returns int (ms since 1970-01-01 UTC).
+//   - now() returns int (alias of time()).
+
+import {
+  HOST_ARGS, HOST_ENV, HOST_EXIT, HOST_SLEEP, HOST_NOW,
+} from "./_host_process.ae";
+
+//----------------------------------------------------------------------------
+// Process introspection
+//----------------------------------------------------------------------------
+
+// argv() — the command-line arguments passed to the process, minus the
+// binary path and script path. Returns [] in browser environments.
+pub fn argv() -> [string] {
+  HOST_ARGS()
+}
+
+// env(name) — the value of the environment variable `name`, or "" if
+// the variable is unset. Returns "" in browser environments.
+pub fn env(name: string) -> string {
+  HOST_ENV(name)
+}
+
+// exit(code) — terminate the process with exit code `code`. Returns ()
+// (it never actually returns). Throws on hosts without a process model
+// (browser, sandboxed runtime).
+pub fn exit(code: int) -> () {
+  HOST_EXIT(code)
+}
+
+// cwd() — the current working directory. Always panics in the current
+// build (no host builtin to delegate to). A future aether-process-extra
+// may wire a host call.
+pub fn cwd() -> string {
+  panic("cwd: no process in browser")
+}
+
+// pid() — the current process ID. Always panics in the current build.
+pub fn pid() -> int {
+  panic("pid: no process in browser")
+}
+
+// spawn(cmd, args) — spawn a child process and return its PID. Always
+// panics in the current build (no host builtin to delegate to).
+pub fn spawn(cmd: string, args: [string]) -> int {
+  panic("spawn: no process in browser")
+}
+
+//----------------------------------------------------------------------------
+// Timing
+//----------------------------------------------------------------------------
+
+// sleep(ms) — synchronously block for `ms` milliseconds. Delegates to
+// host `sleep`. Throws on hosts without a process model. Returns ().
+pub fn sleep(ms: int) -> () {
+  HOST_SLEEP(ms)
+}
+
+// time() — current Unix timestamp in milliseconds. Delegates to host
+// `now`. Always available (it's the wall clock).
+pub fn time() -> int {
+  HOST_NOW()
+}
+
+// now() — alias of time(). Both return the same wall-clock value.
+pub fn now() -> int {
+  HOST_NOW()
+}

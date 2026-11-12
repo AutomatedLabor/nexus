@@ -1,0 +1,50 @@
+// aether-fs/examples/example.ae
+// ===============================
+// A demo of the aether-fs package — path manipulation only (the IO
+// functions are host-bound and don't run in every environment).
+import {
+  pathJoin, pathSplit, pathExt, pathBase, pathDir, pathNormalize,
+} from "../src/lib.ae";
+
+fn q(s: string) -> string { "\"" + s + "\"" }
+
+print("== aether-fs example (path ops) ==");
+print("");
+
+let p = "/home/user/projects/aether/main.ae";
+print("path = " + q(p));
+print("pathDir(p)        = " + q(pathDir(p)));
+print("pathBase(p)       = " + q(pathBase(p)));
+print("pathExt(p)        = " + q(pathExt(p)));
+print("pathSplit(p)      = " + pathSplit(p));
+print("");
+
+let p2 = "a/b/c/../d/./e";
+print("path = " + q(p2));
+print("pathNormalize(p2) = " + q(pathNormalize(p2)));
+print("");
+
+let joined = pathJoin(pathDir(p), "examples");
+print("pathJoin(pathDir(p), \"examples\") = " + q(joined));
+print("");
+
+print("pathExt(\"file.txt\")    = " + q(pathExt("file.txt")));
+print("pathExt(\"file.tar.gz\") = " + q(pathExt("file.tar.gz")));
+print("pathExt(\".hidden\")      = " + q(pathExt(".hidden")));
+print("pathExt(\"file\")         = " + q(pathExt("file")));
+print("");
+
+print("pathBase(\"a/b/c.txt\") = " + q(pathBase("a/b/c.txt")));
+print("pathDir(\"a/b/c.txt\")  = " + q(pathDir("a/b/c.txt")));
+print("");
+
+print("pathNormalize(\"/a/./b/../c\") = " + q(pathNormalize("/a/./b/../c")));
+print("pathNormalize(\"a//b//c\")     = " + q(pathNormalize("a//b//c")));
+print("pathNormalize(\"./a\")          = " + q(pathNormalize("./a")));
+print("pathNormalize(\"../a\")         = " + q(pathNormalize("../a")));
+
+print("");
+print("All demos ran successfully.");
+print("");
+print("Note: readFile / writeFile / fileExists / listDir are host-bound");
+print("(see README). They throw on hosts without an FS (browser, sandbox).");

@@ -1,0 +1,13 @@
+[package]
+name = "aether-process"
+version = "0.1.0"
+description = "Process interface for Aether — 8 functions covering process introspection (argv, env, exit, cwd, pid, spawn) and timing (sleep, time, now), with host-bound functions delegated to host builtins via the _host_process.ae helper module."
+edition = "v3"
+
+[dependencies]
+# Captures host builtins `args`, `env`, `exit`, `sleep`, `now` via
+# src/_host_process.ae (the helper module that lets lib.ae re-export
+# `exit`/`sleep`/`now` under the same names without shadowing).
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

@@ -1,0 +1,481 @@
+// aether-text/src/lib.ae
+// ========================
+// Prose-level text utilities for Aether. 17 pub functions covering
+// line/word splitting, indentation, wrapping, alignment, case
+// conversion, truncation, and word/char counting.
+//
+// Where aether-string focuses on string *primitives* (split, replace,
+// indexOf, levenshtein), aether-text focuses on prose formatting: the
+// kind of operations you do when laying out a paragraph, formatting a
+// report, or normalising identifiers across a codebase.
+//
+// All functions are pure: they return new strings/arrays and never
+// mutate their inputs. Iteration uses `while` with explicit indices to
+// avoid the v1 evaluator's for-loop-scope quirk. The only string
+// primitives used are `charCode`, `fromCharCode`, `strSlice`, and `len`
+// — no host calls, no regex.
+//
+// Type conventions:
+//   - Strings are Aether `string` (UTF-16 internally via JS).
+//   - charCode values are `int` (0..65535).
+//   - Char-by-char operations work on ASCII range; case conversions
+//     are ASCII-only (non-letters pass through unchanged).
+//   - "Array of strings" is written as `[string]`.
+
+//----------------------------------------------------------------------------
+// Helpers
+//----------------------------------------------------------------------------
+
+// is_whitespace(c) — true if c is space, tab, newline, or carriage return.
+fn is_whitespace(c: int) -> bool {
+  c == 32 || c == 9 || c == 10 || c == 13
+}
+
+// is_alpha(c) — true if c is an ASCII letter.
+fn is_alpha(c: int) -> bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+}
+
+// is_digit(c) — true if c is an ASCII digit.
+fn is_digit(c: int) -> bool {
+  c >= 48 && c <= 57
+}
+
+// is_alnum(c) — letter or digit.
+fn is_alnum(c: int) -> bool {
+  is_alpha(c) || is_digit(c)
+}
+
+// repeat_char(ch, n) — string of n copies of single-char ch (or space if empty).
+fn repeat_char(ch: string, n: int) -> string {
+  let c = if len(ch) > 0 { strSlice(ch, 0, 1) } else { " " };
+  let mut out = "";
+  let mut i = 0;
+  while i < n {
+    out = out + c;
+    i = i + 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// Line / word splitting
+//----------------------------------------------------------------------------
+
+// lines(s) — split on newlines. Trailing newline does not yield an empty line.
+//   lines("a\nb\nc") -> ["a", "b", "c"]
+//   lines("a\nb\n")  -> ["a", "b"]
+pub fn lines(s: string) -> [string] {
+  let mut out = [];
+  let mut start = 0;
+  let mut i = 0;
+  while i < len(s) {
+    if charCode(s, i) == 10 {
+      push(out, strSlice(s, start, i));
+      start = i + 1;
+    };
+    i = i + 1;
+  }
+  if start < len(s) {
+    push(out, strSlice(s, start, len(s)));
+  };
+  out
+}
+
+// words(s) — split on whitespace, dropping empty tokens.
+//   words("hello   world") -> ["hello", "world"]
+pub fn words(s: string) -> [string] {
+  let mut out = [];
+  let mut i = 0;
+  let mut start = -1;
+  while i < len(s) {
+    let c = charCode(s, i);
+    if is_whitespace(c) {
+      if start >= 0 {
+        push(out, strSlice(s, start, i));
+        start = -1;
+      };
+    } else {
+      if start < 0 {
+        start = i;
+      };
+    };
+    i = i + 1;
+  }
+  if start >= 0 {
+    push(out, strSlice(s, start, len(s)));
+  };
+  out
+}
+
+// unlines(arr) — join with "\n". Inverse of lines.
+pub fn unlines(arr: [string]) -> string {
+  join_arr(arr, "\n")
+}
+
+// unwords(arr) — join with " ". Inverse of words.
+pub fn unwords(arr: [string]) -> string {
+  join_arr(arr, " ")
+}
+
+// join_arr(arr, sep) — internal helper: join with sep.
+fn join_arr(arr: [string], sep: string) -> string {
+  if len(arr) == 0 {
+    ""
+  } else {
+    let mut out = arr[0];
+    let mut i = 1;
+    while i < len(arr) {
+      out = out + sep + arr[i];
+      i = i + 1;
+    }
+    out
+  }
+}
+
+//----------------------------------------------------------------------------
+// Indentation / wrapping
+//----------------------------------------------------------------------------
+
+// indent(s, n) — indent every line by n spaces.
+//   indent("a\nb", 2) -> "  a\n  b"
+pub fn indent(s: string, n: int) -> string {
+  if n <= 0 {
+    s
+  } else {
+    let pad = repeat_char(" ", n);
+    let ls = lines(s);
+    let mut out = "";
+    let mut i = 0;
+    while i < len(ls) {
+      if i == 0 {
+        out = pad + ls[i];
+      } else {
+        out = out + "\n" + pad + ls[i];
+      };
+      i = i + 1;
+    }
+    out
+  }
+}
+
+// dedent(s) — remove the common leading whitespace from all non-blank lines.
+//   dedent("  a\n  b") -> "a\nb"
+//   dedent("  a\n    b") -> "a\n  b"
+pub fn dedent(s: string) -> string {
+  let ls = lines(s);
+  let mut min = -1;
+  let mut i = 0;
+  while i < len(ls) {
+    let line = ls[i];
+    if !is_blank_line(line) {
+      let w = leading_whitespace(line);
+      if min < 0 || w < min {
+        min = w;
+      };
+    };
+    i = i + 1;
+  }
+  if min <= 0 {
+    s
+  } else {
+    let mut out = "";
+    let mut j = 0;
+    while j < len(ls) {
+      if j == 0 {
+        out = strSlice(ls[j], min, len(ls[j]));
+      } else {
+        out = out + "\n" + strSlice(ls[j], min, len(ls[j]));
+      };
+      j = j + 1;
+    }
+    out
+  }
+}
+
+// is_blank_line(line) — true if line is empty or all whitespace.
+fn is_blank_line(line: string) -> bool {
+  let mut blank = true;
+  let mut i = 0;
+  while i < len(line) && blank {
+    if !is_whitespace(charCode(line, i)) {
+      blank = false;
+    };
+    i = i + 1;
+  }
+  blank
+}
+
+// leading_whitespace(line) — count of leading space/tab chars.
+fn leading_whitespace(line: string) -> int {
+  let mut n = 0;
+  let mut i = 0;
+  while i < len(line) {
+    let c = charCode(line, i);
+    if c == 32 || c == 9 {
+      n = n + 1;
+    } else {
+      i = len(line);
+    };
+    i = i + 1;
+  }
+  n
+}
+
+// wrap(s, width) — greedy word wrap to `width` columns.
+//   wrap("the quick brown fox", 10) -> "the quick\nbrown fox"
+pub fn wrap(s: string, width: int) -> string {
+  if width <= 0 {
+    panic("wrap: width must be positive")
+  } else {
+    let ws = words(s);
+    if len(ws) == 0 {
+      ""
+    } else {
+      let mut out = "";
+      let mut line = ws[0];
+      let mut i = 1;
+      while i < len(ws) {
+        let next = ws[i];
+        if len(line) + 1 + len(next) <= width {
+          line = line + " " + next;
+        } else {
+          if len(out) == 0 {
+            out = line;
+          } else {
+            out = out + "\n" + line;
+          };
+          line = next;
+        };
+        i = i + 1;
+      }
+      if len(out) == 0 {
+        line
+      } else {
+        out + "\n" + line
+      }
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Alignment
+//----------------------------------------------------------------------------
+
+// center(s, width) — center s in a width-char string padded with spaces.
+//   center("hi", 6) -> "  hi  "
+pub fn center(s: string, width: int) -> string {
+  if width <= len(s) {
+    s
+  } else {
+    let total = width - len(s);
+    let l = int(total / 2);
+    let r = total - l;
+    repeat_char(" ", l) + s + repeat_char(" ", r)
+  }
+}
+
+// left(s, width) — left-align (pad right with spaces) to width.
+//   left("hi", 5) -> "hi   "
+pub fn left(s: string, width: int) -> string {
+  if width <= len(s) {
+    s
+  } else {
+    s + repeat_char(" ", width - len(s))
+  }
+}
+
+// right(s, width) — right-align (pad left with spaces) to width.
+//   right("hi", 5) -> "   hi"
+pub fn right(s: string, width: int) -> string {
+  if width <= len(s) {
+    s
+  } else {
+    repeat_char(" ", width - len(s)) + s
+  }
+}
+
+//----------------------------------------------------------------------------
+// Case conversion
+//----------------------------------------------------------------------------
+
+// to_upper(c) — ASCII uppercase of single char code.
+fn to_upper(c: int) -> int {
+  if c >= 97 && c <= 122 { c - 32 } else { c }
+}
+
+// to_lower(c) — ASCII lowercase of single char code.
+fn to_lower(c: int) -> int {
+  if c >= 65 && c <= 90 { c + 32 } else { c }
+}
+
+// titleCase(s) — capitalize the first letter of each word.
+//   titleCase("hello world") -> "Hello World"
+pub fn titleCase(s: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  let mut cap_next = true;
+  while i < len(s) {
+    let c = charCode(s, i);
+    if is_alpha(c) {
+      if cap_next {
+        out = out + fromCharCode(to_upper(c));
+        cap_next = false;
+      } else {
+        out = out + fromCharCode(to_lower(c));
+      };
+    } else {
+      out = out + fromCharCode(c);
+      if is_whitespace(c) {
+        cap_next = true;
+      } else {
+        cap_next = false;
+      };
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// camelCase(s) — convert from snake/kebab/space to camelCase.
+//   camelCase("hello world") -> "helloWorld"
+pub fn camelCase(s: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  let mut cap_next = false;
+  let mut started = false;
+  while i < len(s) {
+    let c = charCode(s, i);
+    if is_alnum(c) {
+      if !started {
+        out = out + fromCharCode(to_lower(c));
+        started = true;
+      } else {
+        if cap_next {
+          out = out + fromCharCode(to_upper(c));
+          cap_next = false;
+        } else {
+          out = out + fromCharCode(to_lower(c));
+        };
+      };
+    } else {
+      cap_next = true;
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// snake_case(s) — convert from camel/kebab/space to snake_case.
+//   snake_case("helloWorld") -> "hello_world"
+pub fn snake_case(s: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(s) {
+    let c = charCode(s, i);
+    if c >= 65 && c <= 90 {
+      if len(out) > 0 {
+        out = out + "_";
+      };
+      out = out + fromCharCode(c + 32);
+    } else {
+      if is_alnum(c) {
+        out = out + fromCharCode(to_lower(c));
+      } else {
+        if len(out) > 0 {
+          out = out + "_";
+        };
+      };
+    };
+    i = i + 1;
+  }
+  collapse_seps(out, "_")
+}
+
+// kebabCase(s) — convert from camel/snake/space to kebab-case.
+pub fn kebabCase(s: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(s) {
+    let c = charCode(s, i);
+    if c >= 65 && c <= 90 {
+      if len(out) > 0 {
+        out = out + "-";
+      };
+      out = out + fromCharCode(c + 32);
+    } else {
+      if is_alnum(c) {
+        out = out + fromCharCode(to_lower(c));
+      } else {
+        if len(out) > 0 {
+          out = out + "-";
+        };
+      };
+    };
+    i = i + 1;
+  }
+  collapse_seps(out, "-")
+}
+
+// collapse_seps(s, sep) — collapse runs of sep into a single sep; strip trailing.
+fn collapse_seps(s: string, sep: string) -> string {
+  let sep_code = if sep == "_" { 95 } else { 45 };
+  let mut out = "";
+  let mut i = 0;
+  let mut last_was_sep = false;
+  while i < len(s) {
+    let c = charCode(s, i);
+    if c == sep_code {
+      if !last_was_sep && len(out) > 0 {
+        out = out + sep;
+      };
+      last_was_sep = true;
+    } else {
+      out = out + fromCharCode(c);
+      last_was_sep = false;
+    };
+    i = i + 1;
+  }
+  // Strip trailing separator if present.
+  if len(out) > 0 && charCode(out, len(out) - 1) == sep_code {
+    strSlice(out, 0, len(out) - 1)
+  } else {
+    out
+  }
+}
+
+//----------------------------------------------------------------------------
+// Truncation / counting
+//----------------------------------------------------------------------------
+
+// truncate(s, maxLen) — truncate s to maxLen chars, appending "..." if shortened.
+//   truncate("hello world", 8) -> "hello..."
+//   truncate("hi", 8) -> "hi"
+pub fn truncate(s: string, maxLen: int) -> string {
+  if maxLen < 0 {
+    panic("truncate: negative length")
+  } else {
+    if len(s) <= maxLen {
+      s
+    } else {
+      if maxLen < 3 {
+        strSlice(s, 0, maxLen)
+      } else {
+        strSlice(s, 0, maxLen - 3) + "..."
+      }
+    }
+  }
+}
+
+// wordCount(s) — number of whitespace-separated words.
+//   wordCount("the quick brown fox") -> 4
+pub fn wordCount(s: string) -> int {
+  len(words(s))
+}
+
+// charCount(s) — number of UTF-16 code units (== len(s)).
+// Exposed for symmetry with wordCount; lets a codebase that imports
+// aether-text avoid reaching for the bare `len` builtin.
+pub fn charCount(s: string) -> int {
+  len(s)
+}

@@ -1,0 +1,21 @@
+// aether-process/src/_host_process.ae
+// ====================================
+// Internal helper module: captures the host's `args`, `env`, `exit`,
+// `sleep`, and `now` builtins as pub consts so lib.ae can re-export
+// `exit`/`sleep`/`now` under the same names without shadowing them.
+//
+// Why a separate file?
+// -------------------
+// Aether's name resolution lets a top-level `pub fn exit(code)` shadow
+// the host builtin `exit` everywhere in the same module. To capture
+// the host builtin before the shadow takes effect, we evaluate the
+// builtin in a separate module where it is not redeclared, and export
+// the captured closure as a `pub const`. See
+// aether-datetime/src/_host_clock.ae for the same pattern applied to
+// `now`/`today`.
+
+pub const HOST_ARGS = args;
+pub const HOST_ENV = env;
+pub const HOST_EXIT = exit;
+pub const HOST_SLEEP = sleep;
+pub const HOST_NOW = now;

@@ -1,0 +1,19 @@
+// aether-fs/src/_host_fs.ae
+// ==========================
+// Internal helper module: captures the host's `readFileSync`,
+// `writeFileSync`, and `fileExists` builtins as pub consts so lib.ae
+// can re-export the fileExists name without shadowing it.
+//
+// Why a separate file?
+// -------------------
+// Aether's name resolution lets a top-level `pub fn fileExists(...)`
+// shadow the host builtin `fileExists` everywhere in the same module.
+// To capture the host builtin before the shadow takes effect, we
+// evaluate the builtin in a separate module where it is not redeclared,
+// and export the captured closure as a `pub const`. See
+// aether-datetime/src/_host_clock.ae for the same pattern applied to
+// `now`/`today`.
+
+pub const HOST_READ_FILE_SYNC = readFileSync;
+pub const HOST_WRITE_FILE_SYNC = writeFileSync;
+pub const HOST_FILE_EXISTS = fileExists;

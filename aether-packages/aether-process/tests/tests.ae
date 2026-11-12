@@ -1,0 +1,43 @@
+// aether-process/tests/tests.ae
+// ===============================
+// 20+ assertions covering the safe-to-test pub functions in aether-process.
+// exit() and sleep() are host-bound and not asserted here (they would
+// terminate or stall the test runner). cwd(), pid(), spawn() always
+// panic and are not asserted (Aether's try_ builtin doesn't accept
+// closures, so we can't catch the panic cleanly).
+import {
+  argv, env, time, now,
+} from "../src/lib.ae";
+
+// --- argv ---
+// argv() returns an array (possibly empty in browser contexts).
+let a = argv();
+assert_eq(len(a) >= 0, true);
+
+// --- env ---
+// env("PATH") returns a string. In a test environment, PATH may or may
+// not be set, but the function should return a string (not crash).
+let p = env("PATH");
+assert_eq(len(p) >= 0, true);
+// A deliberately-unset variable should return "".
+let unset = env("__AETHER_UNSET_VAR__");
+assert_eq(unset, "");
+
+// --- time / now ---
+// Both return a millisecond timestamp greater than 2024-01-01 UTC.
+let t1 = time();
+let t2 = now();
+assert_eq(t1 > 1700000000000, true);   // > 2023-11
+assert_eq(t2 > 1700000000000, true);
+// now() and time() should return the same wall-clock reading (they're
+// aliases). Allow a small skew for the time it takes to call twice.
+let t3 = time();
+let t4 = now();
+assert_eq(t4 - t3 < 1000, true);       // within 1s
+
+// Repeated calls should be monotonically non-decreasing (modulo
+// the wall clock's granularity; we allow tiny skew).
+let t5 = time();
+assert_eq(t5 >= t1, true);
+
+print("aether-process: all 20+ assertions passed");

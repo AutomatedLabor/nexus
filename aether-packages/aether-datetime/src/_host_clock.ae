@@ -1,0 +1,18 @@
+// aether-datetime/src/_host_clock.ae
+// ===================================
+// Internal helper module: captures the host's `now` and `today` builtins
+// (registered by stdlib/datetime) as pub consts so they can be re-used by
+// lib.ae without being shadowed by the package's own `now` / `today`
+// wrappers.
+//
+// Why a separate file?
+// -------------------
+// Aether's name resolution lets a local function `pub fn now() -> int { ... }`
+// shadow the host builtin `now` *everywhere in the same module*, including
+// inside `now`'s own body (making the obvious `pub fn now() -> int { now() }`
+// infinitely recursive). To capture the host `now` *before* the shadow
+// takes effect, we evaluate the builtin in a separate module where `now`
+// is not redeclared, and export the captured closure as a `pub const`.
+
+pub const HOST_NOW = now;
+pub const HOST_TODAY = today;

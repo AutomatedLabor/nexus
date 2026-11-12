@@ -1,0 +1,85 @@
+// aether-datetime/examples/example.ae
+// =======================================
+// A demo of the aether-datetime package.
+import {
+  now, today, year, month, day, hour, minute, second, dayOfWeek,
+  addDays, addHours, addMinutes, diffSeconds, diffDays,
+  isLeapYear, daysInMonth, toISO, fromISO,
+} from "../src/lib.ae";
+
+fn dow_name(d: int) -> string {
+  if d == 0 { "Sunday" } else {
+    if d == 1 { "Monday" } else {
+      if d == 2 { "Tuesday" } else {
+        if d == 3 { "Wednesday" } else {
+          if d == 4 { "Thursday" } else {
+            if d == 5 { "Friday" } else { "Saturday" }
+          }
+        }
+      }
+    }
+  }
+}
+
+print("== aether-datetime example ==");
+print("");
+
+let t = now();
+print("now()       = " + str(t));
+print("today()     = " + str(today()));
+print("toISO(now)  = " + toISO(t));
+print("year(now)   = " + str(year(t)));
+print("month(now)  = " + str(month(t)));
+print("day(now)    = " + str(day(t)));
+print("hour(now)   = " + str(hour(t)));
+print("minute(now) = " + str(minute(t)));
+print("second(now) = " + str(second(t)));
+print("dayOfWeek   = " + dow_name(dayOfWeek(t)));
+print("");
+
+let y = year(t);
+print("isLeapYear(" + str(y) + ") = " + str(isLeapYear(y)));
+print("isLeapYear(2024) = " + str(isLeapYear(2024)));
+print("isLeapYear(2000) = " + str(isLeapYear(2000)));
+print("isLeapYear(1900) = " + str(isLeapYear(1900)));
+print("");
+
+print("daysInMonth(2024, 2) = " + str(daysInMonth(2024, 2)));
+print("daysInMonth(2023, 2) = " + str(daysInMonth(2023, 2)));
+print("daysInMonth(2024, 1) = " + str(daysInMonth(2024, 1)));
+print("");
+
+let epoch = 0;
+print("toISO(0)    = " + toISO(epoch));
+print("year(0)     = " + str(year(epoch)));
+print("month(0)    = " + str(month(epoch)));
+print("day(0)      = " + str(day(epoch)));
+print("dayOfWeek(0)= " + dow_name(dayOfWeek(epoch)));
+print("");
+
+let ts = fromISO("2024-02-29T12:34:56.789Z");
+print("fromISO(\"2024-02-29T12:34:56.789Z\") = " + str(ts));
+print("year(ts)    = " + str(year(ts)));
+print("month(ts)   = " + str(month(ts)));
+print("day(ts)     = " + str(day(ts)));
+print("hour(ts)    = " + str(hour(ts)));
+print("minute(ts)  = " + str(minute(ts)));
+print("second(ts)  = " + str(second(ts)));
+print("");
+
+let tomorrow = addDays(today(), 1);
+let yesterday = addDays(today(), -1);
+print("today       = " + toISO(today()));
+print("tomorrow    = " + toISO(tomorrow));
+print("yesterday   = " + toISO(yesterday));
+print("diffDays    = " + str(diffDays(yesterday, tomorrow)));
+print("");
+
+let t1 = fromISO("2024-01-01T00:00:00.000Z");
+let t2 = fromISO("2024-12-31T23:59:59.999Z");
+print("from 2024-01-01 to 2024-12-31:");
+print("  diffSeconds = " + str(diffSeconds(t1, t2)));
+print("  diffDays    = " + str(diffDays(t1, t2)));
+
+print("");
+print("All demos ran successfully.");

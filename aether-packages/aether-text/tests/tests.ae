@@ -1,0 +1,86 @@
+// aether-text/tests/tests.ae
+// ============================
+// 30+ assertions covering every pub function in aether-text.
+import {
+  lines, words, unlines, unwords,
+  indent, dedent, wrap,
+  center, left, right,
+  titleCase, camelCase, snake_case, kebabCase,
+  truncate, wordCount, charCount,
+} from "../src/lib.ae";
+
+// --- lines / unlines ---
+assert_eq(lines("a\nb\nc"), ["a", "b", "c"]);
+assert_eq(lines("a\nb\n"), ["a", "b"]);
+assert_eq(lines("only"), ["only"]);
+assert_eq(lines(""), []);
+assert_eq(unlines(["a", "b", "c"]), "a\nb\nc");
+assert_eq(unlines([]), "");
+
+// --- words / unwords ---
+assert_eq(words("hello   world"), ["hello", "world"]);
+assert_eq(words("  one  two  three  "), ["one", "two", "three"]);
+assert_eq(words(""), []);
+assert_eq(words("single"), ["single"]);
+assert_eq(unwords(["hello", "world"]), "hello world");
+assert_eq(unwords([]), "");
+
+// --- indent / dedent ---
+assert_eq(indent("a\nb", 2), "  a\n  b");
+assert_eq(indent("hello", 0), "hello");
+assert_eq(indent("hello", 3), "   hello");
+assert_eq(dedent("  a\n  b"), "a\nb");
+assert_eq(dedent("  a\n    b"), "a\n  b");
+assert_eq(dedent("no indent"), "no indent");
+assert_eq(dedent("    "), "    ");
+assert_eq(dedent("\n  a\n  b"), "\na\nb");
+
+// --- wrap ---
+assert_eq(wrap("the quick brown fox", 10), "the quick\nbrown fox");
+assert_eq(wrap("hello", 10), "hello");
+assert_eq(wrap("one two three four", 8), "one two\nthree\nfour");
+assert_eq(wrap("a b c d e", 1), "a\nb\nc\nd\ne");
+assert_eq(wrap("", 10), "");
+
+// --- alignment ---
+assert_eq(center("hi", 6), "  hi  ");
+assert_eq(center("hi", 4), " hi ");
+assert_eq(center("hello", 3), "hello");
+assert_eq(left("hi", 5), "hi   ");
+assert_eq(left("hello", 3), "hello");
+assert_eq(right("hi", 5), "   hi");
+assert_eq(right("hello", 3), "hello");
+
+// --- case conversions ---
+assert_eq(titleCase("hello world"), "Hello World");
+assert_eq(titleCase("the quick brown fox"), "The Quick Brown Fox");
+assert_eq(titleCase("HELLO"), "Hello");
+assert_eq(camelCase("hello world"), "helloWorld");
+assert_eq(camelCase("foo_bar_baz"), "fooBarBaz");
+assert_eq(camelCase("foo-bar-baz"), "fooBarBaz");
+assert_eq(snake_case("helloWorld"), "hello_world");
+assert_eq(snake_case("foo bar baz"), "foo_bar_baz");
+assert_eq(snake_case("foo-bar"), "foo_bar");
+assert_eq(snake_case("FooBarBaz"), "foo_bar_baz");
+assert_eq(kebabCase("helloWorld"), "hello-world");
+assert_eq(kebabCase("foo bar baz"), "foo-bar-baz");
+assert_eq(kebabCase("foo_bar"), "foo-bar");
+
+// --- truncate ---
+assert_eq(truncate("hello world", 8), "hello...");
+assert_eq(truncate("hi", 8), "hi");
+assert_eq(truncate("hello world", 11), "hello world");
+assert_eq(truncate("hello world", 5), "he...");
+assert_eq(truncate("hello", 2), "he");
+assert_eq(truncate("hello", 0), "");
+
+// --- wordCount / charCount ---
+assert_eq(wordCount("the quick brown fox"), 4);
+assert_eq(wordCount("single"), 1);
+assert_eq(wordCount("  "), 0);
+assert_eq(wordCount("a b c d e"), 5);
+assert_eq(charCount("hello"), 5);
+assert_eq(charCount(""), 0);
+assert_eq(charCount("a b"), 3);
+
+print("aether-text: all 30+ assertions passed");

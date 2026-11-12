@@ -1,0 +1,59 @@
+// aether-logging/examples/example.ae
+// ====================================
+// A demo of the aether-logging package.
+import {
+  new, silent, verbose, log, debug, info, warn, error,
+  withContext, format,
+  LEVEL_SILENT, LEVEL_ERROR, LEVEL_WARN, LEVEL_INFO, LEVEL_DEBUG, LEVEL_TRACE,
+} from "../src/lib.ae";
+
+print("== aether-logging example ==");
+print("");
+
+// A silent logger emits nothing.
+let s = silent();
+print("silent logger:");
+let _r1 = error(s, "this won't print");
+print("  (no output above)");
+print("");
+
+// A verbose logger emits everything.
+let v = verbose();
+print("verbose logger:");
+let _r2 = debug(v, "debug message");
+let _r3 = info(v, "info message");
+let _r4 = warn(v, "warn message");
+let _r5 = error(v, "error message");
+print("");
+
+// An info logger emits info, warn, error but not debug, trace.
+let n = new(LEVEL_INFO);
+print("info logger:");
+let _r6 = debug(n, "this won't print (below info)");
+let _r7 = info(n, "info: ok");
+let _r8 = warn(n, "warn: ok");
+let _r9 = error(n, "error: ok");
+print("");
+
+// withContext adds key/value pairs to every emitted message.
+let l1 = withContext(new(LEVEL_INFO), "user", "alice");
+let l2 = withContext(l1, "request", "GET /api/v1/users");
+print("logger with context:");
+let _r10 = info(l2, "serving request");
+let _r11 = warn(l2, "rate limit hit");
+print("");
+
+// format renders the logger's configuration.
+print("format(silent())  = " + format(silent()));
+print("format(verbose())  = " + format(verbose()));
+print("format(new(INFO))  = " + format(new(LEVEL_INFO)));
+print("format(l2)          = " + format(l2));
+print("");
+
+// Chained: build a logger with context, then log a message.
+let chained = withContext(withContext(withContext(new(LEVEL_INFO), "service", "api"), "host", "node-1"), "pid", "1234");
+print("chained logger:");
+let _r12 = info(chained, "request received");
+
+print("");
+print("All demos ran successfully.");

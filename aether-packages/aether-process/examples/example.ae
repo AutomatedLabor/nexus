@@ -1,0 +1,33 @@
+// aether-process/examples/example.ae
+// =====================================
+// A demo of the aether-process package — the safe-to-call functions
+// only. exit() and sleep() are host-bound and not exercised here (they
+// would terminate or stall the example). cwd(), pid(), spawn() always
+// panic and are not exercised (the panic would abort the example).
+import {
+  argv, env, time, now,
+} from "../src/lib.ae";
+
+print("== aether-process example ==");
+print("");
+
+print("argv() = " + argv());
+print("");
+
+print("env(\"PATH\") length = " + str(len(env("PATH"))));
+print("env(\"HOME\") length = " + str(len(env("HOME"))));
+print("env(\"__UNSET__\") = " + "\"" + env("__AETHER_UNSET__") + "\"");
+print("");
+
+let t1 = time();
+print("time() = " + str(t1));
+print("now()  = " + str(now()));
+let t2 = now();
+print("now() again = " + str(t2));
+print("delta = " + str(t2 - t1) + " ms");
+print("");
+
+print("Note: exit(), sleep(), cwd(), pid(), spawn() are host-bound or stub.");
+print("See README for the host-call delegation model.");
+print("");
+print("All demos ran successfully.");

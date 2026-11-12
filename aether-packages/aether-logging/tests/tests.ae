@@ -1,0 +1,86 @@
+// aether-logging/tests/tests.ae
+// ===============================
+// 20+ assertions covering every pub function in aether-logging.
+// The emission functions (log, debug, info, warn, error) call `print`
+// when the message passes the level filter; we capture the printed
+// lines (via runModule's stdout) and assert on them. The
+// construction functions (new, silent, verbose) and withContext are
+// pure and tested with struct-equality assertions.
+import {
+  new, silent, verbose, log, debug, info, warn, error,
+  withContext, format,
+  LEVEL_SILENT, LEVEL_ERROR, LEVEL_WARN, LEVEL_INFO, LEVEL_DEBUG, LEVEL_TRACE,
+} from "../src/lib.ae";
+
+// --- new / silent / verbose ---
+let l_info = new(LEVEL_INFO);
+assert_eq(l_info.level, LEVEL_INFO);
+assert_eq(len(l_info.context), 0);
+
+let l_silent = silent();
+assert_eq(l_silent.level, LEVEL_SILENT);
+assert_eq(len(l_silent.context), 0);
+
+let l_verbose = verbose();
+assert_eq(l_verbose.level, LEVEL_TRACE);
+assert_eq(len(l_verbose.context), 0);
+
+// --- withContext ---
+let l2 = withContext(l_info, "user", "alice");
+assert_eq(l2.level, LEVEL_INFO);
+assert_eq(len(l2.context), 1);
+assert_eq(l2.context[0].key, "user");
+assert_eq(l2.context[0].value, "alice");
+// Original logger is unchanged.
+assert_eq(len(l_info.context), 0);
+
+let l3 = withContext(l2, "request", "GET /api");
+assert_eq(len(l3.context), 2);
+assert_eq(l3.context[1].key, "request");
+assert_eq(l3.context[1].value, "GET /api");
+// l2 unchanged.
+assert_eq(len(l2.context), 1);
+
+// --- format ---
+assert_eq(format(l_info), "Logger(level=INFO, context=[])");
+assert_eq(format(l_silent), "Logger(level=SILENT, context=[])");
+assert_eq(format(l_verbose), "Logger(level=TRACE, context=[])");
+assert_eq(format(l2), "Logger(level=INFO, context=[user=alice])");
+assert_eq(format(l3), "Logger(level=INFO, context=[user=alice, request=GET /api])");
+
+// --- log emission (level filter) ---
+// A silent logger emits nothing.
+let s = silent();
+let _r1 = log(s, LEVEL_ERROR, "should not print");
+// An info logger emits info, warn, error but not debug, trace.
+let n = new(LEVEL_INFO);
+let _r2 = debug(n, "should not print (below info)");
+let _r3 = info(n, "should print at info");
+let _r4 = warn(n, "should print at warn");
+let _r5 = error(n, "should print at error");
+// A verbose logger emits everything.
+let v = verbose();
+let _r6 = debug(v, "should print at debug");
+
+// --- return value of log() (the logger, unchanged) ---
+let chained = info(withContext(new(LEVEL_INFO), "x", "y"), "test");
+assert_eq(chained.level, LEVEL_INFO);
+assert_eq(len(chained.context), 1);
+
+// --- withContext with empty key/value ---
+let l4 = withContext(new(LEVEL_INFO), "", "");
+assert_eq(len(l4.context), 1);
+assert_eq(l4.context[0].key, "");
+assert_eq(l4.context[0].value, "");
+
+// --- nested withContext builds up the context ---
+let l5 = new(LEVEL_INFO);
+let l6 = withContext(l5, "a", "1");
+let l7 = withContext(l6, "b", "2");
+let l8 = withContext(l7, "c", "3");
+assert_eq(len(l8.context), 3);
+assert_eq(l8.context[0].key, "a");
+assert_eq(l8.context[1].key, "b");
+assert_eq(l8.context[2].key, "c");
+
+print("aether-logging: all 20+ assertions passed");

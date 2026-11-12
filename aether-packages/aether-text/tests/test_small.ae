@@ -1,0 +1,4 @@
+print("start");
+import { lines } from "../src/lib.ae";
+assert_eq(lines("a\nb"), ["a", "b"]);
+print("end");

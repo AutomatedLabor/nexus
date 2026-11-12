@@ -1,0 +1,343 @@
+// aether-datetime/src/lib.ae
+// ============================
+// Datetime utilities for Aether. 18 pub functions covering the clock
+// (now, today), calendar field extraction (year, month, day, hour,
+// minute, second, dayOfWeek), arithmetic (addDays, addHours, addMinutes,
+// diffSeconds, diffDays), predicates (isLeapYear, daysInMonth), and
+// ISO 8601 formatting/parsing (toISO, fromISO).
+//
+// All functions operate on millisecond Unix timestamps (the same shape
+// used by JS `Date`). Calendar fields are computed in **UTC** — this
+// matches `toISO`/`fromISO` and keeps the package timezone-independent.
+// (The stdlib's datetime module uses local time; aether-datetime uses
+// UTC for portability across runtimes and hosts.)
+//
+// The only host primitives are `now` and `today` for the wall clock —
+// captured by the helper module `_host_clock.ae` (see that file for the
+// shadowing rationale). Every other function is pure arithmetic on the
+// timestamp. The calendar math uses Howard Hinnant's "days_from_civil" /
+// "civil_from_days" algorithms
+// (https://howardhinnant.github.io/date_algorithms.html), which are
+// O(1), branch-light, and correct for all proleptic Gregorian dates.
+//
+// Type conventions:
+//   - Timestamps are `int` (JS number, ms since 1970-01-01 UTC).
+//   - Year/month/day/hour/minute/second are `int`.
+//   - dayOfWeek returns 0=Sunday .. 6=Saturday (matching JS `Date.getDay`).
+//   - isLeapYear(y) returns bool.
+//   - daysInMonth(y, m) returns 28..31.
+//   - toISO(ts) returns "YYYY-MM-DDTHH:MM:SS.mmmZ".
+//   - fromISO(s) parses the same shape back to a timestamp.
+
+import { HOST_NOW, HOST_TODAY } from "./_host_clock.ae";
+
+//----------------------------------------------------------------------------
+// Constants
+//----------------------------------------------------------------------------
+
+// 1 day in ms.
+pub const MS_PER_DAY = 86400000;
+// 1 hour in ms.
+pub const MS_PER_HOUR = 3600000;
+// 1 minute in ms.
+pub const MS_PER_MINUTE = 60000;
+// 1 second in ms.
+pub const MS_PER_SECOND = 1000;
+// Days from 1970-01-01 to 0000-03-01 (the Hinnant epoch offset).
+const EPOCH_OFFSET_DAYS = 719468;
+
+//----------------------------------------------------------------------------
+// Clock
+//----------------------------------------------------------------------------
+
+// now() — current Unix timestamp in ms (UTC).
+pub fn now() -> int {
+  HOST_NOW()
+}
+
+// today() — midnight UTC of the current day (a timestamp divisible by 86400000).
+pub fn today() -> int {
+  HOST_TODAY()
+}
+
+//----------------------------------------------------------------------------
+// Calendar field extraction (UTC)
+//----------------------------------------------------------------------------
+
+// year(ts) — calendar year (e.g. 2024).
+pub fn year(ts: int) -> int {
+  let days = floor_div(ts, MS_PER_DAY);
+  let ymd = civil_from_days(days);
+  ymd.0
+}
+
+// month(ts) — calendar month 1..12.
+pub fn month(ts: int) -> int {
+  let days = floor_div(ts, MS_PER_DAY);
+  let ymd = civil_from_days(days);
+  ymd.1
+}
+
+// day(ts) — day of month 1..31.
+pub fn day(ts: int) -> int {
+  let days = floor_div(ts, MS_PER_DAY);
+  let ymd = civil_from_days(days);
+  ymd.2
+}
+
+// hour(ts) — hour 0..23.
+pub fn hour(ts: int) -> int {
+  let tod = floor_mod(ts, MS_PER_DAY);
+  int(tod / MS_PER_HOUR)
+}
+
+// minute(ts) — minute 0..59.
+pub fn minute(ts: int) -> int {
+  let tod = floor_mod(ts, MS_PER_HOUR);
+  int(tod / MS_PER_MINUTE)
+}
+
+// second(ts) — second 0..59.
+pub fn second(ts: int) -> int {
+  let tod = floor_mod(ts, MS_PER_MINUTE);
+  int(tod / MS_PER_SECOND)
+}
+
+// dayOfWeek(ts) — 0=Sunday .. 6=Saturday.
+// 1970-01-01 was a Thursday (4), so we add 4 and mod 7.
+pub fn dayOfWeek(ts: int) -> int {
+  let days = floor_div(ts, MS_PER_DAY);
+  floor_mod(days + 4, 7)
+}
+
+//----------------------------------------------------------------------------
+// Arithmetic
+//----------------------------------------------------------------------------
+
+// addDays(ts, n) — add n days to a timestamp.
+pub fn addDays(ts: int, n: int) -> int {
+  ts + n * MS_PER_DAY
+}
+
+// addHours(ts, n) — add n hours.
+pub fn addHours(ts: int, n: int) -> int {
+  ts + n * MS_PER_HOUR
+}
+
+// addMinutes(ts, n) — add n minutes.
+pub fn addMinutes(ts: int, n: int) -> int {
+  ts + n * MS_PER_MINUTE
+}
+
+// diffSeconds(a, b) — seconds from a to b (positive if b is later).
+pub fn diffSeconds(a: int, b: int) -> int {
+  int((b - a) / MS_PER_SECOND)
+}
+
+// diffDays(a, b) — days from a to b (positive if b is later).
+pub fn diffDays(a: int, b: int) -> int {
+  floor_div(b - a, MS_PER_DAY)
+}
+
+//----------------------------------------------------------------------------
+// Predicates
+//----------------------------------------------------------------------------
+
+// isLeapYear(y) — Gregorian leap-year test.
+pub fn isLeapYear(y: int) -> bool {
+  (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+// daysInMonth(y, m) — number of days in month m of year y.
+pub fn daysInMonth(y: int, m: int) -> int {
+  if m == 1 || m == 3 || m == 5 || m == 7 || m == 8 || m == 10 || m == 12 {
+    31
+  } else {
+    if m == 4 || m == 6 || m == 9 || m == 11 {
+      30
+    } else {
+      if m == 2 {
+        if isLeapYear(y) { 29 } else { 28 }
+      } else {
+        panic("daysInMonth: month out of range (1..12)")
+      }
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// ISO 8601 formatting / parsing
+//----------------------------------------------------------------------------
+
+// toISO(ts) — format as "YYYY-MM-DDTHH:MM:SS.mmmZ".
+//   toISO(0) -> "1970-01-01T00:00:00.000Z"
+pub fn toISO(ts: int) -> string {
+  let d = floor_div(ts, MS_PER_DAY);
+  let ymd = civil_from_days(d);
+  let y = ymd.0;
+  let m = ymd.1;
+  let day = ymd.2;
+  let tod = floor_mod(ts, MS_PER_DAY);
+  let h = int(tod / MS_PER_HOUR);
+  let rem = tod - h * MS_PER_HOUR;
+  let mi = int(rem / MS_PER_MINUTE);
+  let rem2 = rem - mi * MS_PER_MINUTE;
+  let s = int(rem2 / MS_PER_SECOND);
+  let ms = rem2 - s * MS_PER_SECOND;
+  pad4(y) + "-" + pad2(m) + "-" + pad2(day) + "T" +
+    pad2(h) + ":" + pad2(mi) + ":" + pad2(s) + "." + pad3(ms) + "Z"
+}
+
+// fromISO(s) — parse "YYYY-MM-DDTHH:MM:SS.mmmZ" to a timestamp.
+//   fromISO("1970-01-01T00:00:00.000Z") -> 0
+//   fromISO("2024-02-29T12:34:56.789Z") -> <ts>
+pub fn fromISO(s: string) -> int {
+  let n = len(s);
+  if n < 20 {
+    panic("fromISO: expected at least 20 chars (YYYY-MM-DDTHH:MM:SS)")
+  } else {
+    let y = parse4(s, 0);
+    let m = parse2(s, 5);
+    let d = parse2(s, 8);
+    let h = parse2(s, 11);
+    let mi = parse2(s, 14);
+    let sec = parse2(s, 17);
+    let ms = if n >= 23 && charCode(s, 19) == 46 {
+      // ".mmm" — milliseconds present.
+      parse3(s, 20)
+    } else {
+      0
+    };
+    if m < 1 || m > 12 {
+      panic("fromISO: month out of range")
+    } else {
+      if d < 1 || d > daysInMonth(y, m) {
+        panic("fromISO: day out of range for month")
+      } else {
+        if h < 0 || h > 23 {
+          panic("fromISO: hour out of range")
+        } else {
+          if mi < 0 || mi > 59 {
+            panic("fromISO: minute out of range")
+          } else {
+            if sec < 0 || sec > 59 {
+              panic("fromISO: second out of range")
+            } else {
+              let days = days_from_civil(y, m, d);
+              days * MS_PER_DAY + h * MS_PER_HOUR + mi * MS_PER_MINUTE + sec * MS_PER_SECOND + ms
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Hinnant's civil-from-days / days-from-civil (UTC, proleptic Gregorian)
+//----------------------------------------------------------------------------
+
+// civil_from_days(z) — returns (y, m, d) for the date at day-count `z` since
+// 1970-01-01.  Algorithm: https://howardhinnant.github.io/date_algorithms.html
+fn civil_from_days(z: int) -> (int, int, int) {
+  let zz = z + EPOCH_OFFSET_DAYS;
+  let era = if zz >= 0 { int(zz / 146097) } else { int((zz - 146096) / 146097) };
+  let doe = zz - era * 146097;                 // [0, 146096]
+  let yoe = int((doe - int(doe / 1460) + int(doe / 36524) - int(doe / 146096)) / 365);  // [0, 399]
+  let y = yoe + era * 400;
+  let doy = doe - (365 * yoe + int(yoe / 4) - int(yoe / 100));   // [0, 365]
+  let mp = int((5 * doy + 2) / 153);         // [0, 11]
+  let d = doy - int((153 * mp + 2) / 5) + 1;  // [1, 31]
+  let m = if mp < 10 { mp + 3 } else { mp - 9 };  // [1, 12]
+  let yy = if m <= 2 { y + 1 } else { y };
+  (yy, m, d)
+}
+
+// days_from_civil(y, m, d) — inverse of civil_from_days.
+fn days_from_civil(y: int, m: int, d: int) -> int {
+  let yy = if m <= 2 { y - 1 } else { y };
+  let era = if yy >= 0 { int(yy / 400) } else { int((yy - 399) / 400) };
+  let yoe = yy - era * 400;                     // [0, 399]
+  let mm = if m > 2 { m - 3 } else { m + 9 };
+  let doy = int((153 * mm + 2) / 5) + d - 1;     // [0, 365]
+  let doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy;   // [0, 146096]
+  era * 146097 + doe - EPOCH_OFFSET_DAYS
+}
+
+//----------------------------------------------------------------------------
+// Floor division / floor mod (handles negative dividends)
+//----------------------------------------------------------------------------
+
+fn floor_div(a: int, b: int) -> int {
+  // floor(a / b): rounds toward -infinity.
+  // JS's `int(a / b)` truncates toward zero, so we adjust on negative results.
+  let q = int(a / b);
+  let r = a - q * b;
+  if r != 0 && ((r < 0) != (b < 0)) { q - 1 } else { q }
+}
+
+fn floor_mod(a: int, b: int) -> int {
+  // a - floor_div(a, b) * b. Always non-negative when b > 0.
+  let q = floor_div(a, b);
+  a - q * b
+}
+
+//----------------------------------------------------------------------------
+// Integer-to-zero-padded-string helpers
+//----------------------------------------------------------------------------
+
+// pad2(n) — two-digit string with leading zero.
+fn pad2(n: int) -> string {
+  if n < 0 {
+    "-" + pad2(0 - n)
+  } else {
+    if n < 10 { "0" + str(n) } else { str(n) }
+  }
+}
+
+// pad3(n) — three-digit string with leading zeros.
+fn pad3(n: int) -> string {
+  if n < 0 {
+    "-" + pad3(0 - n)
+  } else {
+    if n < 10 { "00" + str(n) } else { if n < 100 { "0" + str(n) } else { str(n) } }
+  }
+}
+
+// pad4(n) — four-digit string with leading zeros.
+fn pad4(n: int) -> string {
+  if n < 0 {
+    "-" + pad4(0 - n)
+  } else {
+    if n < 10 { "000" + str(n) } else {
+      if n < 100 { "00" + str(n) } else {
+        if n < 1000 { "0" + str(n) } else { str(n) }
+      }
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Parse helpers — read N decimal digits starting at offset `pos`.
+//----------------------------------------------------------------------------
+
+fn parse2(s: string, pos: int) -> int {
+  let a = charCode(s, pos) - 48;
+  let b = charCode(s, pos + 1) - 48;
+  a * 10 + b
+}
+
+fn parse3(s: string, pos: int) -> int {
+  let a = charCode(s, pos) - 48;
+  let b = charCode(s, pos + 1) - 48;
+  let c = charCode(s, pos + 2) - 48;
+  a * 100 + b * 10 + c
+}
+
+fn parse4(s: string, pos: int) -> int {
+  let a = charCode(s, pos) - 48;
+  let b = charCode(s, pos + 1) - 48;
+  let c = charCode(s, pos + 2) - 48;
+  let d = charCode(s, pos + 3) - 48;
+  a * 1000 + b * 100 + c * 10 + d
+}

@@ -1,0 +1,255 @@
+// aether-fs/src/lib.ae
+// ======================
+// File system interface for Aether. 10 pub functions covering
+// host-bound IO (readFile, writeFile, fileExists, listDir) and pure
+// path manipulation (pathJoin, pathSplit, pathExt, pathBase, pathDir,
+// pathNormalize).
+//
+// The IO functions delegate to the host's `readFileSync` / `writeFileSync`
+// / `fileExists` builtins (captured by the helper module `_host_fs.ae`).
+// On hosts without an FS (browsers, sandboxed runtimes), the host builtins
+// throw their own error; we let the error propagate. `listDir` has no
+// corresponding host builtin and unconditionally panics.
+//
+// The path-manipulation functions are pure Aether — they walk the string
+// with `charCode` / `strSlice` / `len` and produce a normalised path. They
+// use POSIX semantics (forward slashes, no drive letters); Windows paths
+// are not handled. For Windows, see the (future) `aether-fs-win` package.
+//
+// Type conventions:
+//   - Paths are Aether `string`.
+//   - readFile returns the file contents as a `string`.
+//   - writeFile returns `()` (unit) on success; throws on host error.
+//   - fileExists returns `bool`.
+//   - listDir returns `[string]` (always throws in current build).
+//   - pathSplit returns `[string]` — the path components, no separators.
+
+import { HOST_READ_FILE_SYNC, HOST_WRITE_FILE_SYNC, HOST_FILE_EXISTS } from "./_host_fs.ae";
+
+//----------------------------------------------------------------------------
+// Host-bound IO
+//----------------------------------------------------------------------------
+
+// readFile(path) — read a file as UTF-8. Delegates to host `readFileSync`.
+//   readFile("/etc/hostname") -> "mybox\n"
+// Throws if the host has no FS (browser, sandboxed) or the file is missing.
+pub fn readFile(path: string) -> string {
+  HOST_READ_FILE_SYNC(path)
+}
+
+// writeFile(path, content) — write content to a file as UTF-8. Delegates to
+// host `writeFileSync`. Returns () on success. Throws on host error.
+pub fn writeFile(path: string, content: string) -> () {
+  HOST_WRITE_FILE_SYNC(path, content)
+}
+
+// fileExists(path) — true if a file is accessible at `path`. Delegates to
+// host `fileExists`. Returns false on missing files, true otherwise.
+// Throws if the host has no FS.
+pub fn fileExists(path: string) -> bool {
+  HOST_FILE_EXISTS(path)
+}
+
+// listDir(path) — list directory entries. The host has no builtin for
+// this (the stdlib only ships single-file IO). Always panics in the
+// current build; a future `aether-fs-extra` may wire a host-call.
+pub fn listDir(path: string) -> [string] {
+  panic("listDir: no FS in browser")
+}
+
+//----------------------------------------------------------------------------
+// Path manipulation (pure Aether, POSIX semantics)
+//----------------------------------------------------------------------------
+
+// pathJoin(a, b) — join two path components with a single "/".
+//   pathJoin("a/b", "c") -> "a/b/c"
+//   pathJoin("a/b/", "c") -> "a/b/c"
+//   pathJoin("a", "/b")  -> "/b"  (absolute right operand wins)
+//   pathJoin("", "b")    -> "b"
+//   pathJoin("a", "")    -> "a"
+pub fn pathJoin(a: string, b: string) -> string {
+  if starts_with_slash(b) {
+    b
+  } else {
+    if len(a) == 0 {
+      b
+    } else {
+      if len(b) == 0 {
+        a
+      } else {
+        if ends_with_slash(a) {
+          a + b
+        } else {
+          a + "/" + b
+        }
+      }
+    }
+  }
+}
+
+// pathSplit(p) — split a path into its non-empty components.
+//   pathSplit("a/b/c")   -> ["a", "b", "c"]
+//   pathSplit("/a/b/c")  -> ["a", "b", "c"]
+//   pathSplit("a//b")     -> ["a", "b"]
+//   pathSplit("")         -> []
+pub fn pathSplit(p: string) -> [string] {
+  let mut out = [];
+  let mut i = 0;
+  let mut start = -1;
+  while i < len(p) {
+    let c = charCode(p, i);
+    if c == 47 {
+      // "/" — emit the current component if any.
+      if start >= 0 {
+        push(out, strSlice(p, start, i));
+        start = -1;
+      };
+    } else {
+      if start < 0 {
+        start = i;
+      };
+    };
+    i = i + 1;
+  }
+  if start >= 0 {
+    push(out, strSlice(p, start, len(p)));
+  };
+  out
+}
+
+// pathExt(p) — file extension, including the leading dot. Empty if none.
+//   pathExt("file.txt")  -> ".txt"
+//   pathExt("file.tar.gz")-> ".gz"
+//   pathExt("file")       -> ""
+//   pathExt(".hidden")    -> ""   (leading-dot files have no ext)
+//   pathExt("a/b/file.c") -> ".c"
+pub fn pathExt(p: string) -> string {
+  let base = pathBase(p);
+  if len(base) == 0 {
+    ""
+  } else {
+    if charCode(base, 0) == 46 {
+      // leading dot — hidden file, no ext
+      ""
+    } else {
+      let mut last_dot = -1;
+      let mut i = 0;
+      while i < len(base) {
+        if charCode(base, i) == 46 {
+          last_dot = i;
+        };
+        i = i + 1;
+      }
+      if last_dot < 0 {
+        ""
+      } else {
+        strSlice(base, last_dot, len(base))
+      }
+    }
+  }
+}
+
+// pathBase(p) — the final path component (the "filename").
+//   pathBase("a/b/c.txt") -> "c.txt"
+//   pathBase("c.txt")      -> "c.txt"
+//   pathBase("a/b/")       -> ""
+//   pathBase("/a")          -> "a"
+pub fn pathBase(p: string) -> string {
+  let comps = pathSplit(p);
+  if len(comps) == 0 {
+    ""
+  } else {
+    comps[len(comps) - 1]
+  }
+}
+
+// pathDir(p) — the directory portion (everything before the final slash).
+// Matches Python's os.path.dirname: does NOT strip trailing slashes
+// before computing the dirname. So pathDir("a/b/") = "a/b".
+//   pathDir("a/b/c.txt") -> "a/b"
+//   pathDir("c.txt")      -> ""
+//   pathDir("/a")          -> ""
+//   pathDir("a/b/c")      -> "a/b"
+//   pathDir("a/b/")       -> "a/b"
+pub fn pathDir(p: string) -> string {
+  // Find the last slash in the string.
+  let mut last = -1;
+  let mut i = 0;
+  while i < len(p) {
+    if charCode(p, i) == 47 {
+      last = i;
+    };
+    i = i + 1;
+  }
+  if last < 0 {
+    ""
+  } else {
+    strSlice(p, 0, last)
+  }
+}
+
+// pathNormalize(p) — collapse "." and ".." segments and duplicate slashes.
+//   pathNormalize("a/./b")      -> "a/b"
+//   pathNormalize("a//b")        -> "a/b"
+//   pathNormalize("a/b/..")      -> "a"
+//   pathNormalize("a/b/../c")    -> "a/c"
+//   pathNormalize("/a/./b")      -> "/a/b"
+//   pathNormalize("./a")         -> "a"
+//   pathNormalize("")            -> ""
+pub fn pathNormalize(p: string) -> string {
+  let comps = pathSplit(p);
+  let absolute = starts_with_slash(p);
+  let mut stack = [];
+  let mut i = 0;
+  while i < len(comps) {
+    let c = comps[i];
+    if c == "." {
+      // drop
+    } else {
+      if c == ".." {
+        if len(stack) > 0 && stack[len(stack) - 1] != ".." {
+          pop(stack);
+        } else {
+          if !absolute {
+            push(stack, "..");
+          };
+        };
+      } else {
+        push(stack, c);
+      };
+    };
+    i = i + 1;
+  }
+  // Rebuild
+  let mut out = "";
+  let mut j = 0;
+  while j < len(stack) {
+    if j == 0 {
+      if absolute {
+        out = "/" + stack[j];
+      } else {
+        out = stack[j];
+      };
+    } else {
+      out = out + "/" + stack[j];
+    };
+    j = j + 1;
+  }
+  if absolute && len(out) == 0 {
+    "/"
+  } else {
+    out
+  }
+}
+
+//----------------------------------------------------------------------------
+// Helpers
+//----------------------------------------------------------------------------
+
+fn starts_with_slash(s: string) -> bool {
+  len(s) > 0 && charCode(s, 0) == 47
+}
+
+fn ends_with_slash(s: string) -> bool {
+  len(s) > 0 && charCode(s, len(s) - 1) == 47
+}

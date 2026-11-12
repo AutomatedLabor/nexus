@@ -1,0 +1,12 @@
+[package]
+name = "aether-text"
+version = "0.1.0"
+description = "Prose-level text utilities for Aether — 17 pure functions covering line/word splitting, indentation, wrapping, alignment, case conversion, truncation, and word/char counting."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — uses only core builtins (charCode, fromCharCode,
+# strSlice, len, push, panic).
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

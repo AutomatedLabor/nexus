@@ -1,0 +1,12 @@
+[package]
+name = "aether-datetime"
+version = "0.1.0"
+description = "Datetime utilities for Aether — 18 pure functions for UTC-based calendar math, ISO 8601 formatting, and timestamp arithmetic, with calendar fields computed via Howard Hinnant's days-from-civil algorithm."
+edition = "v3"
+
+[dependencies]
+# No external dependencies. Captures host builtins `now` and `today` via
+# src/_host_clock.ae; everything else is pure arithmetic.
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

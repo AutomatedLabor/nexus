@@ -1,0 +1,13 @@
+[package]
+name = "aether-fs"
+version = "0.1.0"
+description = "File system interface for Aether — 10 functions covering host-bound IO (readFile, writeFile, fileExists, listDir) and pure-Aether POSIX path manipulation (pathJoin, pathSplit, pathExt, pathBase, pathDir, pathNormalize)."
+edition = "v3"
+
+[dependencies]
+# Captures host builtins `readFileSync`, `writeFileSync`, `fileExists` via
+# src/_host_fs.ae (the helper module that lets lib.ae re-export
+# `fileExists` under the same name without shadowing the host builtin).
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

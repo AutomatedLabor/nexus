@@ -51,6 +51,12 @@ import * as Sort from "./sort";
 import * as Matrix from "./matrix";
 import * as Parser from "./parser";
 import * as Random from "./random";
+// New modules (W7-FORMAL — V3-W7-FORMAL):
+import * as Bloom from "./bloom";
+import * as LruCache from "./lru-cache";
+import * as Trie from "./trie";
+import * as StateMachine from "./state-machine";
+import * as SkipList from "./skip-list";
 
 export interface StdlibFn {
   name: string;
@@ -100,6 +106,12 @@ export function registerAll(register: (name: string, fn: any) => void): void {
   Matrix.register(register);
   Parser.register(register);
   Random.register(register);
+  // New modules (W7-FORMAL — V3-W7-FORMAL):
+  Bloom.register(register);
+  LruCache.register(register);
+  Trie.register(register);
+  StateMachine.register(register);
+  SkipList.register(register);
 }
 
 /** Build a {name -> fn} map (used by the evaluator's `opts.builtins`). */
@@ -140,6 +152,12 @@ export const STDLIB_MANIFEST: StdlibModuleManifest[] = [
   Matrix.MANIFEST as StdlibModuleManifest,
   Parser.MANIFEST as StdlibModuleManifest,
   Random.MANIFEST as StdlibModuleManifest,
+  // New modules (W7-FORMAL — V3-W7-FORMAL):
+  Bloom.MANIFEST as StdlibModuleManifest,
+  LruCache.MANIFEST as StdlibModuleManifest,
+  Trie.MANIFEST as StdlibModuleManifest,
+  StateMachine.MANIFEST as StdlibModuleManifest,
+  SkipList.MANIFEST as StdlibModuleManifest,
 ];
 
 /** Total function count across all modules (excluding async — not callable). */

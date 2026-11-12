@@ -1,0 +1,13 @@
+[package]
+name = "aether-logging"
+version = "0.1.0"
+description = "Structured logging for Aether — 10 functions covering logger construction (new, silent, verbose), level-filtered emission (log, debug, info, warn, error), context enrichment (withContext), and introspection (format)."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — uses only the `print` and `str` builtins.
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.
+# Level constants (LEVEL_SILENT, LEVEL_ERROR, LEVEL_WARN, LEVEL_INFO,
+# LEVEL_DEBUG, LEVEL_TRACE) are also exported as `pub const`s.
