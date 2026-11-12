@@ -1,0 +1,138 @@
+// rotate_matrix.ae
+// =================
+// Rotate an N x N matrix by 90 degrees clockwise in place.
+//
+//   [[1,2,3],      [[7,4,1],
+//    [4,5,6],   ->  [8,5,2],
+//    [7,8,9]]       [9,6,3]]
+//
+// Approach: transpose (swap m[i][j] with m[j][i] for i < j), then
+// reverse each row. Both steps are O(N^2) and in-place.
+//
+// The matrix is laid out as a flat array in row-major order:
+// [m[0][0], m[0][1], ..., m[0][n-1], m[1][0], ...]. We provide
+// `get` and `set` helpers.
+
+// Get element at (r, c) of an n x n matrix in flat row-major form.
+fn get(m: [int], n: int, r: int, c: int) -> int {
+  m[r * n + c]
+}
+
+// Set element at (r, c).
+fn set(m: [int], n: int, r: int, c: int, v: int) -> int {
+  m[r * n + c] = v;
+  v
+}
+
+// Swap (r1,c1) and (r2,c2).
+fn swap(m: [int], n: int, r1: int, c1: int, r2: int, c2: int) -> int {
+  let tmp = get(m, n, r1, c1);
+  set(m, n, r1, c1, get(m, n, r2, c2));
+  set(m, n, r2, c2, tmp);
+  0
+}
+
+// Transpose in place: swap (i, j) with (j, i) for i < j.
+fn transpose(m: [int], n: int) -> int {
+  let mut i = 0;
+  while i < n {
+    let mut j = i + 1;
+    while j < n {
+      swap(m, n, i, j, j, i);
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  0
+}
+
+// Reverse each row in place: for each row, swap cols k and n-1-k
+// for k = 0..n/2.
+fn reverse_rows(m: [int], n: int) -> int {
+  let mut r = 0;
+  while r < n {
+    let mut k = 0;
+    while k < int(n / 2) {
+      swap(m, n, r, k, r, n - 1 - k);
+      k = k + 1;
+    }
+    r = r + 1;
+  }
+  0
+}
+
+// Rotate 90 degrees clockwise: transpose then reverse rows.
+fn rotate(m: [int], n: int) -> int {
+  transpose(m, n);
+  reverse_rows(m, n);
+  0
+}
+
+// Render an n x n matrix as a multi-line string.
+fn show_matrix(m: [int], n: int) -> string {
+  let mut out = "";
+  let mut r = 0;
+  while r < n {
+    if r > 0 {
+      out = out + "\n";
+    };
+    out = out + "[";
+    let mut c = 0;
+    while c < n {
+      if c > 0 {
+        out = out + ", ";
+      };
+      out = out + str(get(m, n, r, c));
+      c = c + 1;
+    }
+    out = out + "]";
+    r = r + 1;
+  }
+  out
+}
+
+print("== Rotate matrix 90 deg clockwise ==");
+print("");
+
+let m3 = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+print("Before:");
+print(show_matrix(m3, 3));
+print("");
+rotate(m3, 3);
+print("After:");
+print(show_matrix(m3, 3));
+print("");
+
+let m4 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+print("4x4 before:");
+print(show_matrix(m4, 4));
+print("");
+rotate(m4, 4);
+print("4x4 after:");
+print(show_matrix(m4, 4));
+print("");
+
+// Sanity assertions: rotate([1..9], 3) -> [7,4,1,8,5,2,9,6,3].
+let test = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+rotate(test, 3);
+assert_eq(test, [7, 4, 1, 8, 5, 2, 9, 6, 3]);
+
+// Rotating 4 times returns to the original.
+let cycle = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+rotate(cycle, 3);
+rotate(cycle, 3);
+rotate(cycle, 3);
+rotate(cycle, 3);
+assert_eq(cycle, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+// 1x1 case.
+let one = [42];
+rotate(one, 1);
+assert_eq(one, [42]);
+
+// 2x2 case.
+let two = [1, 2, 3, 4];
+rotate(two, 2);
+assert_eq(two, [3, 1, 4, 2]);
+
+print("All assertions passed.");

@@ -1,0 +1,82 @@
+// house_robber.ae
+// ===============
+// House robber: given an array of non-negative integers representing
+// the cash in each house, find the maximum amount you can rob
+// without robbing two adjacent houses.
+//
+//   [1, 2, 3, 1]            ->  4   (rob house 0 + house 2)
+//   [2, 7, 9, 3, 1]         ->  12  (rob 0 + 2 + 4)
+//   [2, 1, 1, 2]            ->  4
+//
+// DP recurrence: dp[i] = max(dp[i-1], dp[i-2] + nums[i]).
+// We use the two-variable form: `prev2 = dp[i-2]`, `prev1 = dp[i-1]`.
+
+// Solve house robber. Returns the max loot.
+fn rob(nums: [int]) -> int {
+  if len(nums) == 0 {
+    0
+  } else {
+    if len(nums) == 1 {
+      nums[0]
+    } else {
+      let mut prev2 = nums[0];
+      let mut prev1 = nums[0];
+      if nums[1] > nums[0] {
+        prev1 = nums[1];
+      };
+      let mut i = 2;
+      while i < len(nums) {
+        let take = prev2 + nums[i];
+        let skip = prev1;
+        let mut next = take;
+        if skip > take {
+          next = skip;
+        };
+        prev2 = prev1;
+        prev1 = next;
+        i = i + 1;
+      }
+      prev1
+    }
+  }
+}
+
+print("== House robber ==");
+print("");
+
+let cases = [
+  [1, 2, 3, 1],
+  [2, 7, 9, 3, 1],
+  [2, 1, 1, 2],
+  [5, 5, 10, 100, 10, 5],
+  [10],
+  [],
+  [1, 2, 3, 4, 5, 6, 7, 8]
+];
+let mut k = 0;
+while k < len(cases) {
+  let arr = cases[k];
+  let v = rob(arr);
+  // Render array.
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  print("  [" + body + "]  ->  " + str(v));
+  k = k + 1;
+}
+print("");
+
+// Headline.
+let nums = [1, 2, 3, 1];
+print("Headline: rob([1,2,3,1]) = " + str(rob(nums)));
+print("");
+
+// Sanity assertions.
+assert_eq(rob([1, 2, 3, 1]), 4);
+assert_eq(rob([2, 7, 9, 3, 1]), 12);
+assert_eq(rob([2, 1, 1, 2]), 4);
+assert_eq(rob([5, 5, 10, 100, 10, 5]), 110);
+assert_eq(rob([10]), 10);
+assert_eq(rob([]), 0);
+assert_eq(rob([1, 2, 3, 4, 5, 6, 7, 8]), 20);
+print("All assertions passed.");

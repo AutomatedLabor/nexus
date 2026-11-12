@@ -1,0 +1,94 @@
+// contains_duplicate.ae
+// ======================
+// Detect whether an array contains any duplicate elements.
+//
+//   [1, 2, 3, 1]      ->  true   (1 appears twice)
+//   [1, 2, 3, 4]      ->  false
+//   []                ->  false
+//
+// We use a set implemented as a parallel-array pair (keys + counts).
+// Walk the array; for each element, look it up in the set; if it's
+// already there, return true. Otherwise, insert it.
+
+// Look up `k` in the set (parallel arrays of keys + counts).
+// Returns 1 if found, 0 otherwise.
+fn set_contains(keys: [int], k: int) -> int {
+  let mut i = 0;
+  let mut found = 0;
+  while i < len(keys) && found == 0 {
+    if keys[i] == k {
+      found = 1;
+    };
+    i = i + 1;
+  }
+  found
+}
+
+// Detect duplicates. Walks the array, building up a "seen" set;
+// returns true on the first duplicate.
+fn contains_duplicate(arr: [int]) -> bool {
+  let mut keys = [];
+  let mut i = 0;
+  let mut dup = 0;
+  while i < len(arr) && dup == 0 {
+    let x = arr[i];
+    if set_contains(keys, x) == 1 {
+      dup = 1;
+    } else {
+      push(keys, x);
+    };
+    i = i + 1;
+  }
+  dup == 1
+}
+
+// Render an int array as "[1, 2, 3]".
+fn show(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Contains duplicate ==");
+print("");
+
+let cases = [
+  [1, 2, 3, 1],
+  [1, 2, 3, 4],
+  [1, 1, 1, 1],
+  [42],
+  [],
+  [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+  [5, 5, 5, 5, 5],
+  [-1, -2, -3, -1]
+];
+let mut k = 0;
+while k < len(cases) {
+  let arr = cases[k];
+  let r = contains_duplicate(arr);
+  print("  " + show(arr) + "  ->  " + str(r));
+  k = k + 1;
+}
+print("");
+
+// Headline.
+print("Headline: contains_duplicate([1,2,3,1]) = " + str(contains_duplicate([1, 2, 3, 1])));
+print("");
+
+// Sanity assertions.
+assert_eq(contains_duplicate([1, 2, 3, 1]), true);
+assert_eq(contains_duplicate([1, 2, 3, 4]), false);
+assert_eq(contains_duplicate([1, 1, 1, 1]), true);
+assert_eq(contains_duplicate([42]), false);
+assert_eq(contains_duplicate([]), false);
+assert_eq(contains_duplicate([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), false);
+assert_eq(contains_duplicate([5, 5, 5, 5, 5]), true);
+assert_eq(contains_duplicate([-1, -2, -3, -1]), true);
+
+// Edge cases.
+assert_eq(contains_duplicate([0, 0]), true);
+assert_eq(contains_duplicate([1, 2]), false);
+assert_eq(contains_duplicate([1000000, 1000000]), true);
+
+print("All assertions passed.");

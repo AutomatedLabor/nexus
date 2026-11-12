@@ -1,0 +1,112 @@
+// word_search.ae
+// ===============
+// Word search: given an M x N grid of characters and a word, return
+// true if the word can be constructed by traversing adjacent cells
+// (horizontally or vertically) without reusing a cell.
+//
+//   grid = [A,B,C,E,
+//           S,F,C,S,
+//           A,D,E,E]
+//   word = "ABCCED"   ->  true
+//   word = "SEE"      ->  true
+//   word = "ABCB"     ->  false (B is not adjacent to the only C
+//                                  path that matches)
+//
+// The grid is a flat array of single-char strings; we look up
+// cell (r, c) as `grid[r * cols + c]`.
+
+// Get cell at (r, c).
+fn get(g: [string], cols: int, r: int, c: int) -> string {
+  g[r * cols + c]
+}
+
+// Recursive DFS from (r, c) trying to match word[index..end].
+// We mark the cell as visited by temporarily replacing its value.
+fn dfs(g: [string], rows: int, cols: int, r: int, c: int, word: string, index: int) -> bool {
+  if index >= len(word) {
+    true
+  } else {
+    if r < 0 || r >= rows || c < 0 || c >= cols {
+      false
+    } else {
+      let expected = str(word[index]);
+      let cell = get(g, cols, r, c);
+      if cell != expected {
+        false
+      } else {
+        // Mark visited by replacing with a sentinel.
+        let saved = cell;
+        g[r * cols + c] = "#";
+        let rest = index + 1;
+        // Try the four directions.
+        let up = dfs(g, rows, cols, r - 1, c, word, rest);
+        let down = dfs(g, rows, cols, r + 1, c, word, rest);
+        let left = dfs(g, rows, cols, r, c - 1, word, rest);
+        let right = dfs(g, rows, cols, r, c + 1, word, rest);
+        let found = up || down || left || right;
+        // Restore.
+        g[r * cols + c] = saved;
+        found
+      }
+    }
+  }
+}
+
+// Search the grid for `word`. Returns true if any starting cell
+// matches.
+fn exists(g: [string], rows: int, cols: int, word: string) -> bool {
+  let mut r = 0;
+  let mut found = false;
+  while r < rows && !found {
+    let mut c = 0;
+    while c < cols && !found {
+      if dfs(g, rows, cols, r, c, word, 0) {
+        found = true;
+      };
+      c = c + 1;
+    }
+    r = r + 1;
+  }
+  found
+}
+
+print("== Word search ==");
+print("");
+
+let grid = ["A", "B", "C", "E", "S", "F", "C", "S", "A", "D", "E", "E"];
+print("Grid 3x4:");
+print("ABCE");
+print("SFCS");
+print("ADEE");
+print("");
+
+let cases = ["ABCCED", "SEE", "ABCB", "ADEE", "ABC", "ASADEE"];
+let mut k = 0;
+while k < len(cases) {
+  let w = cases[k];
+  // Use a copy of the grid since `exists` mutates during search
+  // (though it restores at the end, the recursion uses sentinel
+  // values that survive a panic).
+  let g = ["A", "B", "C", "E", "S", "F", "C", "S", "A", "D", "E", "E"];
+  let r = exists(g, 3, 4, w);
+  print("  word \"" + w + "\"  ->  " + str(r));
+  k = k + 1;
+}
+print("");
+
+// Headline.
+print("Headline: exists(\"ABCCED\") = " + str(exists(["A", "B", "C", "E", "S", "F", "C", "S", "A", "D", "E", "E"], 3, 4, "ABCCED")));
+print("");
+
+// Sanity assertions.
+assert_eq(exists(["A", "B", "C", "E", "S", "F", "C", "S", "A", "D", "E", "E"], 3, 4, "ABCCED"), true);
+assert_eq(exists(["A", "B", "C", "E", "S", "F", "C", "S", "A", "D", "E", "E"], 3, 4, "SEE"), true);
+assert_eq(exists(["A", "B", "C", "E", "S", "F", "C", "S", "A", "D", "E", "E"], 3, 4, "ABCB"), false);
+assert_eq(exists(["A", "B", "C", "E", "S", "F", "C", "S", "A", "D", "E", "E"], 3, 4, "ADEE"), true);
+assert_eq(exists(["A", "B", "C", "E", "S", "F", "C", "S", "A", "D", "E", "E"], 3, 4, "ABC"), true);
+assert_eq(exists(["A", "B", "C", "E", "S", "F", "C", "S", "A", "D", "E", "E"], 3, 4, "ASADEE"), true);
+assert_eq(exists(["A"], 1, 1, "A"), true);
+assert_eq(exists(["A"], 1, 1, "B"), false);
+assert_eq(exists(["A"], 1, 1, ""), true);
+assert_eq(exists(["A", "B", "C", "D"], 2, 2, "ABCD"), false);
+print("All assertions passed.");

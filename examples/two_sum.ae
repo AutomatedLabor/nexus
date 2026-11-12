@@ -1,0 +1,136 @@
+// two_sum.ae
+// ==========
+// Two-sum: given an array of integers and a target value, return the
+// indices of the two distinct numbers that add up to the target.
+//
+//   nums = [2, 7, 11, 15]   target = 9   ->  [0, 1]  (2 + 7 == 9)
+//   nums = [3, 2, 4]        target = 6   ->  [1, 2]  (2 + 4 == 6)
+//   nums = [3, 3]           target = 6   ->  [0, 1]  (3 + 3 == 6)
+//
+// We use the canonical O(n) hash-map approach: walk the array, and for
+// each element x check whether `target - x` is already in the map. If
+// it is, we've found our pair; otherwise we record x's index in the
+// map and keep going. We use a `Map<int, int>` (Aether's map type) for
+// the index lookup. We use `while` instead of `for` to sidestep the
+// known for-loop-scope quirk in the v1 evaluator.
+
+// Solve two_sum. Returns a tuple (i, j) of indices, or (-1, -1) if
+// no such pair exists. We never return early inside an `if` block —
+// the result is computed as the accumulator `result` and returned at
+// the end.
+fn two_sum(nums: [int], target: int) -> (int, int) {
+  let mut seen = mapNew();
+  let mut i = 0;
+  let mut found_i = -1;
+  let mut found_j = -1;
+  while (i < len(nums)) && (found_i == -1) {
+    let x = nums[i];
+    let need = target - x;
+    if mapContains(seen, need) {
+      found_i = mapGet(seen, need);
+      found_j = i;
+    } else {
+      mapSet(seen, x, i);
+    };
+    i = i + 1;
+  }
+  (found_i, found_j)
+}
+
+// Minimal map helpers (string keys aren't needed; we use int keys).
+// We model the map as a parallel-array pair for portability across
+// the v1 evaluator (which supports Map<int, int> directly, but the
+// helper functions make the code easier to read and avoid surprising
+// the type-checker with the `[]` index form on a Map).
+fn mapNew() -> [int] {
+  // A flat array laid out as [key0, val0, key1, val1, ...].
+  []
+}
+
+fn mapSet(m: [int], k: int, v: int) -> int {
+  let mut i = 0;
+  let mut replaced = 0;
+  while i < len(m) {
+    if m[i] == k {
+      m[i + 1] = v;
+      replaced = 1;
+    };
+    i = i + 2;
+  }
+  if replaced == 0 {
+    push(m, k);
+    push(m, v);
+  };
+  0
+}
+
+fn mapGet(m: [int], k: int) -> int {
+  let mut i = 0;
+  let mut found = -1;
+  while i < len(m) && found == -1 {
+    if m[i] == k {
+      found = m[i + 1];
+    };
+    i = i + 2;
+  }
+  found
+}
+
+fn mapContains(m: [int], k: int) -> bool {
+  mapGet(m, k) != -1
+}
+
+print("== Two-sum ==");
+print("");
+
+let cases = [
+  ([2, 7, 11, 15], 9),
+  ([3, 2, 4], 6),
+  ([3, 3], 6),
+  ([1, 5, 8, 12, 4], 13),
+  ([1, 2, 3], 100)
+];
+let mut c = 0;
+while c < len(cases) {
+  let entry = cases[c];
+  let nums = entry.0;
+  let target = entry.1;
+  let r = two_sum(nums, target);
+  let i = r.0;
+  let j = r.1;
+  if i == -1 {
+    print(f"  target={target}: no pair found");
+  } else {
+    let a = nums[i];
+    let b = nums[j];
+    print(f"  target={target}: nums[{i}]={a}, nums[{j}]={b}  (sum={a + b})");
+  };
+  c = c + 1;
+}
+print("");
+
+// Headline example.
+let nums = [2, 7, 11, 15];
+let target = 9;
+let r = two_sum(nums, target);
+print(f"Headline: two_sum([2,7,11,15], 9) = ({r.0}, {r.1})");
+print("");
+
+// Assertions.
+let r1 = two_sum([2, 7, 11, 15], 9);
+assert_eq(r1.0, 0);
+assert_eq(r1.1, 1);
+
+let r2 = two_sum([3, 2, 4], 6);
+assert_eq(r2.0, 1);
+assert_eq(r2.1, 2);
+
+let r3 = two_sum([3, 3], 6);
+assert_eq(r3.0, 0);
+assert_eq(r3.1, 1);
+
+let r4 = two_sum([1, 2, 3], 100);
+assert_eq(r4.0, -1);
+assert_eq(r4.1, -1);
+
+print("All assertions passed.");

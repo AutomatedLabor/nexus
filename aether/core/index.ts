@@ -51,6 +51,10 @@ export type { WasmModule, WasmFunc, WasmInstr, WasmValType, WasmHost, WasmRunRes
 export { compileIrToX86, emitAsm, emitElfStub, compileAndRunNative } from "../vm/x86/x86";
 export type { X86Module, X86Func, X86Instr, X86Operand, CondCode, X86RunResult } from "../vm/x86/x86";
 
+// --- v3: JIT compiler (tier-2, profile-guided) ---
+export { JitCompiler, compileAndRunJit } from "../vm/jit/jit";
+export type { JitOptions, JitStats, JitRunResult } from "../vm/jit/jit";
+
 export interface CompileResult {
   /** Lexed tokens (empty if lexer hit a fatal error). */
   tokens: Token[];

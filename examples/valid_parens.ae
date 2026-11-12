@@ -1,0 +1,104 @@
+// valid_parens.ae
+// ===============
+// Validate a string of parentheses: every opening bracket must be
+// closed by the same kind, in the correct nesting order.
+//
+//   "({[]})"   -> valid
+//   "([)]"     -> invalid
+//   ""         -> valid
+//   "("        -> invalid
+//
+// Algorithm: a stack-based scan. For each char, if it's an opener
+// push the expected closer; if it's a closer, it must match the
+// top of the stack (or the string is invalid). At the end, the
+// stack must be empty.
+
+// The matching closer for an opener. Returns "" for non-openers.
+fn closer_for(c: string) -> string {
+  if c == "(" {
+    ")"
+  } else {
+    if c == "{" {
+      "}"
+    } else {
+      if c == "[" { "]" } else { "" }
+    }
+  }
+}
+
+// Validate the input string. Returns true if all brackets are
+// balanced and properly nested. We use a `while` loop (not `for`)
+// to sidestep the for-loop-scope quirk.
+fn is_valid(s: string) -> bool {
+  let mut stack: [string] = [];
+  let mut i = 0;
+  let mut bad = 0;
+  while i < len(s) && bad == 0 {
+    let c = str(s[i]);
+    if c == "(" || c == "{" || c == "[" {
+      push(stack, closer_for(c));
+    } else {
+      if c == ")" || c == "}" || c == "]" {
+        if len(stack) == 0 {
+          bad = 1;
+        } else {
+          let top = stack[len(stack) - 1];
+          if top != c {
+            bad = 1;
+          } else {
+            let mut new_stack: [string] = [];
+            let mut k = 0;
+            while k < len(stack) - 1 {
+              push(new_stack, stack[k]);
+              k = k + 1;
+            }
+            stack = new_stack;
+          };
+        };
+      };
+    };
+    i = i + 1;
+  }
+  if bad == 1 {
+    false
+  } else {
+    if len(stack) > 0 { false } else { true }
+  }
+}
+
+print("== Valid parentheses ==");
+print("");
+
+let cases = ["({[]})", "([)]", "(((())))", "(", ")", "", "(){[()]}", "[{()}]"];
+let mut k = 0;
+while k < len(cases) {
+  let s = cases[k];
+  let r = is_valid(s);
+  if r {
+    print("  " + s + "  ->  valid");
+  } else {
+    print("  " + s + "  ->  invalid");
+  };
+  k = k + 1;
+}
+print("");
+
+// Headline examples.
+let h1 = is_valid("({[]})");
+let h2 = is_valid("([)]");
+print("Headline: is_valid(\"({[]})\") = " + str(h1));
+print("Headline: is_valid(\"([)]\")   = " + str(h2));
+print("");
+
+// Sanity assertions.
+assert_eq(is_valid("({[]})"), true);
+assert_eq(is_valid("([)]"), false);
+assert_eq(is_valid("(((())))"), true);
+assert_eq(is_valid("("), false);
+assert_eq(is_valid(")"), false);
+assert_eq(is_valid(""), true);
+assert_eq(is_valid("(){[()]}"), true);
+assert_eq(is_valid("[{()}]"), true);
+assert_eq(is_valid("(]}"), false);
+assert_eq(is_valid("((("), false);
+print("All assertions passed.");

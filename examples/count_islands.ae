@@ -1,0 +1,187 @@
+// count_islands.ae
+// =================
+// Count islands in a 2D grid: an island is a group of 1s connected
+// horizontally or vertically (4-directional). Count the number of
+// distinct islands.
+//
+//   [[1,1,0,0,0],
+//    [1,1,0,0,0],
+//    [0,0,1,0,0],
+//    [0,0,0,1,1]]    ->  3 islands
+//
+// Algorithm: scan every cell; when we find a 1, flood-fill (BFS or
+// DFS) all connected 1s and mark them as visited (set to 0). Each
+// flood-fill trigger is one island.
+
+// Get cell at (r, c) of an rows x cols grid.
+fn get(g: [int], cols: int, r: int, c: int) -> int {
+  g[r * cols + c]
+}
+
+// Set cell at (r, c).
+fn set(g: [int], cols: int, r: int, c: int, v: int) -> int {
+  g[r * cols + c] = v;
+  v
+}
+
+// Iterative flood-fill using a stack of (r * cols + c) indices.
+// Marks all connected 1s as 0.
+fn flood(g: [int], rows: int, cols: int, start_r: int, start_c: int) -> int {
+  let mut stack = [];
+  push(stack, start_r * cols + start_c);
+  let mut steps = 0;
+  let mut done = 0;
+  while done == 0 && steps < 100000 {
+    if len(stack) == 0 {
+      done = 1;
+    } else {
+      let top = stack[len(stack) - 1];
+      // Pop.
+      let mut new_stack = [];
+      let mut k = 0;
+      while k < len(stack) - 1 {
+        push(new_stack, stack[k]);
+        k = k + 1;
+      }
+      stack = new_stack;
+      let r = int(top / cols);
+      let c = top - r * cols;
+      if r < 0 || r >= rows || c < 0 || c >= cols {
+        // Out of bounds; skip.
+      } else {
+        if get(g, cols, r, c) == 1 {
+          set(g, cols, r, c, 0);
+          // Push 4 neighbors.
+          push(stack, (r - 1) * cols + c);
+          push(stack, (r + 1) * cols + c);
+          push(stack, r * cols + (c - 1));
+          push(stack, r * cols + (c + 1));
+        };
+      };
+    };
+    steps = steps + 1;
+  }
+  0
+}
+
+// Count islands in the grid (mutates it).
+fn count_islands(g: [int], rows: int, cols: int) -> int {
+  let mut count = 0;
+  let mut r = 0;
+  while r < rows {
+    let mut c = 0;
+    while c < cols {
+      if get(g, cols, r, c) == 1 {
+        count = count + 1;
+        flood(g, rows, cols, r, c);
+      };
+      c = c + 1;
+    }
+    r = r + 1;
+  }
+  count
+}
+
+// Render an rows x cols grid.
+fn show(g: [int], rows: int, cols: int) -> string {
+  let mut out = "";
+  let mut r = 0;
+  while r < rows {
+    if r > 0 {
+      out = out + "\n";
+    };
+    let mut c = 0;
+    while c < cols {
+      out = out + str(get(g, cols, r, c));
+      c = c + 1;
+    }
+    r = r + 1;
+  }
+  out
+}
+
+print("== Count islands ==");
+print("");
+
+let g1 = [
+  1, 1, 0, 0, 0,
+  1, 1, 0, 0, 0,
+  0, 0, 1, 0, 0,
+  0, 0, 0, 1, 1
+];
+// Copy for display since count_islands mutates.
+let g1_copy = [
+  1, 1, 0, 0, 0,
+  1, 1, 0, 0, 0,
+  0, 0, 1, 0, 0,
+  0, 0, 0, 1, 1
+];
+print("Grid 4x5:");
+print(show(g1_copy, 4, 5));
+print("");
+print("Islands: " + str(count_islands(g1, 4, 5)));
+print("");
+
+let g2 = [
+  1, 1, 1, 1, 0,
+  1, 1, 0, 1, 0,
+  1, 1, 0, 0, 0,
+  0, 0, 0, 0, 0
+];
+let g2_copy = [
+  1, 1, 1, 1, 0,
+  1, 1, 0, 1, 0,
+  1, 1, 0, 0, 0,
+  0, 0, 0, 0, 0
+];
+print("Grid 4x5:");
+print(show(g2_copy, 4, 5));
+print("");
+print("Islands: " + str(count_islands(g2, 4, 5)));
+print("");
+
+let g3 = [1];
+let g3_copy = [1];
+print("Grid 1x1:");
+print(show(g3_copy, 1, 1));
+print("Islands: " + str(count_islands(g3, 1, 1)));
+print("");
+
+let g4 = [0, 0, 0, 0];
+print("Grid 1x4 of zeros: islands = " + str(count_islands(g4, 1, 4)));
+print("");
+
+// Sanity assertions.
+let t1 = [
+  1, 1, 0, 0, 0,
+  1, 1, 0, 0, 0,
+  0, 0, 1, 0, 0,
+  0, 0, 0, 1, 1
+];
+assert_eq(count_islands(t1, 4, 5), 3);
+
+let t2 = [
+  1, 1, 1, 1, 0,
+  1, 1, 0, 1, 0,
+  1, 1, 0, 0, 0,
+  0, 0, 0, 0, 0
+];
+assert_eq(count_islands(t2, 4, 5), 1);
+
+let t3 = [1];
+assert_eq(count_islands(t3, 1, 1), 1);
+
+let t4 = [0, 0, 0];
+assert_eq(count_islands(t4, 1, 3), 0);
+
+let t5 = [1, 0, 1, 0, 1];
+assert_eq(count_islands(t5, 1, 5), 3);
+
+let t6 = [
+  1, 0, 1,
+  0, 1, 0,
+  1, 0, 1
+];
+assert_eq(count_islands(t6, 3, 3), 5);
+
+print("All assertions passed.");

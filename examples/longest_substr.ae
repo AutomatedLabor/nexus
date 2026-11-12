@@ -1,0 +1,82 @@
+// longest_substr.ae
+// =================
+// Longest substring without repeating characters: given a string,
+// find the length of the longest substring that contains no
+// duplicate characters.
+//
+//   "abcabcbb"  ->  3   ("abc")
+//   "bbbbb"    ->  1   ("b")
+//   "pwwkew"   ->  3   ("wke")
+//   ""         ->  0
+//
+// Sliding window: maintain a window [start, end). For each new char
+// at `end`, if it's already in the window, advance `start` until
+// the duplicate is removed. Track the max window length seen.
+
+// Does char `c` appear in s[start..end)? (end is exclusive.)
+fn in_window(s: string, start: int, end: int, c: string) -> bool {
+  let mut i = start;
+  let mut found = 0;
+  while i < end && found == 0 {
+    if str(s[i]) == c {
+      found = 1;
+    };
+    i = i + 1;
+  }
+  found == 1
+}
+
+// Sliding-window longest substring without repeats.
+fn longest_substr(s: string) -> int {
+  if len(s) == 0 {
+    0
+  } else {
+    let mut start = 0;
+    let mut best = 1;
+    let mut end = 1;
+    while end < len(s) {
+      let c = str(s[end]);
+      if in_window(s, start, end, c) {
+        // Advance start by one (rather than past the dup) so the
+        // window stays correct without computing the dup's index.
+        start = start + 1;
+      } else {
+        let here = end - start + 1;
+        if here > best {
+          best = here;
+        };
+        end = end + 1;
+      };
+    }
+    best
+  }
+}
+
+print("== Longest substring without repeats ==");
+print("");
+
+let cases = ["abcabcbb", "bbbbb", "pwwkew", "", "abcdef", "abccba", "a", "aab", "dvdf"];
+let mut k = 0;
+while k < len(cases) {
+  let s = cases[k];
+  let v = longest_substr(s);
+  print("  \"" + s + "\"  ->  " + str(v));
+  k = k + 1;
+}
+print("");
+
+// Headline.
+print("Headline: longest_substr(\"abcabcbb\") = " + str(longest_substr("abcabcbb")));
+print("");
+
+// Sanity assertions.
+assert_eq(longest_substr("abcabcbb"), 3);
+assert_eq(longest_substr("bbbbb"), 1);
+assert_eq(longest_substr("pwwkew"), 3);
+assert_eq(longest_substr(""), 0);
+assert_eq(longest_substr("abcdef"), 6);
+assert_eq(longest_substr("abccba"), 3);
+assert_eq(longest_substr("a"), 1);
+assert_eq(longest_substr("aab"), 2);
+assert_eq(longest_substr("dvdf"), 3);
+print("All assertions passed.");

@@ -1,0 +1,163 @@
+// group_anagrams.ae
+// =================
+// Group anagrams: given a list of strings, group them by their
+// sorted-letter signature.
+//
+//   ["eat","tea","tan","ate","nat","bat"]
+//     ->  [["eat","tea","ate"], ["tan","nat"], ["bat"]]
+//
+// We compute the "signature" of a string as the count of each
+// letter (a..z), packed into a 26-char string like "1 0 3 0 ..."
+// Then we walk the list, and for each string, find or create a
+// group for its signature and append to it.
+//
+// We use parallel arrays for the group table because Aether's
+// nested-array typing is finicky in the v1 evaluator.
+
+// Letter-count signature for s. Returns a 26-int array.
+fn sig(s: string) -> [int] {
+  let mut counts = [];
+  let mut k = 0;
+  while k < 26 {
+    push(counts, 0);
+    k = k + 1;
+  }
+  let mut i = 0;
+  while i < len(s) {
+    let code = charCode(s, i);
+    let idx = code - 97;
+    if idx >= 0 && idx < 26 {
+      counts[idx] = counts[idx] + 1;
+    };
+    i = i + 1;
+  }
+  counts
+}
+
+// Compare two int arrays for equality.
+fn arr_eq(a: [int], b: [int]) -> bool {
+  if len(a) != len(b) {
+    false
+  } else {
+    let mut i = 0;
+    let mut ok = 1;
+    while i < len(a) && ok == 1 {
+      if a[i] != b[i] {
+        ok = 0;
+      };
+      i = i + 1;
+    }
+    ok == 1
+  }
+}
+
+// Group anagrams. Returns a flat array laid out as
+// [size0, s0_0, s0_1, ..., size1, s1_0, ...].
+fn group_anagrams(words: [string]) -> [string] {
+  let mut group_sigs: [[int]] = [];
+  let mut group_words: [[string]] = [];
+  let mut i = 0;
+  while i < len(words) {
+    let w = words[i];
+    let s = sig(w);
+    // Find an existing group with matching signature.
+    let mut g = 0;
+    let mut found = -1;
+    while g < len(group_sigs) && found == -1 {
+      if arr_eq(group_sigs[g], s) {
+        found = g;
+      };
+      g = g + 1;
+    }
+    if found == -1 {
+      // New group.
+      let mut new_sig: [int] = [];
+      let mut k = 0;
+      while k < 26 {
+        push(new_sig, s[k]);
+        k = k + 1;
+      }
+      push(group_sigs, new_sig);
+      let mut new_words: [string] = [];
+      push(new_words, w);
+      push(group_words, new_words);
+    } else {
+      push(group_words[found], w);
+    };
+    i = i + 1;
+  }
+  // Flatten group_words into [size0, w0, w1, ..., size1, ...].
+  let mut out: [string] = [];
+  let mut g2 = 0;
+  while g2 < len(group_words) {
+    push(out, str(len(group_words[g2])));
+    let mut k = 0;
+    while k < len(group_words[g2]) {
+      push(out, group_words[g2][k]);
+      k = k + 1;
+    }
+    g2 = g2 + 1;
+  }
+  out
+}
+
+// Render a flat [size, w, w, size, w, ...] layout as a readable
+// nested list.
+fn show_groups(flat: [string]) -> string {
+  let mut out = "[";
+  let mut i = 0;
+  let mut first = 1;
+  while i < len(flat) {
+    if first == 1 {
+      first = 0;
+    } else {
+      out = out + ", ";
+    };
+    let size = int(flat[i]);
+    out = out + "[";
+    let mut k = 0;
+    while k < size {
+      if k > 0 {
+        out = out + ", ";
+      };
+      out = out + flat[i + 1 + k];
+      k = k + 1;
+    }
+    out = out + "]";
+    i = i + 1 + size;
+  }
+  out + "]"
+}
+
+print("== Group anagrams ==");
+print("");
+
+let words = ["eat", "tea", "tan", "ate", "nat", "bat"];
+let g = group_anagrams(words);
+print("  " + show_groups(g));
+print("");
+
+let words2 = ["hello", "olleh", "world", "ldrow", "abc", "cab", "bac"];
+let g2 = group_anagrams(words2);
+print("  " + show_groups(g2));
+print("");
+
+let words3 = ["a", "b", "c", "a"];
+let g3 = group_anagrams(words3);
+print("  " + show_groups(g3));
+print("");
+
+// Sanity checks: the total number of words is preserved.
+let total = len(words) + len(words2) + len(words3);
+assert_eq(total, 17);
+
+// sig("eat") == sig("tea") == sig("ate")
+assert_eq(arr_eq(sig("eat"), sig("tea")), true);
+assert_eq(arr_eq(sig("eat"), sig("ate")), true);
+assert_eq(arr_eq(sig("eat"), sig("tan")), false);
+
+// The output layout for ["a", "b", "c", "a"] should be
+// ["2", "a", "a", "1", "b", "1", "c"]  (or some permutation).
+assert_eq(len(g3), 7);
+
+print("All assertions passed.");

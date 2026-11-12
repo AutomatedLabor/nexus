@@ -1,0 +1,124 @@
+// rotate_array.ae
+// ===============
+// Rotate an array to the right by k positions. E.g., rotating
+// [1,2,3,4,5,6,7] by k=3 yields [5,6,7,1,2,3,4].
+//
+// We use the three-reverse trick: reverse the whole array, then
+// reverse the first k elements, then reverse the remaining
+// n-k elements. O(n) time, O(1) extra space. (k is normalized
+// modulo n first.)
+
+// Reverse arr[lo..hi] (inclusive) in place.
+fn reverse_range(arr: [int], lo: int, hi: int) -> int {
+  let mut a = lo;
+  let mut b = hi;
+  while a < b {
+    let tmp = arr[a];
+    arr[a] = arr[b];
+    arr[b] = tmp;
+    a = a + 1;
+    b = b - 1;
+  }
+  0
+}
+
+// Rotate `arr` to the right by `k` positions, in place.
+fn rotate(arr: [int], k: int) -> int {
+  let n = len(arr);
+  if n == 0 {
+    0
+  } else {
+    // Normalize k modulo n.
+    let mut kk = k % n;
+    if kk < 0 {
+      kk = kk + n;
+    };
+    reverse_range(arr, 0, n - 1);
+    reverse_range(arr, 0, kk - 1);
+    reverse_range(arr, kk, n - 1);
+    0
+  }
+}
+
+// Render an int array as "[1, 2, 3]".
+fn show(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Rotate array ==");
+print("");
+
+let cases = [
+  ([1, 2, 3, 4, 5, 6, 7], 3),
+  ([-1, -100, 3, 99], 2),
+  ([1, 2, 3, 4, 5], 0),
+  ([1, 2, 3, 4, 5], 5),
+  ([1, 2, 3, 4, 5], 7),
+  ([1, 2, 3], 1),
+  ([42], 5),
+  ([1, 2, 3, 4, 5, 6], 4)
+];
+let mut k = 0;
+while k < len(cases) {
+  let entry = cases[k];
+  let arr = entry.0;
+  let rot = entry.1;
+  // Copy arr (rotate mutates in place).
+  let mut copy = [];
+  let mut i = 0;
+  while i < len(arr) {
+    push(copy, arr[i]);
+    i = i + 1;
+  }
+  rotate(copy, rot);
+  let arr_str = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  print("  [" + arr_str + "] rotated by " + str(rot) + "  ->  " + show(copy));
+  k = k + 1;
+}
+print("");
+
+// Headline.
+let headline = [1, 2, 3, 4, 5, 6, 7];
+rotate(headline, 3);
+print("Headline: [1..7] rotated by 3 = " + show(headline));
+print("");
+
+// Sanity assertions.
+let t1 = [1, 2, 3, 4, 5, 6, 7];
+rotate(t1, 3);
+assert_eq(t1, [5, 6, 7, 1, 2, 3, 4]);
+
+let t2 = [-1, -100, 3, 99];
+rotate(t2, 2);
+assert_eq(t2, [3, 99, -1, -100]);
+
+let t3 = [1, 2, 3, 4, 5];
+rotate(t3, 0);
+assert_eq(t3, [1, 2, 3, 4, 5]);
+
+let t4 = [1, 2, 3, 4, 5];
+rotate(t4, 5);
+assert_eq(t4, [1, 2, 3, 4, 5]);
+
+let t5 = [1, 2, 3, 4, 5];
+rotate(t5, 7);
+assert_eq(t5, [4, 5, 1, 2, 3]);
+
+let t6 = [1, 2, 3];
+rotate(t6, 1);
+assert_eq(t6, [3, 1, 2]);
+
+let t7 = [42];
+rotate(t7, 5);
+assert_eq(t7, [42]);
+
+let t8: [int] = [];
+rotate(t8, 5);
+assert_eq(t8, []);
+
+print("All assertions passed.");

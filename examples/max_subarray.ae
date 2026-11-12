@@ -1,0 +1,76 @@
+// max_subarray.ae
+// ===============
+// Maximum subarray sum (Kadane's algorithm): given an array of
+// integers, find the contiguous subarray with the largest sum.
+//
+//   [-2, 1, -3, 4, -1, 2, 1, -5, 4]  ->  6  (subarray [4, -1, 2, 1])
+//   [1]                              ->  1
+//   [-1, -2, -3]                     ->  -1  (single-element, the max)
+//
+// Kadane's: keep a running `cur` (the best sum ending at the current
+// position) and a global `best`. For each x, `cur = max(x, cur + x)`
+// and `best = max(best, cur)`. O(n) time, O(1) extra space.
+
+// Solve max subarray. Returns the maximum subarray sum.
+fn max_subarray(arr: [int]) -> int {
+  if len(arr) == 0 {
+    0
+  } else {
+    let mut best = arr[0];
+    let mut cur = arr[0];
+    let mut i = 1;
+    while i < len(arr) {
+      let x = arr[i];
+      if cur + x > x {
+        cur = cur + x;
+      } else {
+        cur = x;
+      };
+      if cur > best {
+        best = cur;
+      };
+      i = i + 1;
+    }
+    best
+  }
+}
+
+print("== Maximum subarray (Kadane) ==");
+print("");
+
+let cases = [
+  [-2, 1, -3, 4, -1, 2, 1, -5, 4],
+  [1],
+  [-1, -2, -3],
+  [5, 4, -1, 7, 8],
+  [1, 2, 3, 4, 5],
+  [-2, -1]
+];
+let mut k = 0;
+while k < len(cases) {
+  let arr = cases[k];
+  let m = max_subarray(arr);
+  // Render the array.
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  print("  [" + body + "]  ->  " + str(m));
+  k = k + 1;
+}
+print("");
+
+// Headline.
+let nums = [-2, 1, -3, 4, -1, 2, 1, -5, 4];
+print("Headline: max_subarray([-2,1,-3,4,-1,2,1,-5,4]) = " + str(max_subarray(nums)));
+print("");
+
+// Sanity assertions.
+assert_eq(max_subarray([-2, 1, -3, 4, -1, 2, 1, -5, 4]), 6);
+assert_eq(max_subarray([1]), 1);
+assert_eq(max_subarray([-1, -2, -3]), -1);
+assert_eq(max_subarray([5, 4, -1, 7, 8]), 23);
+assert_eq(max_subarray([1, 2, 3, 4, 5]), 15);
+assert_eq(max_subarray([-2, -1]), -1);
+assert_eq(max_subarray([0, 0, 0]), 0);
+assert_eq(max_subarray([]), 0);
+print("All assertions passed.");

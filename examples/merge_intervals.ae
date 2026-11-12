@@ -1,0 +1,122 @@
+// merge_intervals.ae
+// ==================
+// Merge overlapping intervals: given a list of intervals where each
+// interval is [start, end], merge all overlapping ones and return
+// the merged list.
+//
+//   [[1,3],[2,6],[8,10],[15,18]]  ->  [[1,6],[8,10],[15,18]]
+//   [[1,4],[4,5]]                  ->  [[1,5]]
+//   [[1,4],[0,4]]                  ->  [[0,4]]
+//
+// Algorithm: sort by start, then walk: if the next start is <= the
+// current end, merge (extend the end); else push the current and
+// start a new one. We use a flat-int array layout
+// ([s0,e0,s1,e1,...]) because Aether's nested-array typing is more
+// cumbersome in the v1 evaluator.
+
+// Sort a flat intervals array [s0,e0,s1,e1,...] by start. We use
+// insertion sort since the typical input is small.
+fn sort_intervals(arr: [int]) -> [int] {
+  let n = int(len(arr) / 2);
+  let mut i = 1;
+  while i < n {
+    let key_s = arr[i * 2];
+    let key_e = arr[i * 2 + 1];
+    let mut j = i - 1;
+    let mut placed = 0;
+    while j >= 0 && placed == 0 {
+      if arr[j * 2] > key_s {
+        arr[(j + 1) * 2] = arr[j * 2];
+        arr[(j + 1) * 2 + 1] = arr[j * 2 + 1];
+        j = j - 1;
+      } else {
+        placed = 1;
+      };
+    }
+    arr[(j + 1) * 2] = key_s;
+    arr[(j + 1) * 2 + 1] = key_e;
+    i = i + 1;
+  }
+  arr
+}
+
+// Merge a sorted flat intervals array.
+fn merge_intervals(arr: [int]) -> [int] {
+  if len(arr) == 0 {
+    []
+  } else {
+    let mut out = [];
+    push(out, arr[0]);
+    push(out, arr[1]);
+    let mut i = 1;
+    let mut last_end = arr[1];
+    while i * 2 < len(arr) {
+      let s = arr[i * 2];
+      let e = arr[i * 2 + 1];
+      if s <= last_end {
+        // Merge: extend last_end if e is bigger.
+        if e > last_end {
+          last_end = e;
+        };
+        out[len(out) - 1] = last_end;
+      } else {
+        push(out, s);
+        push(out, e);
+        last_end = e;
+      };
+      i = i + 1;
+    }
+    out
+  }
+}
+
+// Render a flat intervals array as "[[1,3],[2,6]]".
+fn show_intervals(arr: [int]) -> string {
+  let mut out = "[";
+  let n = int(len(arr) / 2);
+  let mut i = 0;
+  while i < n {
+    if i > 0 {
+      out = out + ", ";
+    };
+    out = out + "[" + str(arr[i * 2]) + "," + str(arr[i * 2 + 1]) + "]";
+    i = i + 1;
+  }
+  out + "]"
+}
+
+print("== Merge intervals ==");
+print("");
+
+let cases = [
+  [1, 3, 2, 6, 8, 10, 15, 18],
+  [1, 4, 4, 5],
+  [1, 4, 0, 4],
+  [1, 4, 2, 3],
+  [5, 6, 1, 2]
+];
+let mut k = 0;
+while k < len(cases) {
+  let arr = cases[k];
+  let sorted = sort_intervals(arr);
+  let merged = merge_intervals(sorted);
+  print("  " + show_intervals(cases[k]) + "  ->  " + show_intervals(merged));
+  k = k + 1;
+}
+print("");
+
+// Headline.
+let nums = [1, 3, 2, 6, 8, 10, 15, 18];
+let s = sort_intervals(nums);
+let m = merge_intervals(s);
+print("Headline: " + show_intervals(nums) + "  ->  " + show_intervals(m));
+print("");
+
+// Sanity assertions.
+assert_eq(merge_intervals(sort_intervals([1, 3, 2, 6, 8, 10, 15, 18])), [1, 6, 8, 10, 15, 18]);
+assert_eq(merge_intervals(sort_intervals([1, 4, 4, 5])), [1, 5]);
+assert_eq(merge_intervals(sort_intervals([1, 4, 0, 4])), [0, 4]);
+assert_eq(merge_intervals(sort_intervals([1, 4, 2, 3])), [1, 4]);
+assert_eq(merge_intervals(sort_intervals([5, 6, 1, 2])), [1, 2, 5, 6]);
+assert_eq(merge_intervals(sort_intervals([])), []);
+print("All assertions passed.");

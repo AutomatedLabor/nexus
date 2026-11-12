@@ -1,0 +1,152 @@
+// diameter_tree.ae
+// ================
+// Compute the diameter of a binary tree: the length (in number
+// of edges) of the longest path between any two nodes in the
+// tree. The path may or may not pass through the root.
+//
+//   Tree:     1
+//            / \
+//           2   3
+//          / \
+//         4   5
+//        /     \
+//       6       7
+//
+//   The longest path is 6 -> 4 -> 2 -> 5 -> 7, which is 4 edges.
+//
+// Algorithm: for each node, the longest path that passes through
+// it is `depth(left) + depth(right)`. The diameter is the max
+// over all nodes of this value. We compute it via a recursive
+// helper that returns (depth, diameter-so-far).
+
+enum Tree {
+  Node(int, Tree, Tree),
+  Leaf,
+}
+
+// Recursive helper. Returns (depth, best_diameter_so_far) where
+// depth is the height of the subtree rooted at `t` (number of
+// edges on the longest root-to-leaf path), and best_diameter_so_far
+// is the maximum diameter seen in any subtree of `t` (including
+// through `t` itself).
+fn helper(t: Tree) -> (int, int) {
+  match t {
+    Tree::Leaf => (0, 0),
+    Tree::Node(_, l, r) => {
+      let lp = helper(l);
+      let rp = helper(r);
+      let dl = lp.0;
+      let dr = rp.0;
+      let best_l = lp.1;
+      let best_r = rp.1;
+      // Depth of this node = 1 + max(dl, dr).
+      let depth = 1 + (if dl > dr { dl } else { dr });
+      // Path through this node = dl + dr.
+      let through = dl + dr;
+      // Best diameter so far = max(through, best_l, best_r).
+      let mut best = through;
+      if best_l > best { best = best_l; };
+      if best_r > best { best = best_r; };
+      (depth, best)
+    },
+  }
+}
+
+// Diameter of a tree (in edges).
+fn diameter(t: Tree) -> int {
+  let p = helper(t);
+  p.1
+}
+
+// Build a tree from a pre-order flat array with -1 as the "no
+// node here" sentinel. (Same as in max_depth_tree.ae.)
+fn build(arr: [int], i: int) -> (Tree, int) {
+  if i >= len(arr) {
+    (Tree::Leaf, i)
+  } else {
+    if arr[i] == -1 {
+      (Tree::Leaf, i + 1)
+    } else {
+      let lp = build(arr, i + 1);
+      let l = lp.0;
+      let after_l = lp.1;
+      let rp = build(arr, after_l);
+      let r = rp.0;
+      let after_r = rp.1;
+      (Tree::Node(arr[i], l, r), after_r)
+    }
+  }
+}
+
+fn from_pre(arr: [int]) -> Tree {
+  let p = build(arr, 0);
+  p.0
+}
+
+print("== Diameter of binary tree ==");
+print("");
+
+// Tree:     1
+//          / \
+//         2   3
+//        / \
+//       4   5
+//      /     \
+//     6       7
+//   Longest path: 6-4-2-5-7 = 4 edges.
+let t1 = from_pre([1, 2, 4, 6, -1, -1, -1, 5, -1, 7, -1, -1, 3, -1, -1]);
+print("Tree 1: diameter = " + str(diameter(t1)));
+
+// Single node: diameter = 0 (only one node, no edges).
+let t2 = Tree::Node(42, Tree::Leaf, Tree::Leaf);
+print("Single: diameter = " + str(diameter(t2)));
+
+// Empty tree: diameter = 0.
+let t3 = Tree::Leaf;
+print("Empty: diameter = " + str(diameter(t3)));
+
+// Linear left chain: 1 -> 2 -> 3 -> 4 (4 nodes, 3 edges).
+let t4 = from_pre([1, 2, 3, 4, -1, -1, -1, -1, -1]);
+print("Left chain of 4: diameter = " + str(diameter(t4)));
+
+// Balanced 7-node tree (3 levels):
+//          1
+//         / \
+//        2   3
+//       /\ / \
+//      4 5 6 7
+//   Longest path: 4-2-1-3-7 (or similar) = 4 edges.
+let t5 = from_pre([1, 2, 4, -1, -1, 5, -1, -1, 3, 6, -1, -1, 7, -1, -1]);
+print("Balanced 7-node: diameter = " + str(diameter(t5)));
+print("");
+
+// Headline.
+print("Headline: diameter(t1) = " + str(diameter(t1)));
+print("");
+
+// Sanity assertions.
+assert_eq(diameter(Tree::Leaf), 0);
+assert_eq(diameter(Tree::Node(42, Tree::Leaf, Tree::Leaf)), 0);
+assert_eq(diameter(t1), 4);
+assert_eq(diameter(t2), 0);
+assert_eq(diameter(t3), 0);
+assert_eq(diameter(t4), 3);
+assert_eq(diameter(t5), 4);
+
+// Two-node tree: diameter = 1.
+let two = Tree::Node(1, Tree::Node(2, Tree::Leaf, Tree::Leaf), Tree::Leaf);
+assert_eq(diameter(two), 1);
+
+// Tree where the longest path doesn't go through the root:
+//      1
+//     /
+//    2
+//   / \
+//  3   4
+//   \   \
+//    5   6
+// The longest path is 5-3-2-4-6 = 4 edges (doesn't go through root 1).
+let t6 = from_pre([1, 2, 3, -1, 5, -1, -1, 4, -1, 6, -1, -1, -1]);
+assert_eq(diameter(t6), 4);
+
+print("All assertions passed.");

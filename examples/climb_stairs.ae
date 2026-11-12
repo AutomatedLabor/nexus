@@ -1,0 +1,104 @@
+// climb_stairs.ae
+// ===============
+// Count the number of distinct ways to climb a staircase of n
+// steps, taking 1 or 2 steps at a time.
+//
+//   n = 1   ->  1   (1)
+//   n = 2   ->  2   (1+1, 2)
+//   n = 3   ->  3   (1+1+1, 1+2, 2+1)
+//   n = 5   ->  8
+//
+// This is the Fibonacci recurrence in disguise:
+//   f(n) = f(n-1) + f(n-2),  f(0) = 1, f(1) = 1.
+//
+// We compute it three ways for comparison:
+//   - recursive (exponential, used only for n <= 25)
+//   - memoized
+//   - iterative (the bottom-line answer)
+
+// Recursive Fibonacci-style. Way too slow for n > 25.
+fn climb_rec(n: int) -> int {
+  if n < 2 {
+    1
+  } else {
+    climb_rec(n - 1) + climb_rec(n - 2)
+  }
+}
+
+// Iterative: f(n) = f(n-1) + f(n-2).  O(n) time, O(1) space.
+fn climb_iter(n: int) -> int {
+  if n < 2 {
+    1
+  } else {
+    let mut a = 1;
+    let mut b = 1;
+    let mut i = 2;
+    while i <= n {
+      let next = a + b;
+      a = b;
+      b = next;
+      i = i + 1;
+    }
+    b
+  }
+}
+
+// Memoized: uses a flat array as a memo table.
+fn climb_memo(n: int) -> int {
+  if n < 2 {
+    1
+  } else {
+    let memo = build_memo(n);
+    memo[n]
+  }
+}
+
+// Build the memo table up to n, inclusive.
+fn build_memo(n: int) -> [int] {
+  let mut out = [];
+  push(out, 1);
+  push(out, 1);
+  let mut i = 2;
+  while i <= n {
+    push(out, out[i - 1] + out[i - 2]);
+    i = i + 1;
+  }
+  out
+}
+
+print("== Climbing stairs ==");
+print("");
+
+let cases = [1, 2, 3, 4, 5, 10, 20];
+let mut k = 0;
+while k < len(cases) {
+  let n = cases[k];
+  let it = climb_iter(n);
+  let me = climb_memo(n);
+  print("  n=" + str(n) + "  ->  iter=" + str(it) + ", memo=" + str(me));
+  k = k + 1;
+}
+print("");
+
+// Headline.
+print("Headline: climb_stairs(5) = " + str(climb_iter(5)));
+print("");
+
+// Sanity assertions.
+assert_eq(climb_iter(1), 1);
+assert_eq(climb_iter(2), 2);
+assert_eq(climb_iter(3), 3);
+assert_eq(climb_iter(4), 5);
+assert_eq(climb_iter(5), 8);
+assert_eq(climb_iter(10), 89);
+assert_eq(climb_iter(20), 10946);
+
+// Memo and iter agree.
+assert_eq(climb_iter(15), climb_memo(15));
+assert_eq(climb_iter(20), climb_memo(20));
+
+// Recursion matches iter on small inputs.
+assert_eq(climb_rec(5), climb_iter(5));
+assert_eq(climb_rec(10), climb_iter(10));
+
+print("All assertions passed.");

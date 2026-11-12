@@ -1,0 +1,118 @@
+// spiral_matrix.ae
+// =================
+// Traverse an N x M matrix in spiral order, starting from the
+// top-left corner, going right, down, left, up, and so on.
+//
+//   [[1, 2, 3],
+//    [4, 5, 6],     ->  [1, 2, 3, 6, 9, 8, 7, 4, 5]
+//    [7, 8, 9]]
+//
+// The matrix is laid out as a flat row-major array of size n*m.
+// We use `cols` and `rows` separately so non-square matrices work.
+
+// Get element at (r, c) of a rows x cols matrix.
+fn get(m: [int], cols: int, r: int, c: int) -> int {
+  m[r * cols + c]
+}
+
+// Traverse the matrix in spiral order; return the elements as a flat array.
+fn spiral(m: [int], rows: int, cols: int) -> [int] {
+  let mut out = [];
+  let mut top = 0;
+  let mut bot = rows - 1;
+  let mut left = 0;
+  let mut right = cols - 1;
+  let mut done = 0;
+  while done == 0 {
+    // Top row: left to right.
+    let mut c = left;
+    while c <= right {
+      push(out, get(m, cols, top, c));
+      c = c + 1;
+    }
+    top = top + 1;
+    if top > bot { done = 1; };
+
+    // Right column: top to bottom.
+    if done == 0 {
+      let mut r = top;
+      while r <= bot {
+        push(out, get(m, cols, r, right));
+        r = r + 1;
+      }
+      right = right - 1;
+      if left > right { done = 1; };
+    };
+
+    // Bottom row: right to left.
+    if done == 0 {
+      let mut c = right;
+      while c >= left {
+        push(out, get(m, cols, bot, c));
+        c = c - 1;
+      }
+      bot = bot - 1;
+      if top > bot { done = 1; };
+    };
+
+    // Left column: bottom to top.
+    if done == 0 {
+      let mut r = bot;
+      while r >= top {
+        push(out, get(m, cols, r, left));
+        r = r - 1;
+      }
+      left = left + 1;
+      if left > right { done = 1; };
+    };
+  }
+  out
+}
+
+// Render an int array as "[1, 2, 3]".
+fn show_arr(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Spiral matrix traversal ==");
+print("");
+
+let m3 = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+print("3x3: " + show_arr(spiral(m3, 3, 3)));
+
+let m4 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+print("4x4: " + show_arr(spiral(m4, 4, 4)));
+
+let m23 = [1, 2, 3, 4, 5, 6];
+print("2x3: " + show_arr(spiral(m23, 2, 3)));
+
+let m32 = [1, 2, 3, 4, 5, 6];
+print("3x2: " + show_arr(spiral(m32, 3, 2)));
+
+let m15 = [1, 2, 3, 4, 5];
+print("1x5: " + show_arr(spiral(m15, 1, 5)));
+
+let m51 = [1, 2, 3, 4, 5];
+print("5x1: " + show_arr(spiral(m51, 5, 1)));
+
+let m1 = [42];
+print("1x1: " + show_arr(spiral(m1, 1, 1)));
+print("");
+
+// Headline.
+print("Headline: spiral(3x3) = " + show_arr(spiral(m3, 3, 3)));
+print("");
+
+// Sanity assertions.
+assert_eq(spiral([1, 2, 3, 4, 5, 6, 7, 8, 9], 3, 3), [1, 2, 3, 6, 9, 8, 7, 4, 5]);
+assert_eq(spiral([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], 4, 4), [1, 2, 3, 4, 8, 12, 16, 15, 14, 13, 9, 5, 6, 7, 11, 10]);
+assert_eq(spiral([1, 2, 3, 4, 5, 6], 2, 3), [1, 2, 3, 6, 5, 4]);
+assert_eq(spiral([1, 2, 3, 4, 5, 6], 3, 2), [1, 2, 4, 6, 5, 3]);
+assert_eq(spiral([1, 2, 3, 4, 5], 1, 5), [1, 2, 3, 4, 5]);
+assert_eq(spiral([1, 2, 3, 4, 5], 5, 1), [1, 2, 3, 4, 5]);
+assert_eq(spiral([42], 1, 1), [42]);
+assert_eq(spiral([], 0, 0), []);
+print("All assertions passed.");

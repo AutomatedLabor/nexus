@@ -1,0 +1,198 @@
+// valid_sudoku.ae
+// ===============
+// Validate a 9x9 Sudoku grid: check that each row, each column,
+// and each of the nine 3x3 boxes contains the digits 1-9 exactly
+// once. (We don't solve — only validate a proposed solution.)
+//
+// The grid is a flat array of 81 ints (row-major). A 0 means empty;
+// a valid (complete) solution has no zeros.
+//
+// This example is similar to sudoku_validator.ae but uses a
+// different validation strategy: we use a 9-element "seen" array
+// (counts of each digit) per group and check that all counts are
+// exactly 1.
+
+// Get cell at (r, c) of the 9x9 grid.
+fn get(g: [int], r: int, c: int) -> int {
+  g[r * 9 + c]
+}
+
+// Check that a 9-element group contains exactly the digits 1-9
+// (each exactly once, no zeros).
+fn group_valid(group: [int]) -> bool {
+  // counts[d] = number of times digit d appears (1-indexed).
+  let mut counts: [int] = [];
+  let mut k = 0;
+  while k < 10 {
+    push(counts, 0);
+    k = k + 1;
+  }
+  let mut i = 0;
+  let mut ok = 1;
+  while i < 9 && ok == 1 {
+    let d = group[i];
+    if d < 1 || d > 9 {
+      ok = 0;
+    } else {
+      counts[d] = counts[d] + 1;
+      if counts[d] > 1 {
+        ok = 0;
+      };
+    };
+    i = i + 1;
+  }
+  if ok == 1 {
+    // All counts 1-9 must be 1.
+    let mut j = 1;
+    while j <= 9 && ok == 1 {
+      if counts[j] != 1 {
+        ok = 0;
+      };
+      j = j + 1;
+    }
+  };
+  ok == 1
+}
+
+// Extract row r as a 9-element array.
+fn get_row(g: [int], r: int) -> [int] {
+  let mut out = [];
+  let mut c = 0;
+  while c < 9 {
+    push(out, get(g, r, c));
+    c = c + 1;
+  }
+  out
+}
+
+// Extract column c as a 9-element array.
+fn get_col(g: [int], c: int) -> [int] {
+  let mut out = [];
+  let mut r = 0;
+  while r < 9 {
+    push(out, get(g, r, c));
+    r = r + 1;
+  }
+  out
+}
+
+// Extract 3x3 box b (0..8) as a 9-element array.
+fn get_box(g: [int], b: int) -> [int] {
+  let br = int(b / 3) * 3;
+  let bc = (b % 3) * 3;
+  let mut out = [];
+  let mut dr = 0;
+  while dr < 3 {
+    let mut dc = 0;
+    while dc < 3 {
+      push(out, get(g, br + dr, bc + dc));
+      dc = dc + 1;
+    }
+    dr = dr + 1;
+  }
+  out
+}
+
+// Validate the entire grid.
+fn valid_sudoku(g: [int]) -> bool {
+  let mut ok = 1;
+  let mut i = 0;
+  while i < 9 && ok == 1 {
+    if !group_valid(get_row(g, i)) {
+      ok = 0;
+    };
+    if ok == 1 && !group_valid(get_col(g, i)) {
+      ok = 0;
+    };
+    if ok == 1 && !group_valid(get_box(g, i)) {
+      ok = 0;
+    };
+    i = i + 1;
+  }
+  ok == 1
+}
+
+print("== Valid Sudoku ==");
+print("");
+
+// A valid complete Sudoku solution (from sudoku_validator.ae).
+let valid_grid = [
+  5, 3, 4, 6, 7, 8, 9, 1, 2,
+  6, 7, 2, 1, 9, 5, 3, 4, 8,
+  1, 9, 8, 3, 4, 2, 5, 6, 7,
+  8, 5, 9, 7, 6, 1, 4, 2, 3,
+  4, 2, 6, 8, 5, 3, 7, 9, 1,
+  7, 1, 3, 9, 2, 4, 8, 5, 6,
+  9, 6, 1, 5, 3, 7, 2, 8, 4,
+  2, 8, 7, 4, 1, 9, 6, 3, 5,
+  3, 4, 5, 2, 8, 6, 1, 7, 9
+];
+print("Valid grid: " + str(valid_sudoku(valid_grid)));
+print("");
+
+// An invalid grid: row 0 has two 5s.
+let invalid_grid = [
+  5, 3, 4, 6, 7, 8, 9, 1, 5,
+  6, 7, 2, 1, 9, 5, 3, 4, 8,
+  1, 9, 8, 3, 4, 2, 5, 6, 7,
+  8, 5, 9, 7, 6, 1, 4, 2, 3,
+  4, 2, 6, 8, 5, 3, 7, 9, 1,
+  7, 1, 3, 9, 2, 4, 8, 5, 6,
+  9, 6, 1, 5, 3, 7, 2, 8, 4,
+  2, 8, 7, 4, 1, 9, 6, 3, 5,
+  3, 4, 5, 2, 8, 6, 1, 7, 9
+];
+print("Invalid (dup in row 0): " + str(valid_sudoku(invalid_grid)));
+print("");
+
+// An invalid grid: column 0 has two 5s.
+let invalid_col = [
+  5, 3, 4, 6, 7, 8, 9, 1, 2,
+  5, 7, 2, 1, 9, 5, 3, 4, 8,
+  1, 9, 8, 3, 4, 2, 5, 6, 7,
+  8, 5, 9, 7, 6, 1, 4, 2, 3,
+  4, 2, 6, 8, 5, 3, 7, 9, 1,
+  7, 1, 3, 9, 2, 4, 8, 5, 6,
+  9, 6, 1, 5, 3, 7, 2, 8, 4,
+  2, 8, 7, 4, 1, 9, 6, 3, 5,
+  3, 4, 5, 2, 8, 6, 1, 7, 9
+];
+print("Invalid (dup in col 0): " + str(valid_sudoku(invalid_col)));
+print("");
+
+// An invalid grid: box 0 has two 5s.
+let invalid_box = [
+  5, 3, 4, 6, 7, 8, 9, 1, 2,
+  6, 5, 2, 1, 9, 5, 3, 4, 8,
+  1, 9, 8, 3, 4, 2, 5, 6, 7,
+  8, 5, 9, 7, 6, 1, 4, 2, 3,
+  4, 2, 6, 8, 5, 3, 7, 9, 1,
+  7, 1, 3, 9, 2, 4, 8, 5, 6,
+  9, 6, 1, 5, 3, 7, 2, 8, 4,
+  2, 8, 7, 4, 1, 9, 6, 3, 5,
+  3, 4, 5, 2, 8, 6, 1, 7, 9
+];
+print("Invalid (dup in box 0): " + str(valid_sudoku(invalid_box)));
+print("");
+
+// Sanity assertions.
+assert_eq(valid_sudoku(valid_grid), true);
+assert_eq(valid_sudoku(invalid_grid), false);
+assert_eq(valid_sudoku(invalid_col), false);
+assert_eq(valid_sudoku(invalid_box), false);
+
+// A grid with a 0 (empty cell) is invalid (we count 0 as not 1-9).
+let with_zero = [
+  0, 3, 4, 6, 7, 8, 9, 1, 2,
+  6, 7, 2, 1, 9, 5, 3, 4, 8,
+  1, 9, 8, 3, 4, 2, 5, 6, 7,
+  8, 5, 9, 7, 6, 1, 4, 2, 3,
+  4, 2, 6, 8, 5, 3, 7, 9, 1,
+  7, 1, 3, 9, 2, 4, 8, 5, 6,
+  9, 6, 1, 5, 3, 7, 2, 8, 4,
+  2, 8, 7, 4, 1, 9, 6, 3, 5,
+  3, 4, 5, 2, 8, 6, 1, 7, 9
+];
+assert_eq(valid_sudoku(with_zero), false);
+
+print("All assertions passed.");
