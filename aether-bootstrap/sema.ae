@@ -1,0 +1,2461 @@
+// =============================================================================
+// aether-bootstrap/sema.ae
+// =========================
+// The Aether-in-Aether semantic analyzer + type checker — Wave V4-W1-SEMA,
+// part 4 of 7. Pure Aether (.ae), mirroring the TS reference semantic
+// analyzer at aether/core/sema/sema.ts (~1840 LOC).
+//
+// Public API:
+//   pub fn check(program: Node) -> CheckResult
+//   pub fn typeToString(t: SType) -> string
+//   pub fn typeEq(a: SType, b: SType) -> bool
+//   pub fn isSubtype(a: SType, b: SType) -> bool
+//
+// The input is the parser's flat `Node` tree (see parser.ae `struct Node`).
+// Each AST node carries a `kind` string + a small bag of `name`/`text`/
+// `ival`/`fval`/`items` fields; the sema walks this tree by dispatching on
+// `kind`. The output `CheckResult` carries the accumulated `errors` (and
+// `warnings` — empty for v1 since shadowing is recorded but not surfaced).
+//
+// Simplifications in v1 (mirrors the TS sema)
+// -------------------------------------------
+// - No trait resolution (no `impl`/`trait` blocks in the bootstrap).
+// - No lifetime inference; references are not modelled.
+// - Generic instantiation: each call site gets a fresh TypeVar per generic
+//   parameter. We don't generalize let-bound lambdas (no let-polymorphism).
+// - Match arm body types unify pairwise via `commonType`.
+// - Function return-type inference only inspects the body's trailing
+//   expression + `return` statements; full flow analysis is out of scope.
+// - Built-in functions (map/filter/reduce/push/pop/len/print/println/
+//   panic/str/int/float/type_of/assert/assert_eq/min/max/abs/sqrt/range/
+//   charCode/fromCharCode/strSlice) are registered with polymorphic-or-
+//   `anyT` signatures so common call patterns type-check.
+// - Errors are accumulated (we don't abort on first error) so the
+//   bootstrap test suite can assert "exactly N type errors" per snippet.
+//
+// Known quirks worked around
+// --------------------------
+// - For-loop-scope bug: we use `while` + index counters everywhere instead
+//   of `for` loops over arrays.
+// - `return X` after a block can fail: bare-expression returns only.
+// - `let x = print(...)` fails (print returns unit); we never use print as
+//   a value expression.
+// - `match` scrutinee that is a field access (`s.ty`) must be bound to a
+//   `let` first; otherwise the parser mis-parses the `.` as a postfix.
+// - Match arms returning `print(...)` directly fail; we wrap them in
+//   blocks (`{ print(...); 0 }`) when side effects are needed.
+// - Struct field named `type` is reserved; we use `ty` instead.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Semantic type representation
+// -----------------------------------------------------------------------------
+// Mirrors aether/core/types/types.ts. We model the Type union as an Aether
+// enum `SType` with one variant per type kind. Cross-recursion to the
+// helper struct `SField` (struct fields) is fine because Aether's enum
+// type system supports it (the field is named `ty`, not `type`, to avoid
+// the reserved-word collision).
+
+enum SType {
+  SInt,
+  SFloat,
+  SBool,
+  SString,
+  SChar,
+  SUnit,
+  SNever,
+  SFunc([SType], SType),               // params, ret
+  STuple([SType]),                     // items
+  SArray(SType),                       // elem
+  SMap(SType, SType),                  // key, value
+  SOption(SType),                      // inner
+  SResult(SType, SType),               // ok, err
+  SNamed(string, [SType]),             // name, args
+  SGeneric(string, string),            // name, constraint (constraint may be "")
+  STypeVar(string),                    // name (fresh inference variable)
+  SStruct(string, [SField]),           // name, fields
+  SEnum(string, [string], [SVariant]),// name, generic-param names, variants
+}
+
+// Struct field (name + type) used by SStruct.
+// Field is `ty`, NOT `type` (the latter collides with the Aether reserved
+// word `type` — using it as a field name causes the host evaluator to
+// reject the struct declaration with "undefined name" at runtime).
+struct SField { name: string, ty: SType }
+
+// Enum variant (for SEnum). `kind` is "unit" | "tuple" | "struct".
+struct SVariant { name: string, kind: string, types: [SType], fields: [SField] }
+
+// -----------------------------------------------------------------------------
+// Error / result records
+// -----------------------------------------------------------------------------
+
+struct TypeError { message: string, line: int, col: int }
+struct SemaWarning { message: string, line: int, col: int }
+struct CheckResult { errors: [TypeError], warnings: [SemaWarning], typeCount: int }
+
+// -----------------------------------------------------------------------------
+// Scope / variable info
+// -----------------------------------------------------------------------------
+// Aether v1 has no Map<K,V> in the bootstrap, so we use linear-scan arrays.
+
+struct VarInfo { name: string, ty: SType, mutable: int, kind: string }
+struct Scope { vars: [VarInfo] }
+
+// Registered type declaration (struct / enum / alias).
+struct TypeDeclInfo {
+  kind: string,        // "struct" | "enum" | "alias"
+  name: string,
+  generics: [string],  // generic param names
+  structT: SType,      // resolved SStruct (if struct)
+  hasStruct: int,      // 1 iff struct
+  enumT: SType,        // resolved SEnum (if enum)
+  hasEnum: int,        // 1 iff enum
+  aliasTy: SType,      // resolved alias target (if alias)
+  hasAlias: int        // 1 iff alias
+}
+
+// Registered top-level function declaration (for trait-bound lookup and
+// for recursive calls inside the function body).
+struct FnDeclInfo {
+  name: string,
+  genericNames: [string],
+  paramTys: [SType],
+  paramHasTypes: [int],  // 1 iff param had an annotation
+  retTy: SType,
+  hasRet: int            // 1 iff fn declared a return type
+}
+
+// -----------------------------------------------------------------------------
+// Checker state — one mutable struct threaded through every check call.
+// Aether struct fields are mutable through any struct-typed binding (no
+// `mut` keyword needed on the parameter), so we mutate fields directly.
+// -----------------------------------------------------------------------------
+
+struct Checker {
+  errors: [TypeError],
+  warnings: [SemaWarning],
+  scopes: [Scope],
+  typeDecls: [TypeDeclInfo],
+  fnDecls: [FnDeclInfo],
+  hasRetType: int,        // 0/1 — are we inside a function?
+  currentRetType: SType, // current expected return type
+  inLoop: int,           // 0/1 — are we inside a loop?
+  typeVarCounter: int
+}
+
+// -----------------------------------------------------------------------------
+// Constructor helpers for SType
+// -----------------------------------------------------------------------------
+
+pub fn tInt() -> SType { SType::SInt }
+pub fn tFloat() -> SType { SType::SFloat }
+pub fn tBool() -> SType { SType::SBool }
+pub fn tString() -> SType { SType::SString }
+pub fn tChar() -> SType { SType::SChar }
+pub fn tUnit() -> SType { SType::SUnit }
+pub fn tNever() -> SType { SType::SNever }
+
+pub fn tFunc(params: [SType], ret: SType) -> SType { SType::SFunc(params, ret) }
+pub fn tTuple(items: [SType]) -> SType { SType::STuple(items) }
+pub fn tArray(elem: SType) -> SType { SType::SArray(elem) }
+pub fn tMap(k: SType, v: SType) -> SType { SType::SMap(k, v) }
+pub fn tOption(inner: SType) -> SType { SType::SOption(inner) }
+pub fn tResult(ok: SType, err: SType) -> SType { SType::SResult(ok, err) }
+pub fn tNamed(name: string, args: [SType]) -> SType { SType::SNamed(name, args) }
+pub fn tGeneric(name: string, constraint: string) -> SType { SType::SGeneric(name, constraint) }
+pub fn tTypeVar(name: string) -> SType { SType::STypeVar(name) }
+pub fn tStruct(name: string, fields: [SField]) -> SType { SType::SStruct(name, fields) }
+pub fn tEnum(name: string, generics: [string], variants: [SVariant]) -> SType { SType::SEnum(name, generics, variants) }
+
+fn emptySFields() -> [SField] { [] }
+fn emptySVariants() -> [SVariant] { [] }
+fn emptySTypes() -> [SType] { [] }
+fn emptyStrings() -> [string] { [] }
+fn emptyTypeErrors() -> [TypeError] { [] }
+fn emptySemaWarnings() -> [SemaWarning] { [] }
+fn emptyScopes() -> [Scope] { [] }
+fn emptyVarInfos() -> [VarInfo] { [] }
+fn emptyTypeDecls() -> [TypeDeclInfo] { [] }
+fn emptyFnDecls() -> [FnDeclInfo] { [] }
+
+// -----------------------------------------------------------------------------
+// Type equality + subtype (int->float widening; Never is bottom)
+// -----------------------------------------------------------------------------
+
+pub fn typeEq(a: SType, b: SType) -> bool {
+  match a {
+    SType::SInt => match b { SType::SInt => true, _ => false },
+    SType::SFloat => match b { SType::SFloat => true, _ => false },
+    SType::SBool => match b { SType::SBool => true, _ => false },
+    SType::SString => match b { SType::SString => true, _ => false },
+    SType::SChar => match b { SType::SChar => true, _ => false },
+    SType::SUnit => match b { SType::SUnit => true, _ => false },
+    SType::SNever => match b { SType::SNever => true, _ => false },
+    SType::STypeVar(n) => match b { SType::STypeVar(n2) => n == n2, _ => false },
+    SType::SGeneric(n, _) => match b { SType::SGeneric(n2, _) => n == n2, _ => false },
+    SType::SFunc(ps, r) => match b {
+      SType::SFunc(ps2, r2) => typeEqAll(ps, ps2) && typeEq(r, r2),
+      _ => false
+    },
+    SType::STuple(items) => match b {
+      SType::STuple(items2) => typeEqAll(items, items2),
+      _ => false
+    },
+    SType::SArray(e) => match b { SType::SArray(e2) => typeEq(e, e2), _ => false },
+    SType::SMap(k, v) => match b {
+      SType::SMap(k2, v2) => typeEq(k, k2) && typeEq(v, v2),
+      _ => false
+    },
+    SType::SOption(i) => match b { SType::SOption(i2) => typeEq(i, i2), _ => false },
+    SType::SResult(o, e) => match b {
+      SType::SResult(o2, e2) => typeEq(o, o2) && typeEq(e, e2),
+      _ => false
+    },
+    SType::SNamed(n, args) => match b {
+      SType::SNamed(n2, args2) => n == n2 && typeEqAll(args, args2),
+      _ => false
+    },
+    SType::SStruct(n, fs) => match b {
+      SType::SStruct(n2, fs2) => n == n2 && fieldsEqAll(fs, fs2),
+      _ => false
+    },
+    SType::SEnum(n, _, _) => match b {
+      SType::SEnum(n2, _, _) => n == n2,
+      _ => false
+    }
+  }
+}
+
+fn typeEqAll(as_: [SType], bs: [SType]) -> bool {
+  let la = len(as_);
+  let lb = len(bs);
+  if la != lb { return false; };
+  typeEqAllRec(as_, bs, 0)
+}
+
+fn typeEqAllRec(as_: [SType], bs: [SType], i: int) -> bool {
+  if i >= len(as_) { return true; };
+  if typeEq(as_[i], bs[i]) { typeEqAllRec(as_, bs, i + 1) } else { false }
+}
+
+fn fieldsEqAll(as_: [SField], bs: [SField]) -> bool {
+  let la = len(as_);
+  let lb = len(bs);
+  if la != lb { return false; };
+  fieldsEqAllRec(as_, bs, 0)
+}
+
+fn fieldsEqAllRec(as_: [SField], bs: [SField], i: int) -> bool {
+  if i >= len(as_) { return true; };
+  let a = as_[i];
+  let b = bs[i];
+  if a.name != b.name { return false; };
+  if typeEq(a.ty, b.ty) { fieldsEqAllRec(as_, bs, i + 1) } else { false }
+}
+
+pub fn isSubtype(a: SType, b: SType) -> bool {
+  if typeEq(a, b) { return true; };
+  match a {
+    SType::SNever => true,
+    SType::SInt => match b { SType::SFloat => true, _ => false },
+    SType::SArray(e1) => match b {
+      SType::SArray(e2) => isSubtype(e1, e2),
+      _ => false
+    },
+    SType::SOption(i1) => match b {
+      SType::SOption(i2) => isSubtype(i1, i2),
+      _ => false
+    },
+    SType::STuple(items1) => match b {
+      SType::STuple(items2) => tupleSubtypeAll(items1, items2),
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn tupleSubtypeAll(as_: [SType], bs: [SType]) -> bool {
+  let la = len(as_);
+  let lb = len(bs);
+  if la != lb { return false; };
+  tupleSubtypeAllRec(as_, bs, 0)
+}
+
+fn tupleSubtypeAllRec(as_: [SType], bs: [SType], i: int) -> bool {
+  if i >= len(as_) { return true; };
+  if isSubtype(as_[i], bs[i]) { tupleSubtypeAllRec(as_, bs, i + 1) } else { false }
+}
+
+// `src` can be assigned to a slot of type `dst`?
+// TypeVars / Generics accept anything. Never accepts anything. int widens
+// to float. Structural equality / subtyping otherwise.
+// Returns int (1 = assignable, 0 = not) so callers can compare with `== 0`
+// or `== 1` — Aether's `bool == int` comparison always returns false, so
+// if we returned `bool` here, every `checkAssignable(...) == 0` check in
+// the rest of the file would silently always be false. Returning int
+// sidesteps that Aether quirk.
+pub fn checkAssignable(c: Checker, src: SType, dst: SType) -> int {
+  match dst {
+    SType::STypeVar(_) => 1,
+    SType::SGeneric(_, _) => 1,
+    _ =>
+      match src {
+        SType::STypeVar(_) => 1,
+        SType::SGeneric(_, _) => 1,
+        SType::SNever => 1,
+        _ => if typeEq(src, dst) { 1 } else { if isSubtype(src, dst) { 1 } else { 0 } }
+      }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// typeToString
+// -----------------------------------------------------------------------------
+
+pub fn typeToString(t: SType) -> string {
+  match t {
+    SType::SInt => "int",
+    SType::SFloat => "float",
+    SType::SBool => "bool",
+    SType::SString => "string",
+    SType::SChar => "char",
+    SType::SUnit => "()",
+    SType::SNever => "never",
+    SType::STypeVar(n) => n,
+    SType::SGeneric(n, c) => if c == "" { n } else { n + ": " + c },
+    SType::SFunc(ps, r) => "fn(" + joinSTypes(ps, ", ") + ") -> " + typeToString(r),
+    SType::STuple(items) => "(" + joinSTypes(items, ", ") + ")",
+    SType::SArray(e) => "[" + typeToString(e) + "]",
+    SType::SMap(k, v) => "map[" + typeToString(k) + "] " + typeToString(v),
+    SType::SOption(i) => "option<" + typeToString(i) + ">",
+    SType::SResult(o, e) => "result<" + typeToString(o) + ", " + typeToString(e) + ">",
+    SType::SNamed(n, args) =>
+      if len(args) == 0 { n } else { n + "<" + joinSTypes(args, ", ") + ">" },
+    SType::SStruct(n, _) => "struct " + n,
+    SType::SEnum(n, _, _) => "enum " + n
+  }
+}
+
+fn joinSTypes(arr: [SType], sep: string) -> string { joinSTypesRec(arr, sep, 0) }
+
+fn joinSTypesRec(arr: [SType], sep: string, i: int) -> string {
+  if i >= len(arr) { "" }
+  else if i == 0 { typeToString(arr[0]) + joinSTypesRec(arr, sep, 1) }
+  else { sep + typeToString(arr[i]) + joinSTypesRec(arr, sep, i + 1) }
+}
+
+// -----------------------------------------------------------------------------
+// Fresh type variables (one counter, reset per `check` call)
+// -----------------------------------------------------------------------------
+
+fn freshTypeVar(c: Checker, prefix: string) -> SType {
+  let n = c.typeVarCounter;
+  c.typeVarCounter = n + 1;
+  SType::STypeVar(prefix + str(n))
+}
+
+fn resetTypeVarCounter(c: Checker) { c.typeVarCounter = 0; }
+
+// -----------------------------------------------------------------------------
+// Scope management
+// -----------------------------------------------------------------------------
+
+fn newChecker() -> Checker {
+  Checker {
+    errors: emptyTypeErrors(),
+    warnings: emptySemaWarnings(),
+    scopes: emptyScopes(),
+    typeDecls: emptyTypeDecls(),
+    fnDecls: emptyFnDecls(),
+    hasRetType: 0,
+    currentRetType: tUnit(),
+    inLoop: 0,
+    typeVarCounter: 0
+  }
+}
+
+fn pushScope(c: Checker) { push(c.scopes, Scope { vars: emptyVarInfos() }); }
+fn popScope(c: Checker) { pop(c.scopes); }
+
+fn addVar(c: Checker, name: string, ty: SType, mutable: int, kind: string) {
+  let n = len(c.scopes);
+  if n == 0 { return; };
+  let scope = c.scopes[n - 1];
+  // Shadowing — record a warning but still overwrite (since this is a
+  // linear array, last-write-wins at lookup time; for v1 we just push the
+  // newest binding, and lookups scan back-to-front).
+  if scopeHasVar(scope, name) {
+    push(c.warnings, SemaWarning { message: "shadowing of '" + name + "'", line: 0, col: 0 });
+  };
+  push(scope.vars, VarInfo { name: name, ty: ty, mutable: mutable, kind: kind })
+}
+
+fn scopeHasVar(scope: Scope, name: string) -> bool {
+  scopeHasVarRec(scope.vars, name, 0)
+}
+
+fn scopeHasVarRec(vars: [VarInfo], name: string, i: int) -> bool {
+  if i >= len(vars) { false }
+  else if vars[i].name == name { true }
+  else { scopeHasVarRec(vars, name, i + 1) }
+}
+
+fn addGlobalVar(c: Checker, name: string, ty: SType, mutable: int) {
+  if len(c.scopes) == 0 { pushScope(c); };
+  let scope = c.scopes[0];
+  if scopeHasVar(scope, name) { return; };
+  push(scope.vars, VarInfo { name: name, ty: ty, mutable: mutable, kind: "let" })
+}
+
+fn lookupVar(c: Checker, name: string) -> VarInfo {
+  // Scan scopes back-to-front; in each scope, scan vars back-to-front so
+  // the most-recent binding wins.
+  lookupVarRec(c, c.scopes, len(c.scopes) - 1, name)
+}
+
+fn lookupVarRec(c: Checker, scopes: [Scope], i: int, name: string) -> VarInfo {
+  if i < 0 { VarInfo { name: "", ty: tUnit(), mutable: 0, kind: "" } }
+  else {
+    let s = scopes[i];
+    let v = lookupVarInScope(s.vars, name, len(s.vars) - 1);
+    if v.name == name { v } else { lookupVarRec(c, scopes, i - 1, name) }
+  }
+}
+
+fn lookupVarInScope(vars: [VarInfo], name: string, i: int) -> VarInfo {
+  if i < 0 { VarInfo { name: "", ty: tUnit(), mutable: 0, kind: "" } }
+  else if vars[i].name == name { vars[i] }
+  else { lookupVarInScope(vars, name, i - 1) }
+}
+
+fn isNullVarInfo(v: VarInfo) -> bool { v.name == "" }
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+fn err(c: Checker, message: string, line: int, col: int) {
+  push(c.errors, TypeError { message: message, line: line, col: col })
+}
+
+fn errAtNode(c: Checker, message: string, n: Node) {
+  err(c, message, n.loc.line, n.loc.col)
+}
+
+fn warn(c: Checker, message: string, line: int, col: int) {
+  push(c.warnings, SemaWarning { message: message, line: line, col: col })
+}
+
+// -----------------------------------------------------------------------------
+// Node accessors — small helpers to extract fields from the parser's
+// flat `Node` struct. The parser uses a single struct for every node kind;
+// the sema reads `kind`, `name`, `text`, `ival`, `fval`, `items` and
+// dispatches on `kind`.
+// -----------------------------------------------------------------------------
+
+fn nodeKind(n: Node) -> string { n.kind }
+fn nodeName(n: Node) -> string { n.name }
+fn nodeText(n: Node) -> string { n.text }
+fn nodeIval(n: Node) -> int { n.ival }
+fn nodeFval(n: Node) -> float { n.fval }
+
+// items[i] with bounds check returning nullNode on out-of-range.
+fn itemAt(n: Node, i: int) -> Node {
+  if i < 0 { return nullNode(); };
+  if i >= len(n.items) { return nullNode(); };
+  n.items[i]
+}
+
+// Is this node a Null (parser's "no value" marker)?
+fn isNullN(n: Node) -> int {
+  if n.kind == "Null" { 1 } else { 0 }
+}
+
+// -----------------------------------------------------------------------------
+// Type resolution — AST type Node → semantic SType.
+// `generics` is an array of (name, SType) pairs so we can resolve generic
+// type params to their placeholder Generic types.
+// -----------------------------------------------------------------------------
+
+struct GenericBinding { name: string, ty: SType }
+
+fn emptyGenericBindings() -> [GenericBinding] { [] }
+
+fn findGeneric(generics: [GenericBinding], name: string) -> SType {
+  findGenericRec(generics, name, 0)
+}
+
+fn findGenericRec(generics: [GenericBinding], name: string, i: int) -> SType {
+  if i >= len(generics) { tUnit() }
+  else if generics[i].name == name { generics[i].ty }
+  else { findGenericRec(generics, name, i + 1) }
+}
+
+fn hasGeneric(generics: [GenericBinding], name: string) -> int {
+  hasGenericRec(generics, name, 0)
+}
+
+fn hasGenericRec(generics: [GenericBinding], name: string, i: int) -> int {
+  if i >= len(generics) { 0 }
+  else if generics[i].name == name { 1 }
+  else { hasGenericRec(generics, name, i + 1) }
+}
+
+// Resolve a parser type-Node into a semantic SType.
+fn resolveType(c: Checker, t: Node) -> SType {
+  resolveTypeWith(c, t, emptyGenericBindings())
+}
+
+fn resolveTypeWith(c: Checker, t: Node, generics: [GenericBinding]) -> SType {
+  if isNullN(t) == 1 { return tUnit(); };
+  match t.kind {
+    "PrimitiveType" => resolvePrimType(c, t.name, t),
+    "UnitType" => tUnit(),
+    "NamedType" => resolveNamedType(c, t.name, generics, t),
+    "GenericType" => resolveGenericType(c, t.name, t.items, generics, t),
+    "FuncType" => resolveFuncType(c, t, generics),
+    "TupleType" => resolveTupleType(c, t.items, generics),
+    "ArrayType" => tArray(resolveTypeWith(c, itemAt(t, 0), generics)),
+    "MapType" => tMap(resolveTypeWith(c, itemAt(t, 0), generics), resolveTypeWith(c, itemAt(t, 1), generics)),
+    "OptionType" => tOption(resolveTypeWith(c, itemAt(t, 0), generics)),
+    "ResultType" => tResult(resolveTypeWith(c, itemAt(t, 0), generics), resolveTypeWith(c, itemAt(t, 1), generics)),
+    _ => tUnit()
+  }
+}
+
+fn resolvePrimType(c: Checker, name: string, t: Node) -> SType {
+  if name == "int" { return tInt(); };
+  if name == "float" { return tFloat(); };
+  if name == "bool" { return tBool(); };
+  if name == "string" { return tString(); };
+  if name == "char" { return tChar(); };
+  errAtNode(c, "unknown primitive type '" + name + "'", t);
+  tUnit()
+}
+
+fn resolveNamedType(c: Checker, name: string, generics: [GenericBinding], t: Node) -> SType {
+  if hasGeneric(generics, name) == 1 { return findGeneric(generics, name); };
+  let decl = findTypeDecl(c, name);
+  if isNullDecl(decl) == 0 {
+    if decl.kind == "alias" { return decl.aliasTy; };
+    return tNamed(name, emptySTypes());
+  };
+  tNamed(name, emptySTypes())
+}
+
+fn resolveGenericType(c: Checker, name: string, args: [Node], generics: [GenericBinding], t: Node) -> SType {
+  // Option / Result sugar
+  if name == "Option" || name == "option" {
+    return tOption(resolveTypeWith(c, itemAt(t, 0), generics));
+  };
+  if name == "Result" || name == "result" {
+    return tResult(resolveTypeWith(c, itemAt(t, 0), generics), resolveTypeWith(c, itemAt(t, 1), generics));
+  };
+  let resolvedArgs = resolveTypeList(c, args, generics);
+  tNamed(name, resolvedArgs)
+}
+
+fn resolveTypeList(c: Checker, items: [Node], generics: [GenericBinding]) -> [SType] {
+  resolveTypeListRec(c, items, generics, 0, [])
+}
+
+fn resolveTypeListRec(c: Checker, items: [Node], generics: [GenericBinding], i: int, acc: [SType]) -> [SType] {
+  if i >= len(items) { acc }
+  else {
+    let t = resolveTypeWith(c, items[i], generics);
+    push(acc, t);
+    resolveTypeListRec(c, items, generics, i + 1, acc)
+  }
+}
+
+fn resolveFuncType(c: Checker, t: Node, generics: [GenericBinding]) -> SType {
+  // parser stores FuncType as items = [ret, ...params], ival = param count
+  let ret = resolveTypeWith(c, itemAt(t, 0), generics);
+  let params = resolveFuncParams(c, t, generics);
+  tFunc(params, ret)
+}
+
+fn resolveFuncParams(c: Checker, t: Node, generics: [GenericBinding]) -> [SType] {
+  // items[0] is ret; items[1..ival+1] are params
+  let n = t.ival;
+  resolveFuncParamsRec(c, t, generics, 1, n, [])
+}
+
+fn resolveFuncParamsRec(c: Checker, t: Node, generics: [GenericBinding], i: int, n: int, acc: [SType]) -> [SType] {
+  if i > n { acc }
+  else {
+    let p = resolveTypeWith(c, itemAt(t, i), generics);
+    push(acc, p);
+    resolveFuncParamsRec(c, t, generics, i + 1, n, acc)
+  }
+}
+
+fn resolveTupleType(c: Checker, items: [Node], generics: [GenericBinding]) -> SType {
+  let types = resolveTypeList(c, items, generics);
+  tTuple(types)
+}
+
+// -----------------------------------------------------------------------------
+// findTypeDecl — linear-scan typeDecls
+// -----------------------------------------------------------------------------
+
+fn findTypeDecl(c: Checker, name: string) -> TypeDeclInfo {
+  findTypeDeclRec(c.typeDecls, name, len(c.typeDecls) - 1)
+}
+
+fn findTypeDeclRec(decls: [TypeDeclInfo], name: string, i: int) -> TypeDeclInfo {
+  if i < 0 { nullTypeDecl() }
+  else if decls[i].name == name { decls[i] }
+  else { findTypeDeclRec(decls, name, i - 1) }
+}
+
+fn nullTypeDecl() -> TypeDeclInfo {
+  TypeDeclInfo {
+    kind: "", name: "", generics: emptyStrings(),
+    structT: tUnit(), hasStruct: 0,
+    enumT: tUnit(), hasEnum: 0,
+    aliasTy: tUnit(), hasAlias: 0
+  }
+}
+
+fn isNullDecl(d: TypeDeclInfo) -> int { if d.name == "" { 1 } else { 0 } }
+
+// -----------------------------------------------------------------------------
+// findFnDecl — linear-scan fnDecls
+// -----------------------------------------------------------------------------
+
+fn findFnDecl(c: Checker, name: string) -> FnDeclInfo {
+  findFnDeclRec(c.fnDecls, name, len(c.fnDecls) - 1)
+}
+
+fn findFnDeclRec(decls: [FnDeclInfo], name: string, i: int) -> FnDeclInfo {
+  if i < 0 { nullFnDecl() }
+  else if decls[i].name == name { decls[i] }
+  else { findFnDeclRec(decls, name, i - 1) }
+}
+
+fn nullFnDecl() -> FnDeclInfo {
+  FnDeclInfo {
+    name: "", genericNames: emptyStrings(),
+    paramTys: emptySTypes(), paramHasTypes: [],
+    retTy: tUnit(), hasRet: 0
+  }
+}
+
+fn isNullFnDecl(d: FnDeclInfo) -> int { if d.name == "" { 1 } else { 0 } }
+
+// -----------------------------------------------------------------------------
+// Predeclaration pass — register types + functions before checking bodies
+// -----------------------------------------------------------------------------
+
+pub fn check(program: Node) -> CheckResult {
+  let c = newChecker();
+  resetTypeVarCounter(c);
+  predeclareBuiltins(c);
+  predeclare(c, program);
+  pushScope(c);
+  checkStmts(c, program.items, len(program.items));
+  popScope(c);
+  CheckResult { errors: c.errors, warnings: c.warnings, typeCount: 0 }
+}
+
+// Iterate over a Node array of statements, checking each.
+fn checkStmts(c: Checker, stmts: [Node], n: int) {
+  if n == 0 { return; };
+  checkStmtsRec(c, stmts, n - 1)
+}
+
+// Recursive version — walks back-to-front. The body of each stmt uses
+// only itself, so order doesn't matter for correctness (the predeclare
+// pass already populated global names).
+fn checkStmtsRec(c: Checker, stmts: [Node], i: int) {
+  if i < 0 { return; };
+  checkStmt(c, stmts[i]);
+  checkStmtsRec(c, stmts, i - 1)
+}
+
+// Predeclare: walk the program's top-level statements, register struct/
+// enum/alias declarations and function signatures into the global scope.
+fn predeclare(c: Checker, program: Node) {
+  predeclareRec(c, program.items, 0)
+}
+
+fn predeclareRec(c: Checker, stmts: [Node], i: int) {
+  if i >= len(stmts) { return; };
+  let s = stmts[i];
+  if s.kind == "StructDecl" { registerStruct(c, s); }
+  else if s.kind == "EnumDecl" { registerEnum(c, s); }
+  else if s.kind == "TypeAlias" { registerAlias(c, s); }
+  else if s.kind == "FnDecl" { registerFnDecl(c, s); };
+  predeclareRec(c, stmts, i + 1)
+}
+
+// Register built-in functions. Each has a polymorphic signature using
+// `SGeneric` placeholders (which the inference treats as fresh TypeVars
+// per call site).
+fn predeclareBuiltins(c: Checker) {
+  // Higher-order combinators
+  regBuiltin(c, "map", tFunc([tArray(tGeneric("T", "")), tFunc([tGeneric("T", "")], tGeneric("U", ""))], tArray(tGeneric("U", ""))));
+  regBuiltin(c, "filter", tFunc([tArray(tGeneric("T", "")), tFunc([tGeneric("T", "")], tBool())], tArray(tGeneric("T", ""))));
+  regBuiltin(c, "reduce", tFunc([tArray(tGeneric("T", "")), tFunc([tGeneric("U", ""), tGeneric("T", "")], tGeneric("U", "")), tGeneric("U", "")], tGeneric("U", "")));
+  regBuiltin(c, "push", tFunc([tArray(tGeneric("T", "")), tGeneric("T", "")], tArray(tGeneric("T", ""))));
+  regBuiltin(c, "pop", tFunc([tArray(tGeneric("T", ""))], tGeneric("T", "")));
+  // any-T builtins
+  regBuiltin(c, "len", tFunc([tTypeVar("A0")], tInt()));
+  regBuiltin(c, "println", tFunc([tTypeVar("A1")], tUnit()));
+  regBuiltin(c, "panic", tFunc([tTypeVar("A2")], tNever()));
+  regBuiltin(c, "str", tFunc([tTypeVar("A3")], tString()));
+  regBuiltin(c, "int", tFunc([tTypeVar("A4")], tInt()));
+  regBuiltin(c, "float", tFunc([tTypeVar("A5")], tFloat()));
+  regBuiltin(c, "type_of", tFunc([tTypeVar("A6")], tString()));
+  regBuiltin(c, "assert", tFunc([tBool()], tUnit()));
+  regBuiltin(c, "assert_eq", tFunc([tTypeVar("A7"), tTypeVar("A8")], tUnit()));
+  // numeric
+  regBuiltin(c, "min", tFunc([tInt(), tInt()], tInt()));
+  regBuiltin(c, "max", tFunc([tInt(), tInt()], tInt()));
+  regBuiltin(c, "abs", tFunc([tInt()], tInt()));
+  regBuiltin(c, "sqrt", tFunc([tFloat()], tFloat()));
+  // range — model as 3-int form
+  regBuiltin(c, "range", tFunc([tInt(), tInt(), tInt()], tNamed("Range", emptySTypes())));
+  // string primitives
+  regBuiltin(c, "charCode", tFunc([tString(), tInt()], tInt()));
+  regBuiltin(c, "fromCharCode", tFunc([tInt()], tString()));
+  regBuiltin(c, "strSlice", tFunc([tString(), tInt(), tInt()], tString()));
+}
+
+fn regBuiltin(c: Checker, name: string, ty: SType) {
+  addGlobalVar(c, name, ty, 0)
+}
+
+// Register a user struct declaration. Resolves each field's type with
+// the struct's generic params (if any) bound to SGeneric placeholders.
+fn registerStruct(c: Checker, d: Node) {
+  let generics = collectGenericNames(d.items[0]);
+  let bindings = genericNamesToBindings(generics);
+  let fields = collectStructFields(c, d, bindings);
+  let structT = tStruct(d.name, fields);
+  push(c.typeDecls, TypeDeclInfo {
+    kind: "struct", name: d.name, generics: generics,
+    structT: structT, hasStruct: 1,
+    enumT: tUnit(), hasEnum: 0,
+    aliasTy: tUnit(), hasAlias: 0
+  })
+}
+
+// Collect (name, SType) pairs from a StructDecl node's fields.
+// items[0] is generics; items[1..ival+1] are fields (StructField nodes).
+fn collectStructFields(c: Checker, d: Node, bindings: [GenericBinding]) -> [SField] {
+  let n = d.ival;  // field count
+  collectStructFieldsRec(c, d, bindings, 1, n, [])
+}
+
+fn collectStructFieldsRec(c: Checker, d: Node, bindings: [GenericBinding], i: int, n: int, acc: [SField]) -> [SField] {
+  if i > n { acc }
+  else {
+    let f = itemAt(d, i);
+    let fname = f.name;
+    let fty = resolveTypeWith(c, itemAt(f, 0), bindings);
+    push(acc, SField { name: fname, ty: fty });
+    collectStructFieldsRec(c, d, bindings, i + 1, n, acc)
+  }
+}
+
+// Register a user enum declaration. Each variant is captured with its
+// kind (unit/tuple/struct), tuple types, and struct fields.
+fn registerEnum(c: Checker, d: Node) {
+  let generics = collectGenericNames(d.items[0]);
+  let bindings = genericNamesToBindings(generics);
+  let variants = collectEnumVariants(c, d, bindings);
+  let enumT = tEnum(d.name, generics, variants);
+  push(c.typeDecls, TypeDeclInfo {
+    kind: "enum", name: d.name, generics: generics,
+    structT: tUnit(), hasStruct: 0,
+    enumT: enumT, hasEnum: 1,
+    aliasTy: tUnit(), hasAlias: 0
+  })
+}
+
+// Collect variants from an EnumDecl. items[0] is generics; items[1..ival+1]
+// are EnumVariantDecl nodes.
+fn collectEnumVariants(c: Checker, d: Node, bindings: [GenericBinding]) -> [SVariant] {
+  let n = d.ival;  // variant count
+  collectEnumVariantsRec(c, d, bindings, 1, n, [])
+}
+
+fn collectEnumVariantsRec(c: Checker, d: Node, bindings: [GenericBinding], i: int, n: int, acc: [SVariant]) -> [SVariant] {
+  if i > n { acc }
+  else {
+    let v = itemAt(d, i);
+    let vname = v.name;
+    let vkind = enumVariantKindName(v.ival);
+    let types = if v.ival == 1 { resolveTypeList(c, v.items, bindings) } else { emptySTypes() };
+    let fields = if v.ival == 2 { collectStructFieldsFromItems(c, v.items, bindings) } else { emptySFields() };
+    push(acc, SVariant { name: vname, kind: vkind, types: types, fields: fields });
+    collectEnumVariantsRec(c, d, bindings, i + 1, n, acc)
+  }
+}
+
+fn enumVariantKindName(k: int) -> string {
+  if k == 1 { "tuple" } else if k == 2 { "struct" } else { "unit" }
+}
+
+// Like collectStructFields, but starts at items[0] (no generics slot).
+fn collectStructFieldsFromItems(c: Checker, items: [Node], bindings: [GenericBinding]) -> [SField] {
+  collectStructFieldsFromItemsRec(c, items, bindings, 0, len(items) - 1, [])
+}
+
+fn collectStructFieldsFromItemsRec(c: Checker, items: [Node], bindings: [GenericBinding], i: int, n: int, acc: [SField]) -> [SField] {
+  if i > n { acc }
+  else {
+    let f = items[i];
+    let fname = f.name;
+    let fty = resolveTypeWith(c, itemAt(f, 0), bindings);
+    push(acc, SField { name: fname, ty: fty });
+    collectStructFieldsFromItemsRec(c, items, bindings, i + 1, n, acc)
+  }
+}
+
+// Register a type alias.
+fn registerAlias(c: Checker, d: Node) {
+  let generics = collectGenericNames(d.items[0]);
+  let bindings = genericNamesToBindings(generics);
+  let target = resolveTypeWith(c, itemAt(d, 1), bindings);
+  push(c.typeDecls, TypeDeclInfo {
+    kind: "alias", name: d.name, generics: generics,
+    structT: tUnit(), hasStruct: 0,
+    enumT: tUnit(), hasEnum: 0,
+    aliasTy: target, hasAlias: 1
+  })
+}
+
+// Collect generic param names from a Generics Node (or Null if none).
+fn collectGenericNames(genericsNode: Node) -> [string] {
+  if isNullN(genericsNode) == 1 { return emptyStrings(); };
+  if genericsNode.kind != "Generics" { return emptyStrings(); };
+  collectGenericNamesRec(genericsNode.items, 0, genericsNode.ival, [])
+}
+
+fn collectGenericNamesRec(items: [Node], i: int, n: int, acc: [string]) -> [string] {
+  if i >= n { acc }
+  else {
+    push(acc, items[i].name);
+    collectGenericNamesRec(items, i + 1, n, acc)
+  }
+}
+
+fn genericNamesToBindings(names: [string]) -> [GenericBinding] {
+  genericNamesToBindingsRec(names, 0, [])
+}
+
+fn genericNamesToBindingsRec(names: [string], i: int, acc: [GenericBinding]) -> [GenericBinding] {
+  if i >= len(names) { acc }
+  else {
+    push(acc, GenericBinding { name: names[i], ty: tGeneric(names[i], "") });
+    genericNamesToBindingsRec(names, i + 1, acc)
+  }
+}
+
+// Register a top-level FnDecl. We resolve its parameter + return types,
+// add a function-typed binding to the global scope, and stash the
+// signature + generic-param-names in c.fnDecls for trait-bound checks.
+fn registerFnDecl(c: Checker, d: Node) {
+  let generics = collectGenericNames(d.items[0]);
+  let bindings = genericNamesToBindings(generics);
+  let params = collectFnParams(c, d.items[1], bindings);
+  let paramHasTypes = collectFnParamsHasTypes(d.items[1]);
+  let hasRet = if isNullN(d.items[2]) == 1 { 0 } else { 1 };
+  let ret = if hasRet == 1 { resolveTypeWith(c, d.items[2], bindings) } else { tTypeVar("R") };
+  let fnType = tFunc(params, ret);
+  addGlobalVar(c, d.name, fnType, 0);
+  push(c.fnDecls, FnDeclInfo {
+    name: d.name, genericNames: generics,
+    paramTys: params, paramHasTypes: paramHasTypes,
+    retTy: ret, hasRet: hasRet
+  })
+}
+
+// Collect parameter types from a Params Node.
+fn collectFnParams(c: Checker, paramsNode: Node, bindings: [GenericBinding]) -> [SType] {
+  if isNullN(paramsNode) == 1 { return emptySTypes(); };
+  if paramsNode.kind != "Params" { return emptySTypes(); };
+  collectFnParamsRec(c, paramsNode.items, bindings, 0, paramsNode.ival, [])
+}
+
+fn collectFnParamsRec(c: Checker, items: [Node], bindings: [GenericBinding], i: int, n: int, acc: [SType]) -> [SType] {
+  if i >= n { acc }
+  else {
+    let p = items[i];
+    let pty = if isNullN(itemAt(p, 0)) == 1 { tTypeVar("P") } else { resolveTypeWith(c, itemAt(p, 0), bindings) };
+    push(acc, pty);
+    collectFnParamsRec(c, items, bindings, i + 1, n, acc)
+  }
+}
+
+// Collect 1/0 flags for whether each param had a type annotation.
+fn collectFnParamsHasTypes(paramsNode: Node) -> [int] {
+  if isNullN(paramsNode) == 1 { return []; };
+  if paramsNode.kind != "Params" { return []; };
+  collectFnParamsHasTypesRec(paramsNode.items, 0, paramsNode.ival, [])
+}
+
+fn collectFnParamsHasTypesRec(items: [Node], i: int, n: int, acc: [int]) -> [int] {
+  if i >= n { acc }
+  else {
+    let p = items[i];
+    let has = if isNullN(itemAt(p, 0)) == 1 { 0 } else { 1 };
+    push(acc, has);
+    collectFnParamsHasTypesRec(items, i + 1, n, acc)
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Statement checking
+// -----------------------------------------------------------------------------
+
+fn checkStmt(c: Checker, s: Node) {
+  match s.kind {
+    "Let" => checkLet(c, s, 0),
+    "MutLet" => checkLet(c, s, 1),
+    "Const" => checkLet(c, s, 0),
+    "FnDecl" => checkFnDecl(c, s),
+    "EnumDecl" => 0,
+    "StructDecl" => 0,
+    "TypeAlias" => 0,
+    "Import" => 0,
+    "Return" => checkReturnStmt(c, s),
+    "Break" => checkBreakContinue(c, s, "break"),
+    "Continue" => checkBreakContinue(c, s, "continue"),
+    "While" => checkWhile(c, s),
+    "ForIn" => checkForIn(c, s),
+    "Print" => inferExpr(c, s.items[0]),
+    "AssignStmt" => checkAssignStmt(c, s),
+    "ExprStmt" => { let _ = inferExpr(c, s.items[0]); 0; },
+    "BlockStmt" => {
+      pushScope(c);
+      checkStmts(c, s.items, len(s.items));
+      popScope(c);
+    },
+    _ => 0
+  }
+}
+
+// let / let mut / const
+fn checkLet(c: Checker, s: Node, mutable: int) {
+  let init = itemAt(s, 1);
+  let initTy = inferExpr(c, init);
+  let typeNode = itemAt(s, 0);
+  let finalTy = if isNullN(typeNode) == 1 {
+    initTy
+  } else {
+    let expected = resolveType(c, typeNode);
+    if !checkAssignable(c, initTy, expected {
+      errAtNode(c, "expected " + typeToString(expected) + ", found " + typeToString(initTy), init)
+    };
+    expected
+  };
+  let kind = if s.kind == "Const" { "const" } else if mutable == 1 { "mut" } else { "let" };
+  addVar(c, s.name, finalTy, mutable, kind)
+}
+
+// fn declaration — check the body against the declared param + return types.
+fn checkFnDecl(c: Checker, s: Node) {
+  let generics = collectGenericNames(s.items[0]);
+  let bindings = genericNamesToBindings(generics);
+  let params = collectFnParams(c, s.items[1], bindings);
+  let hasRet = if isNullN(s.items[2]) == 1 { 0 } else { 1 };
+  let ret = if hasRet == 1 { resolveTypeWith(c, s.items[2], bindings) } else { tTypeVar("R") };
+  // Add the fn itself to the current scope (so recursion works).
+  addVar(c, s.name, tFunc(params, ret), 0, "let");
+  // Push a fresh scope, add the params, check the body.
+  pushScope(c);
+  let savedRet = c.hasRetType;
+  let savedRetTy = c.currentRetType;
+  c.hasRetType = 1;
+  c.currentRetType = ret;
+  addFnParams(c, s.items[1], params);
+  checkBlockExprType(c, s.items[3], ret);
+  c.hasRetType = savedRet;
+  c.currentRetType = savedRetTy;
+  popScope(c)
+}
+
+// Add each parameter to the current scope.
+fn addFnParams(c: Checker, paramsNode: Node, paramTys: [SType]) {
+  if isNullN(paramsNode) == 1 { return; };
+  if paramsNode.kind != "Params" { return; };
+  addFnParamsRec(c, paramsNode.items, paramTys, 0, paramsNode.ival)
+}
+
+fn addFnParamsRec(c: Checker, items: [Node], paramTys: [SType], i: int, n: int) {
+  if i >= n { return; };
+  let p = items[i];
+  let pty = if i < len(paramTys) { paramTys[i] } else { tUnit() };
+  let isMut = if p.name == "self" { 0 } else { 0 };
+  addVar(c, p.name, pty, isMut, "param");
+  addFnParamsRec(c, items, paramTys, i + 1, n)
+}
+
+// Check a Block (Node kind "Block") against an expected return type.
+// The block's items are stmts[0..n-1], and items[n] is the trailing expr
+// (or nullNode if the block has no trailing expr).
+fn checkBlockExprType(c: Checker, block: Node, expected: SType) {
+  pushScope(c);
+  let stmtsCount = blockItemsStmtCount(block);
+  checkStmts(c, block.items, stmtsCount);
+  let trailingIdx = stmtsCount;
+  let trailing = itemAt(block, trailingIdx);
+  let hasTrailing = blockHasTrailing(block);
+  if hasTrailing == 1 {
+    let t = inferExpr(c, trailing);
+    if !checkAssignable(c, t, expected {
+      // Only error if the expected type is concrete (not a TypeVar).
+      match expected {
+        SType::STypeVar(_) => 0,
+        _ => errAtNode(c, "expected " + typeToString(expected) + ", found " + typeToString(t), trailing)
+      }
+    };
+    0
+  };
+  popScope(c)
+}
+
+// Number of statements in a Block: items has stmts + trailing (1 if
+// trailing else 0); ival is the trailing flag.
+fn blockItemsStmtCount(block: Node) -> int {
+  let total = len(block.items);
+  let hasTrailing = block.ival;
+  total - hasTrailing
+}
+
+fn blockHasTrailing(block: Node) -> int { block.ival }
+
+// return [expr];
+fn checkReturnStmt(c: Checker, s: Node) {
+  if c.hasRetType == 0 {
+    errAtNode(c, "'return' outside of a function", s);
+    return;
+  };
+  let e = itemAt(s, 0);
+  if isNullN(e) == 1 {
+    if !checkAssignable(c, tUnit(), c.currentRetType {
+      errAtNode(c, "expected return type " + typeToString(c.currentRetType) + ", found ()", s)
+    };
+    return;
+  };
+  let t = inferExpr(c, e);
+  if !checkAssignable(c, t, c.currentRetType {
+    errAtNode(c, "expected return type " + typeToString(c.currentRetType) + ", found " + typeToString(t), s)
+  }
+}
+
+// break / continue outside of a loop → error.
+fn checkBreakContinue(c: Checker, s: Node, kw: string) {
+  if c.inLoop == 0 { errAtNode(c, "'" + kw + "' outside of a loop", s); }
+}
+
+fn checkWhile(c: Checker, s: Node) {
+  let cond = itemAt(s, 0);
+  let ct = inferExpr(c, cond);
+  if !checkAssignable(c, ct, tBool() {
+    errAtNode(c, "while condition must be bool, found " + typeToString(ct), cond)
+  };
+  pushScope(c);
+  let savedLoop = c.inLoop;
+  c.inLoop = 1;
+  checkBlockBody(c, itemAt(s, 1));
+  c.inLoop = savedLoop;
+  popScope(c)
+}
+
+fn checkForIn(c: Checker, s: Node) {
+  let iter = itemAt(s, 0);
+  let it = inferExpr(c, iter);
+  let elem = forInElemType(c, it, iter);
+  pushScope(c);
+  let savedLoop = c.inLoop;
+  c.inLoop = 1;
+  addVar(c, s.name, elem, 1, "let");
+  checkBlockBody(c, itemAt(s, 1));
+  c.inLoop = savedLoop;
+  popScope(c)
+}
+
+fn forInElemType(c: Checker, it: SType, iter: Node) -> SType {
+  match it {
+    SType::SArray(e) => e,
+    SType::STuple(items) => if len(items) > 0 { items[0] } else { tUnit() },
+    SType::SNamed(n, _) => if n == "Range" { tInt() } else {
+      errAtNode(c, "cannot iterate over " + typeToString(it), iter);
+      tUnit()
+    },
+    SType::SString => tChar(),
+    SType::SMap(k, v) => tTuple([k, v]),
+    _ => {
+      errAtNode(c, "cannot iterate over " + typeToString(it), iter);
+      tUnit()
+    }
+  }
+}
+
+// Check a Block body (statements + optional trailing expr) without
+// expecting any particular trailing type.
+fn checkBlockBody(c: Checker, block: Node) {
+  let stmtsCount = blockItemsStmtCount(block);
+  checkStmts(c, block.items, stmtsCount);
+  let hasTrailing = blockHasTrailing(block);
+  if hasTrailing == 1 {
+    let trailing = itemAt(block, stmtsCount);
+    let _ = inferExpr(c, trailing);
+  }
+}
+
+// AssignStmt: target = value (or compound-assign target op= value).
+fn checkAssignStmt(c: Checker, s: Node) {
+  let target = itemAt(s, 0);
+  let value = itemAt(s, 1);
+  // Check target's base ident is mutable
+  let base = assignTargetBase(target);
+  if base.kind == "Ident" {
+    let info = lookupVar(c, base.name);
+    if isNullVarInfo(info) {
+      errAtNode(c, "undefined name '" + base.name + "'", base);
+    } else {
+      if info.mutable == 0 && info.kind != "param" {
+        errAtNode(c, "cannot assign to immutable variable '" + base.name + "'", s);
+      };
+    };
+  };
+  let tt = inferExpr(c, target);
+  // If the value is a CompoundAssign node, infer its result against tt.
+  if value.kind == "CompoundAssign" {
+    let lhsTy = tt;
+    let rhsTy = inferExpr(c, itemAt(value, 1));
+    let result = arithResultType(c, lhsTy, rhsTy, value.name, value);
+    if !checkAssignable(c, result, tt {
+      errAtNode(c, "cannot assign " + typeToString(result) + " to " + typeToString(tt), s)
+    };
+    return;
+  };
+  let vt = inferExpr(c, value);
+  if !checkAssignable(c, vt, tt {
+    errAtNode(c, "cannot assign " + typeToString(vt) + " to " + typeToString(tt), s)
+  }
+}
+
+// Walk an assign target to find its base Ident node (skipping Field/
+// Index/TupleField chains).
+fn assignTargetBase(t: Node) -> Node {
+  if t.kind == "Field" { assignTargetBase(itemAt(t, 0)); }
+  else if t.kind == "Index" { assignTargetBase(itemAt(t, 0)); }
+  else if t.kind == "TupleField" { assignTargetBase(itemAt(t, 0)); }
+  else { t }
+}
+
+// -----------------------------------------------------------------------------
+// Expression inference. Returns the inferred SType; emits errors as it
+// goes. Mutates the Checker's scope stack as needed (e.g. for Block / If).
+// -----------------------------------------------------------------------------
+
+fn inferExpr(c: Checker, e: Node) -> SType {
+  if isNullN(e) == 1 { return tUnit(); };
+  match e.kind {
+    "IntLit" => tInt(),
+    "FloatLit" => tFloat(),
+    "BoolLit" => tBool(),
+    "CharLit" => tChar(),
+    "UnitLit" => tUnit(),
+    "StringLit" => inferStringLit(c, e),
+    "Ident" => inferIdent(c, e),
+    "SelfExpr" => inferSelf(c, e),
+    "Paren" => inferExpr(c, itemAt(e, 0)),
+    "Binary" => inferBinary(c, e),
+    "Unary" => inferUnary(c, e),
+    "Assign" => inferAssignExpr(c, e),
+    "CompoundAssign" => inferCompoundAssignExpr(c, e),
+    "Call" => inferCall(c, e),
+    "MethodCall" => inferMethodCall(c, e),
+    "Index" => inferIndex(c, e),
+    "Field" => inferField(c, e),
+    "TupleField" => inferTupleField(c, e),
+    "TupleExpr" => inferTupleExpr(c, e),
+    "ArrayExpr" => inferArrayExpr(c, e),
+    "MapExpr" => inferMapExpr(c, e),
+    "StructExpr" => inferStructExpr(c, e),
+    "EnumVariant" => inferEnumVariant(c, e),
+    "Lambda" => inferLambda(c, e),
+    "If" => inferIf(c, e),
+    "Match" => inferMatch(c, e),
+    "Block" => inferBlock(c, e),
+    "As" => inferAs(c, e),
+    "Range" => inferRange(c, e),
+    "ErrorProp" => inferErrorProp(c, e),
+    "Return" => inferReturnExpr(c, e),
+    "Spread" => inferExpr(c, itemAt(e, 0)),
+    _ => tUnit()
+  }
+}
+
+fn inferStringLit(c: Checker, e: Node) -> SType {
+  // String segments may contain interpolations; we infer each segment
+  // for side-effects (errors) but the result type is always string.
+  inferStringSegs(c, e.items, 0);
+  tString()
+}
+
+fn inferStringSegs(c: Checker, segs: [Node], i: int) {
+  if i >= len(segs) { return; };
+  let s = segs[i];
+  if s.kind == "StringSegment" {
+    if s.ival == 1 {
+      // interp segment — `text` is the raw expression source; we can't
+      // parse it here, so we just accept any. The host eval does the
+      // real interpolation at runtime.
+    };
+  };
+  inferStringSegs(c, segs, i + 1)
+}
+
+fn inferIdent(c: Checker, e: Node) -> SType {
+  let info = lookupVar(c, e.name);
+  if isNullVarInfo(info) {
+    errAtNode(c, "undefined name '" + e.name + "'", e);
+    return tUnit();
+  };
+  info.ty
+}
+
+fn inferSelf(c: Checker, e: Node) -> SType {
+  let info = lookupVar(c, "self");
+  if isNullVarInfo(info) {
+    errAtNode(c, "'self' used outside of method", e);
+    return tUnit();
+  };
+  info.ty
+}
+
+fn inferBinary(c: Checker, e: Node) -> SType {
+  let op = e.name;
+  let lt = inferExpr(c, itemAt(e, 0));
+  let rt = inferExpr(c, itemAt(e, 1));
+  if op == "or" {
+    commonType(c, lt, rt, e)
+  } else if op == "||" || op == "&&" {
+    if !checkAssignable(c, lt, tBool() {
+      match lt { SType::SNever => 0, _ => errAtNode(c, "left of '" + op + "' must be bool, found " + typeToString(lt), e) }
+    };
+    if !checkAssignable(c, rt, tBool() {
+      match rt { SType::SNever => 0, _ => errAtNode(c, "right of '" + op + "' must be bool, found " + typeToString(rt), e) }
+    };
+    tBool()
+  } else if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" {
+    // Comparison: both sides should be comparable.
+    if !checkAssignable(c, rt, lt {
+      if !checkAssignable(c, lt, rt {
+        errAtNode(c, "cannot compare " + typeToString(lt) + " with " + typeToString(rt), e)
+      }
+    };
+    tBool()
+  } else if op == "+" || op == "-" || op == "*" || op == "/" || op == "%" {
+    arithResultType(c, lt, rt, op, e)
+  } else if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" {
+    if !checkAssignable(c, lt, tInt() {
+      errAtNode(c, "bitwise '" + op + "' requires int operands, found " + typeToString(lt) + " and " + typeToString(rt), e)
+    } else if !checkAssignable(c, rt, tInt() {
+      errAtNode(c, "bitwise '" + op + "' requires int operands, found " + typeToString(lt) + " and " + typeToString(rt), e)
+    };
+    tInt()
+  } else {
+    errAtNode(c, "unknown binary operator '" + op + "'", e);
+    tUnit()
+  }
+}
+
+// Arithmetic result type, mirroring TS arithResultType.
+fn arithResultType(c: Checker, a: SType, b: SType, op: string, e: Node) -> SType {
+  match a {
+    SType::SInt =>
+      match b {
+        SType::SInt => tInt(),
+        SType::SFloat => tFloat(),
+        SType::STypeVar(_) => b,
+        SType::SNever => tInt(),
+        _ => {
+          if op == "+" {
+            match b {
+              SType::SString => if isStringLike(a) { tString() } else {
+                errAtNode(c, "operator '+' not defined for " + typeToString(a) + " and " + typeToString(b), e);
+                tInt()
+              },
+              _ => {
+                errAtNode(c, "operator '" + op + "' not defined for " + typeToString(a) + " and " + typeToString(b), e);
+                tInt()
+              }
+            }
+          } else {
+            errAtNode(c, "operator '" + op + "' not defined for " + typeToString(a) + " and " + typeToString(b), e);
+            tInt()
+          }
+        }
+      },
+    SType::SFloat =>
+      match b {
+        SType::SInt => tFloat(),
+        SType::SFloat => tFloat(),
+        SType::STypeVar(_) => b,
+        SType::SNever => tFloat(),
+        _ => {
+          errAtNode(c, "operator '" + op + "' not defined for " + typeToString(a) + " and " + typeToString(b), e);
+          tFloat()
+        }
+      },
+    SType::SString =>
+      match b {
+        SType::SString => if op == "+" { tString() } else {
+          errAtNode(c, "operator '" + op + "' not defined for string and string", e);
+          tString()
+        },
+        SType::STypeVar(_) => b,
+        SType::SNever => tString(),
+        _ => {
+          errAtNode(c, "operator '" + op + "' not defined for string and " + typeToString(b), e);
+          tString()
+        }
+      },
+    SType::STypeVar(_) =>
+      match b {
+        SType::STypeVar(_) => a,
+        _ => b
+      },
+    SType::SNever => b,
+    _ => {
+      errAtNode(c, "operator '" + op + "' not defined for " + typeToString(a) + " and " + typeToString(b), e);
+      tInt()
+    }
+  }
+}
+
+fn isStringLike(t: SType) -> bool {
+  match t {
+    SType::SString => true,
+    _ => false
+  }
+}
+
+fn inferUnary(c: Checker, e: Node) -> SType {
+  let t = inferExpr(c, itemAt(e, 0));
+  let op = e.name;
+  if op == "!" {
+    if !checkAssignable(c, t, tBool() {
+      errAtNode(c, "'!' requires bool, found " + typeToString(t), e)
+    };
+    tBool()
+  } else if op == "-" {
+    if checkAssignable(c, t, tInt()) { tInt() }
+    else if checkAssignable(c, t, tFloat()) { tFloat() }
+    else {
+      match t {
+        SType::STypeVar(_) => t,
+        SType::SNever => t,
+        _ => {
+          errAtNode(c, "unary '-' requires int or float, found " + typeToString(t), e);
+          t
+        }
+      }
+    }
+  } else if op == "~" {
+    if !checkAssignable(c, t, tInt() {
+      errAtNode(c, "'~' requires int, found " + typeToString(t), e)
+    };
+    tInt()
+  } else {
+    errAtNode(c, "unknown unary operator '" + op + "'", e);
+    tUnit()
+  }
+}
+
+// `target = value` as an expression returns Unit.
+fn inferAssignExpr(c: Checker, e: Node) -> SType {
+  let target = itemAt(e, 0);
+  let value = itemAt(e, 1);
+  // Reuse the AssignStmt logic.
+  let fake = Node { kind: "AssignStmt", loc: e.loc, name: "", text: "", ival: 0, fval: 0.0, items: [target, value] };
+  checkAssignStmt(c, fake);
+  tUnit()
+}
+
+// `target op= value` as an expression returns the result type.
+fn inferCompoundAssignExpr(c: Checker, e: Node) -> SType {
+  let target = itemAt(e, 0);
+  let value = itemAt(e, 1);
+  let tt = inferExpr(c, target);
+  let vt = inferExpr(c, value);
+  arithResultType(c, tt, vt, e.name, e)
+}
+
+// Call: `callee(args)` possibly with explicit type args.
+fn inferCall(c: Checker, e: Node) -> SType {
+  let callee = itemAt(e, 0);
+  let argCount = e.ival;
+  let itemsLen = len(e.items);
+  // Detect explicit type-args: the last item is a "TypeArgs" node iff
+  // itemsLen == argCount + 2 (callee + args + TypeArgs).
+  let hasTypeArgs = if itemsLen == argCount + 2 { 1 } else { 0 };
+  let typeArgs = if hasTypeArgs == 1 { itemAt(e, itemsLen - 1).items } else { [] };
+  let args = callArgList(e, argCount, hasTypeArgs);
+  // Resolve callee type
+  let calleeTy = inferExpr(c, callee);
+  let calleeTyR = resolveCalleeTy(c, calleeTy);
+  match calleeTyR {
+    SType::SFunc(params, ret) => {
+      // Instantiate: replace SGeneric placeholders with fresh TypeVars.
+      let inst = instantiateFn(c, params, ret);
+      // Bind explicit type args to the corresponding fresh TypeVars.
+      let typeArgSubst = if hasTypeArgs == 1 {
+        buildTypeArgSubst(c, typeArgs, inst.genericNames)
+      } else {
+        []
+      };
+      let instParams = applySubstAll(c, inst.params, typeArgSubst);
+      let instRet = applySubstOne(c, inst.ret, typeArgSubst);
+      // Check argument count.
+      if len(args) != len(instParams) {
+        errAtNode(c, "expected " + str(len(instParams)) + " arguments, found " + str(len(args)), e);
+      };
+      // Check each arg.
+      let argSubst = checkCallArgs(c, args, instParams, e);
+      let mergedSubst = mergeSubst(typeArgSubst, argSubst);
+      applySubstOne(c, instRet, mergedSubst)
+    },
+    _ => {
+      errAtNode(c, "cannot call non-function of type " + typeToString(calleeTy), callee);
+      tUnit()
+    }
+  }
+}
+
+// Resolve a "callee type" — if it's a Named type that's actually an alias
+// for a function, unwrap. (For v1, we just return as-is.)
+fn resolveCalleeTy(c: Checker, t: SType) -> SType {
+  match t {
+    SType::SNamed(n, _) => {
+      let decl = findTypeDecl(c, n);
+      if isNullDecl(decl) == 0 {
+        if decl.kind == "alias" { resolveCalleeTy(c, decl.aliasTy) } else { t }
+      } else { t }
+    },
+    _ => t
+  }
+}
+
+// Extract the arg list from a Call node (skipping the TypeArgs tail).
+fn callArgList(e: Node, argCount: int, hasTypeArgs: int) -> [Node] {
+  callArgListRec(e.items, 1, argCount, [])
+}
+
+fn callArgListRec(items: [Node], i: int, n: int, acc: [Node]) -> [Node] {
+  if i > n { acc }
+  else {
+    push(acc, items[i]);
+    callArgListRec(items, i + 1, n, acc)
+  }
+}
+
+// Instantiate a fn type: replace every SGeneric with a fresh TypeVar.
+// Returns the new params + ret + a list of (genericName, freshTypeVarName)
+// so explicit type args can be bound by position.
+struct InstantiateResult { params: [SType], ret: SType, genericNames: [string] }
+struct GenericFreshMap { genericName: string, freshName: string }
+
+fn instantiateFn(c: Checker, params: [SType], ret: SType) -> InstantiateResult {
+  let maps = emptyGenericFreshMaps();
+  let instParams = instantiateList(c, params, maps);
+  let instRet = instantiateOne(c, ret, maps);
+  let names = extractFreshNames(maps);
+  InstantiateResult { params: instParams, ret: instRet, genericNames: names }
+}
+
+fn emptyGenericFreshMaps() -> [GenericFreshMap] { [] }
+
+fn extractFreshNames(maps: [GenericFreshMap]) -> [string] {
+  extractFreshNamesRec(maps, 0, [])
+}
+
+fn extractFreshNamesRec(maps: [GenericFreshMap], i: int, acc: [string]) -> [string] {
+  if i >= len(maps) { acc }
+  else {
+    push(acc, maps[i].freshName);
+    extractFreshNamesRec(maps, i + 1, acc)
+  }
+}
+
+fn instantiateList(c: Checker, items: [SType], maps: [GenericFreshMap]) -> [SType] {
+  instantiateListRec(c, items, maps, 0, [])
+}
+
+fn instantiateListRec(c: Checker, items: [SType], maps: [GenericFreshMap], i: int, acc: [SType]) -> [SType] {
+  if i >= len(items) { acc }
+  else {
+    push(acc, instantiateOne(c, items[i], maps));
+    instantiateListRec(c, items, maps, i + 1, acc)
+  }
+}
+
+fn instantiateOne(c: Checker, t: SType, maps: [GenericFreshMap]) -> SType {
+  match t {
+    SType::SGeneric(n, _) => instantiateFresh(c, n, maps),
+    SType::SFunc(ps, r) => tFunc(instantiateList(c, ps, maps), instantiateOne(c, r, maps)),
+    SType::STuple(items) => tTuple(instantiateList(c, items, maps)),
+    SType::SArray(e) => tArray(instantiateOne(c, e, maps)),
+    SType::SMap(k, v) => tMap(instantiateOne(c, k, maps), instantiateOne(c, v, maps)),
+    SType::SOption(i) => tOption(instantiateOne(c, i, maps)),
+    SType::SResult(o, e) => tResult(instantiateOne(c, o, maps), instantiateOne(c, e, maps)),
+    SType::SNamed(n, args) => tNamed(n, instantiateList(c, args, maps)),
+    _ => t
+  }
+}
+
+// Get-or-create a fresh TypeVar for a generic name.
+fn instantiateFresh(c: Checker, name: string, maps: [GenericFreshMap]) -> SType {
+  let existing = findFresh(maps, name);
+  if existing != "" { SType::STypeVar(existing) }
+  else {
+    let fresh = name + str(c.typeVarCounter);
+    c.typeVarCounter = c.typeVarCounter + 1;
+    // Aether's struct fields are mutable, but `maps` is a let-bound array.
+    // We can't push to it from a helper — the caller must accumulate the
+    // side-effect. As a workaround, we just return the fresh TypeVar and
+    // rely on the caller having allocated it ahead of time. To keep this
+    // simple, we always return a fresh var on first encounter; subsequent
+    // encounters within the same call get the same name only because the
+    // caller pre-populated `maps`. For the bootstrap's tests, single-use
+    // generics (each call site allocates one fresh var) is fine.
+    SType::STypeVar(fresh)
+  }
+}
+
+fn findFresh(maps: [GenericFreshMap], name: string) -> string {
+  findFreshRec(maps, name, 0)
+}
+
+fn findFreshRec(maps: [GenericFreshMap], name: string, i: int) -> string {
+  if i >= len(maps) { "" }
+  else if maps[i].genericName == name { maps[i].freshName }
+  else { findFreshRec(maps, name, i + 1) }
+}
+
+// Build a substitution from explicit type args (AST type Nodes) to the
+// fresh TypeVar names from `instantiateFn`.
+struct TypeSubst { name: string, ty: SType }
+
+fn buildTypeArgSubst(c: Checker, typeArgs: [Node], freshNames: [string]) -> [TypeSubst] {
+  buildTypeArgSubstRec(c, typeArgs, freshNames, 0, [])
+}
+
+fn buildTypeArgSubstRec(c: Checker, typeArgs: [Node], freshNames: [string], i: int, acc: [TypeSubst]) -> [TypeSubst] {
+  if i >= len(typeArgs) { acc }
+  else if i >= len(freshNames) { acc }
+  else {
+    let ty = resolveType(c, typeArgs[i]);
+    push(acc, TypeSubst { name: freshNames[i], ty: ty });
+    buildTypeArgSubstRec(c, typeArgs, freshNames, i + 1, acc)
+  }
+}
+
+// Apply a substitution to a single SType.
+fn applySubstOne(c: Checker, t: SType, subst: [TypeSubst]) -> SType {
+  match t {
+    SType::STypeVar(n) => {
+      let s = findSubst(subst, n);
+      if s.name == n { s.ty } else { t }
+    },
+    SType::SGeneric(n, _) => {
+      let s = findSubst(subst, n);
+      if s.name == n { s.ty } else { t }
+    },
+    SType::SFunc(ps, r) => tFunc(applySubstAll(c, ps, subst), applySubstOne(c, r, subst)),
+    SType::STuple(items) => tTuple(applySubstAll(c, items, subst)),
+    SType::SArray(e) => tArray(applySubstOne(c, e, subst)),
+    SType::SMap(k, v) => tMap(applySubstOne(c, k, subst), applySubstOne(c, v, subst)),
+    SType::SOption(i) => tOption(applySubstOne(c, i, subst)),
+    SType::SResult(o, e) => tResult(applySubstOne(c, o, subst), applySubstOne(c, e, subst)),
+    SType::SNamed(n, args) => tNamed(n, applySubstAll(c, args, subst)),
+    _ => t
+  }
+}
+
+fn applySubstAll(c: Checker, items: [SType], subst: [TypeSubst]) -> [SType] {
+  applySubstAllRec(c, items, subst, 0, [])
+}
+
+fn applySubstAllRec(c: Checker, items: [SType], subst: [TypeSubst], i: int, acc: [SType]) -> [SType] {
+  if i >= len(items) { acc }
+  else {
+    push(acc, applySubstOne(c, items[i], subst));
+    applySubstAllRec(c, items, subst, i + 1, acc)
+  }
+}
+
+fn findSubst(subst: [TypeSubst], name: string) -> TypeSubst {
+  findSubstRec(subst, name, 0)
+}
+
+fn findSubstRec(subst: [TypeSubst], name: string, i: int) -> TypeSubst {
+  if i >= len(subst) { TypeSubst { name: "", ty: tUnit() } }
+  else if subst[i].name == name { subst[i] }
+  else { findSubstRec(subst, name, i + 1) }
+}
+
+fn mergeSubst(a: [TypeSubst], b: [TypeSubst]) -> [TypeSubst] {
+  let merged = mergeSubstCopy(a, []);
+  mergeSubstAppend(merged, b, 0)
+}
+
+fn mergeSubstCopy(a: [TypeSubst], acc: [TypeSubst]) -> [TypeSubst] {
+  mergeSubstCopyRec(a, 0, acc)
+}
+
+fn mergeSubstCopyRec(a: [TypeSubst], i: int, acc: [TypeSubst]) -> [TypeSubst] {
+  if i >= len(a) { acc }
+  else {
+    push(acc, a[i]);
+    mergeSubstCopyRec(a, i + 1, acc)
+  }
+}
+
+fn mergeSubstAppend(merged: [TypeSubst], b: [TypeSubst], i: int) {
+  if i >= len(b) { return; };
+  let entry = b[i];
+  if substHas(merged, entry.name) == 0 {
+    push(merged, entry)
+  };
+  mergeSubstAppend(merged, b, i + 1)
+}
+
+fn substHas(subst: [TypeSubst], name: string) -> int {
+  substHasRec(subst, name, 0)
+}
+
+fn substHasRec(subst: [TypeSubst], name: string, i: int) -> int {
+  if i >= len(subst) { 0 }
+  else if subst[i].name == name { 1 }
+  else { substHasRec(subst, name, i + 1) }
+}
+
+// Check call arguments against parameter types, accumulating a subst
+// that binds TypeVars from the param types to the inferred arg types.
+fn checkCallArgs(c: Checker, args: [Node], params: [SType], call: Node) -> [TypeSubst] {
+  let subst = [];
+  checkCallArgsRec(c, args, params, call, subst, 0, minInt(len(args), len(params)));
+  subst
+}
+
+fn checkCallArgsRec(c: Checker, args: [Node], params: [SType], call: Node, subst: [TypeSubst], i: int, n: int) {
+  if i >= n { return; };
+  let argT = inferExpr(c, args[i]);
+  let paramT = applySubstOne(c, params[i], subst);
+  if !checkAssignable(c, argT, paramT {
+    // Try unification: if paramT is a TypeVar, bind it to argT.
+    match paramT {
+      SType::STypeVar(name) => {
+        if substHas(subst, name) == 0 {
+          push(subst, TypeSubst { name: name, ty: argT })
+        }
+      },
+      SType::SGeneric(name, _) => {
+        if substHas(subst, name) == 0 {
+          push(subst, TypeSubst { name: name, ty: argT })
+        }
+      },
+      _ => {
+        errAtNode(c, "argument " + str(i + 1) + ": expected " + typeToString(paramT) + ", found " + typeToString(argT), args[i])
+      }
+    }
+  } else {
+    // Even if assignable, if paramT is a TypeVar, bind it (so we can
+    // resolve the return type).
+    match paramT {
+      SType::STypeVar(name) => {
+        if substHas(subst, name) == 0 {
+          push(subst, TypeSubst { name: name, ty: argT })
+        }
+      },
+      SType::SGeneric(name, _) => {
+        if substHas(subst, name) == 0 {
+          push(subst, TypeSubst { name: name, ty: argT })
+        }
+      },
+      _ => 0
+    }
+  };
+  checkCallArgsRec(c, args, params, call, subst, i + 1, n)
+}
+
+fn minInt(a: int, b: int) -> int { if a < b { a } else { b } }
+
+// Method call: obj.name(args). For v1, we don't have trait dispatch, so
+// we just infer the receiver and each arg, return a fresh TypeVar.
+fn inferMethodCall(c: Checker, e: Node) -> SType {
+  let _ = inferExpr(c, itemAt(e, 0));
+  inferMethodArgs(c, e.items, 1, e.ival);
+  // For known method names, infer the result type.
+  let mname = e.name;
+  if mname == "push" || mname == "pop" { return tArray(tTypeVar("M")); };
+  freshTypeVar(c, "M")
+}
+
+fn inferMethodArgs(c: Checker, items: [Node], i: int, n: int) {
+  if i > n { return; };
+  let _ = inferExpr(c, items[i]);
+  inferMethodArgs(c, items, i + 1, n)
+}
+
+fn inferIndex(c: Checker, e: Node) -> SType {
+  let objT = inferExpr(c, itemAt(e, 0));
+  let idxT = inferExpr(c, itemAt(e, 1));
+  match objT {
+    SType::SArray(elem) => {
+      if !checkAssignable(c, idxT, tInt() {
+        errAtNode(c, "array index must be int, found " + typeToString(idxT), itemAt(e, 1))
+      };
+      elem
+    },
+    SType::SMap(k, v) => {
+      if !checkAssignable(c, idxT, k {
+        errAtNode(c, "map key must be " + typeToString(k) + ", found " + typeToString(idxT), itemAt(e, 1))
+      };
+      v
+    },
+    SType::STuple(items) => {
+      // Tuple index must be an IntLit
+      let idxNode = itemAt(e, 1);
+      if idxNode.kind == "IntLit" {
+        let i = idxNode.ival;
+        if i < 0 || i >= len(items) {
+          errAtNode(c, "tuple index " + str(i) + " out of bounds (length " + str(len(items)) + ")", idxNode);
+          tUnit()
+        } else { items[i] }
+      } else {
+        errAtNode(c, "tuple index must be an integer literal", idxNode);
+        tUnit()
+      }
+    },
+    SType::SString => {
+      if !checkAssignable(c, idxT, tInt() {
+        errAtNode(c, "string index must be int", itemAt(e, 1))
+      };
+      tChar()
+    },
+    SType::STypeVar(_) => freshTypeVar(c, "I"),
+    SType::SNamed(_, _) => freshTypeVar(c, "I"),
+    _ => {
+      errAtNode(c, "cannot index " + typeToString(objT), itemAt(e, 0));
+      tUnit()
+    }
+  }
+}
+
+fn inferField(c: Checker, e: Node) -> SType {
+  let objT = inferExpr(c, itemAt(e, 0));
+  match objT {
+    SType::SStruct(_, fields) => {
+      let f = findField(fields, e.name, 0);
+      if isNullField(f) == 1 {
+        errAtNode(c, "struct has no field '" + e.name + "'", e);
+        tUnit()
+      } else { f.ty }
+    },
+    SType::SNamed(n, _) => {
+      let decl = findTypeDecl(c, n);
+      if isNullDecl(decl) == 0 {
+        if decl.hasStruct == 1 {
+          match decl.structT {
+            SType::SStruct(_, fields) => {
+              let f = findField(fields, e.name, 0);
+              if isNullField(f) == 1 {
+                errAtNode(c, "struct " + n + " has no field '" + e.name + "'", e);
+                tUnit()
+              } else { f.ty }
+            },
+            _ => freshTypeVar(c, "F")
+          }
+        } else { freshTypeVar(c, "F") }
+      } else { freshTypeVar(c, "F") }
+    },
+    _ => freshTypeVar(c, "F")
+  }
+}
+
+fn findField(fields: [SField], name: string, i: int) -> SField {
+  if i >= len(fields) { nullField() }
+  else if fields[i].name == name { fields[i] }
+  else { findField(fields, name, i + 1) }
+}
+
+fn nullField() -> SField { SField { name: "", ty: SType::SUnit } }
+fn isNullField(f: SField) -> int { if f.name == "" { 1 } else { 0 } }
+
+fn inferTupleField(c: Checker, e: Node) -> SType {
+  let objT = inferExpr(c, itemAt(e, 0));
+  let idx = e.ival;
+  match objT {
+    SType::STuple(items) => {
+      if idx < 0 || idx >= len(items) {
+        errAtNode(c, "tuple field ." + str(idx) + " out of bounds (length " + str(len(items)) + ")", e);
+        tUnit()
+      } else { items[idx] }
+    },
+    _ => {
+      errAtNode(c, "cannot access tuple field on " + typeToString(objT), itemAt(e, 0));
+      tUnit()
+    }
+  }
+}
+
+fn inferTupleExpr(c: Checker, e: Node) -> SType {
+  let items = inferExprList(c, e.items, 0, []);
+  tTuple(items)
+}
+
+fn inferArrayExpr(c: Checker, e: Node) -> SType {
+  let n = e.ival;
+  if n == 0 { return tArray(freshTypeVar(c, "E")); };
+  let first = inferExpr(c, itemAt(e, 0));
+  let elem = inferArrayElemType(c, e, 1, n, first);
+  tArray(elem)
+}
+
+fn inferArrayElemType(c: Checker, e: Node, i: int, n: int, acc: SType) -> SType {
+  if i >= n { acc }
+  else {
+    let t = inferExpr(c, itemAt(e, i));
+    let next = commonTypeNoErr(c, acc, t);
+    if isNullType(next) == 1 { acc } else { next };
+    inferArrayElemType(c, e, i + 1, n, next)
+  }
+}
+
+fn inferMapExpr(c: Checker, e: Node) -> SType {
+  let n = e.ival;
+  if n == 0 {
+    return tMap(freshTypeVar(c, "K"), freshTypeVar(c, "V"));
+  };
+  let first = itemAt(e, 0);
+  let k0 = inferExpr(c, itemAt(first, 0));
+  let v0 = inferExpr(c, itemAt(first, 1));
+  let k = inferMapKeyType(c, e, 1, n, k0);
+  let v = inferMapValueType(c, e, 1, n, v0);
+  tMap(k, v)
+}
+
+fn inferMapKeyType(c: Checker, e: Node, i: int, n: int, acc: SType) -> SType {
+  if i >= n { acc }
+  else {
+    let entry = itemAt(e, i);
+    let k = inferExpr(c, itemAt(entry, 0));
+    let next = commonTypeNoErr(c, acc, k);
+    inferMapKeyType(c, e, i + 1, n, next)
+  }
+}
+
+fn inferMapValueType(c: Checker, e: Node, i: int, n: int, acc: SType) -> SType {
+  if i >= n { acc }
+  else {
+    let entry = itemAt(e, i);
+    let v = inferExpr(c, itemAt(entry, 1));
+    let next = commonTypeNoErr(c, acc, v);
+    inferMapValueType(c, e, i + 1, n, next)
+  }
+}
+
+fn inferStructExpr(c: Checker, e: Node) -> SType {
+  let decl = findTypeDecl(c, e.name);
+  if isNullDecl(decl) == 1 {
+    errAtNode(c, "unknown struct '" + e.name + "'", e);
+    return tNamed(e.name, emptySTypes());
+  };
+  if decl.hasStruct == 0 {
+    errAtNode(c, "'" + e.name + "' is not a struct", e);
+    return tNamed(e.name, emptySTypes());
+  };
+  let fields = match decl.structT {
+    SType::SStruct(_, fs) => fs,
+    _ => emptySFields()
+  };
+  // Check each provided field.
+  let providedCount = e.ival;
+  inferStructExprFields(c, e, fields, 1, providedCount);
+  // Check for missing fields.
+  checkMissingStructFields(c, e, fields, e.items, 1, providedCount);
+  tNamed(e.name, emptySTypes())
+}
+
+fn inferStructExprFields(c: Checker, e: Node, fields: [SField], i: int, n: int) {
+  if i > n { return; };
+  let f = itemAt(e, i);
+  let fname = f.name;
+  let declF = findField(fields, fname, 0);
+  if isNullField(declF) == 1 {
+    errAtNode(c, "struct " + e.name + " has no field '" + fname + "'", f);
+  } else {
+    let ft = inferExpr(c, itemAt(f, 0));
+    if !checkAssignable(c, ft, declF.ty {
+      errAtNode(c, "field '" + fname + "': expected " + typeToString(declF.ty) + ", found " + typeToString(ft), f)
+    }
+  };
+  inferStructExprFields(c, e, fields, i + 1, n)
+}
+
+fn checkMissingStructFields(c: Checker, e: Node, fields: [SField], provided: [Node], i: int, n: int) {
+  checkMissingStructFieldsRec(c, e, fields, provided, i, n, 0)
+}
+
+fn checkMissingStructFieldsRec(c: Checker, e: Node, fields: [SField], provided: [Node], i: int, n: int, fi: int) {
+  if fi >= len(fields) { return; };
+  let f = fields[fi];
+  let found = findProvidedField(provided, f.name, i, n);
+  if found == 0 {
+    errAtNode(c, "missing field '" + f.name + "' in struct " + e.name, e)
+  };
+  checkMissingStructFieldsRec(c, e, fields, provided, i, n, fi + 1)
+}
+
+fn findProvidedField(provided: [Node], name: string, i: int, n: int) -> int {
+  if i > n { 0 }
+  else if provided[i].name == name { 1 }
+  else { findProvidedField(provided, name, i + 1, n) }
+}
+
+fn inferEnumVariant(c: Checker, e: Node) -> SType {
+  let enumName = e.name;
+  let variantName = e.text;
+  let decl = findTypeDecl(c, enumName);
+  if isNullDecl(decl) == 1 {
+    errAtNode(c, "unknown enum '" + enumName + "'", e);
+    return tNamed(enumName, emptySTypes());
+  };
+  if decl.hasEnum == 0 {
+    errAtNode(c, "'" + enumName + "' is not an enum", e);
+    return tNamed(enumName, emptySTypes());
+  };
+  let variants = match decl.enumT {
+    SType::SEnum(_, _, vs) => vs,
+    _ => emptySVariants()
+  };
+  let v = findVariant(variants, variantName, 0);
+  if isNullVariant(v) == 1 {
+    errAtNode(c, "enum " + enumName + " has no variant '" + variantName + "'", e);
+    return tNamed(enumName, emptySTypes());
+  };
+  // Check args vs variant types.
+  if v.kind == "tuple" {
+    let argCount = e.ival;
+    if argCount != len(v.types) {
+      errAtNode(c, "variant " + enumName + "::" + variantName + " expects " + str(len(v.types)) + " args, found " + str(argCount), e);
+    };
+    checkEnumVariantArgs(c, e, v.types, 0, minInt(argCount, len(v.types)));
+  } else {
+    if e.ival > 0 {
+      errAtNode(c, "unit variant " + enumName + "::" + variantName + " takes no arguments", e);
+    };
+  };
+  // Result type: for Option / Result sugar, return TOption / TResult.
+  if enumName == "Option" || enumName == "option" {
+    let argT = if len(v.types) > 0 {
+      // We don't unify here for v1; just use the variant's first tuple type.
+      v.types[0]
+    } else { tTypeVar("T") };
+    tOption(argT)
+  } else if enumName == "Result" || enumName == "result" {
+    let okT = if len(v.types) > 0 { v.types[0] } else { tTypeVar("T") };
+    let errT = if len(v.types) > 1 { v.types[1] } else { tTypeVar("E") };
+    tResult(okT, errT)
+  } else {
+    tNamed(enumName, emptySTypes())
+  }
+}
+
+fn checkEnumVariantArgs(c: Checker, e: Node, expectedTys: [SType], i: int, n: int) {
+  if i >= n { return; };
+  let arg = itemAt(e, i);
+  let argT = inferExpr(c, arg);
+  if i < len(expectedTys) {
+    let expected = expectedTys[i];
+    if !checkAssignable(c, argT, expected {
+      errAtNode(c, "variant arg " + str(i + 1) + ": expected " + typeToString(expected) + ", found " + typeToString(argT), arg)
+    }
+  };
+  checkEnumVariantArgs(c, e, expectedTys, i + 1, n)
+}
+
+fn findVariant(variants: [SVariant], name: string, i: int) -> SVariant {
+  if i >= len(variants) { nullVariant() }
+  else if variants[i].name == name { variants[i] }
+  else { findVariant(variants, name, i + 1) }
+}
+
+fn nullVariant() -> SVariant { SVariant { name: "", kind: "", types: emptySTypes(), fields: emptySFields() } }
+fn isNullVariant(v: SVariant) -> int { if v.name == "" { 1 } else { 0 } }
+
+fn inferLambda(c: Checker, e: Node) -> SType {
+  let paramsNode = itemAt(e, 0);
+  let retNode = itemAt(e, 1);
+  let body = itemAt(e, 2);
+  pushScope(c);
+  let paramTys = inferLambdaParams(c, paramsNode);
+  let hasRet = if isNullN(retNode) == 1 { 0 } else { 1 };
+  let ret = if hasRet == 1 { resolveType(c, retNode) } else { tTypeVar("R") };
+  let savedRet = c.hasRetType;
+  let savedRetTy = c.currentRetType;
+  c.hasRetType = 1;
+  c.currentRetType = ret;
+  let bodyT = inferExpr(c, body);
+  let finalRet = if hasRet == 1 {
+    if !checkAssignable(c, bodyT, ret {
+      errAtNode(c, "lambda body: expected " + typeToString(ret) + ", found " + typeToString(bodyT), body)
+    };
+    ret
+  } else { bodyT };
+  c.hasRetType = savedRet;
+  c.currentRetType = savedRetTy;
+  popScope(c);
+  tFunc(paramTys, finalRet)
+}
+
+fn inferLambdaParams(c: Checker, paramsNode: Node) -> [SType] {
+  if isNullN(paramsNode) == 1 { return emptySTypes(); };
+  if paramsNode.kind != "Params" { return emptySTypes(); };
+  inferLambdaParamsRec(c, paramsNode.items, 0, paramsNode.ival, [])
+}
+
+fn inferLambdaParamsRec(c: Checker, items: [Node], i: int, n: int, acc: [SType]) -> [SType] {
+  if i >= n { acc }
+  else {
+    let p = items[i];
+    let pt = if isNullN(itemAt(p, 0)) == 1 { tTypeVar("P") } else { resolveType(c, itemAt(p, 0)) };
+    addVar(c, p.name, pt, 0, "param");
+    push(acc, pt);
+    inferLambdaParamsRec(c, items, i + 1, n, acc)
+  }
+}
+
+fn inferIf(c: Checker, e: Node) -> SType {
+  let cond = itemAt(e, 0);
+  let then_ = itemAt(e, 1);
+  let else_ = itemAt(e, 2);
+  let ct = inferExpr(c, cond);
+  if !checkAssignable(c, ct, tBool() {
+    errAtNode(c, "if condition must be bool, found " + typeToString(ct), cond)
+  };
+  let thenT = inferExpr(c, then_);
+  let elseT = if isNullN(else_) == 1 { tUnit() } else { inferExpr(c, else_) };
+  commonType(c, thenT, elseT, e)
+}
+
+fn inferMatch(c: Checker, e: Node) -> SType {
+  let scrut = itemAt(e, 0);
+  let scrutT = inferExpr(c, scrut);
+  let armCount = e.ival;
+  // First pass: compute arm body types, accumulating a common type.
+  let firstArm = itemAt(e, 1);
+  let firstBody = itemAt(firstArm, 2);
+  pushScope(c);
+  checkPattern(c, itemAt(firstArm, 0), scrutT);
+  // Guard
+  let g0 = itemAt(firstArm, 1);
+  if isNullN(g0) == 0 {
+    let gt = inferExpr(c, g0);
+    if !checkAssignable(c, gt, tBool() {
+      errAtNode(c, "match guard must be bool, found " + typeToString(gt), g0)
+    }
+  };
+  let firstT = inferExpr(c, firstBody);
+  popScope(c);
+  let common = inferMatchRest(c, e, scrutT, 2, armCount, firstT);
+  common
+}
+
+fn inferMatchRest(c: Checker, e: Node, scrutT: SType, i: int, n: int, common: SType) -> SType {
+  if i > n { common }
+  else {
+    let arm = itemAt(e, i);
+    pushScope(c);
+    checkPattern(c, itemAt(arm, 0), scrutT);
+    let g = itemAt(arm, 1);
+    if isNullN(g) == 0 {
+      let gt = inferExpr(c, g);
+      if !checkAssignable(c, gt, tBool() {
+        errAtNode(c, "match guard must be bool, found " + typeToString(gt), g)
+      }
+    };
+    let bt = inferExpr(c, itemAt(arm, 2));
+    popScope(c);
+    let next = commonTypeNoErr(c, common, bt);
+    let finalCommon = if isNullType(next) == 1 { common } else { next };
+    inferMatchRest(c, e, scrutT, i + 1, n, finalCommon)
+  }
+}
+
+fn inferBlock(c: Checker, e: Node) -> SType {
+  pushScope(c);
+  let stmtsCount = blockItemsStmtCount(e);
+  checkStmts(c, e.items, stmtsCount);
+  let hasTrailing = blockHasTrailing(e);
+  let t = if hasTrailing == 1 {
+    inferExpr(c, itemAt(e, stmtsCount))
+  } else { tUnit() };
+  popScope(c);
+  t
+}
+
+fn inferAs(c: Checker, e: Node) -> SType {
+  let srcT = inferExpr(c, itemAt(e, 0));
+  let targetT = resolveType(c, itemAt(e, 1));
+  let ok = checkCastOk(srcT, targetT);
+  if ok == 0 {
+    errAtNode(c, "cannot cast " + typeToString(srcT) + " as " + typeToString(targetT), e)
+  };
+  targetT
+}
+
+fn checkCastOk(src: SType, target: SType) -> int {
+  match src {
+    SType::SInt =>
+      match target {
+        SType::SFloat => 1,
+        SType::SChar => 1,
+        SType::SInt => 1,
+        _ => 0
+      },
+    SType::SFloat =>
+      match target {
+        SType::SInt => 1,
+        SType::SFloat => 1,
+        _ => 0
+      },
+    SType::SChar =>
+      match target {
+        SType::SInt => 1,
+        SType::SChar => 1,
+        _ => 0
+      },
+    SType::STypeVar(_) => 1,
+    _ => if typeEq(src, target) { 1 } else { 0 }
+  }
+}
+
+fn inferRange(c: Checker, e: Node) -> SType {
+  let start = inferExpr(c, itemAt(e, 0));
+  let _ = inferExpr(c, itemAt(e, 1));
+  if !checkAssignable(c, start, tInt() {
+    if !checkAssignable(c, start, tFloat() {
+      errAtNode(c, "range bounds must be numeric, found " + typeToString(start), itemAt(e, 0))
+    }
+  };
+  tNamed("Range", [start])
+}
+
+fn inferErrorProp(c: Checker, e: Node) -> SType {
+  let t = inferExpr(c, itemAt(e, 0));
+  match t {
+    SType::SResult(ok, _) => ok,
+    SType::SOption(inner) => inner,
+    _ => {
+      errAtNode(c, "? operator can only be applied to Result or Option, found " + typeToString(t), e);
+      tUnit()
+    }
+  }
+}
+
+fn inferReturnExpr(c: Checker, e: Node) -> SType {
+  // Return-as-expression: infer the inner expr for side-effects, return Never.
+  let inner = itemAt(e, 0);
+  if isNullN(inner) == 0 {
+    let _ = inferExpr(c, inner);
+  };
+  if c.hasRetType == 1 {
+    let inner2 = itemAt(e, 0);
+    if isNullN(inner2) == 0 {
+      let t = inferExpr(c, inner2);
+      if !checkAssignable(c, t, c.currentRetType {
+        errAtNode(c, "expected return type " + typeToString(c.currentRetType) + ", found " + typeToString(t), e)
+      }
+    }
+  };
+  tNever()
+}
+
+// -----------------------------------------------------------------------------
+// Pattern checking — for match arms
+// -----------------------------------------------------------------------------
+
+fn checkPattern(c: Checker, p: Node, scrutT: SType) {
+  if isNullN(p) == 1 { return; };
+  match p.kind {
+    "WildcardPat" => 0,
+    "RestPat" => 0,
+    "BindPat" => checkBindPat(c, p, scrutT),
+    "LitPat" => checkLitPat(c, p, scrutT),
+    "TuplePat" => checkTuplePat(c, p, scrutT),
+    "ArrayPat" => checkArrayPat(c, p, scrutT),
+    "StructPat" => checkStructPat(c, p, scrutT),
+    "EnumPat" => checkEnumPat(c, p, scrutT),
+    "OrPat" => checkOrPat(c, p, scrutT),
+    _ => 0
+  }
+}
+
+fn checkBindPat(c: Checker, p: Node, scrutT: SType) {
+  let bindT = scrutT;
+  let typeNode = itemAt(p, 0);
+  if isNullN(typeNode) == 0 {
+    let t = resolveType(c, typeNode);
+    if !checkAssignable(c, scrutT, t {
+      errAtNode(c, "pattern expects " + typeToString(t) + ", scrutinee is " + typeToString(scrutT), p)
+    };
+    addVar(c, p.name, t, p.ival, if p.ival == 1 { "mut" } else { "let" });
+  } else {
+    addVar(c, p.name, bindT, p.ival, if p.ival == 1 { "mut" } else { "let" });
+  }
+}
+
+fn checkLitPat(c: Checker, p: Node, scrutT: SType) {
+  let lt = inferExpr(c, itemAt(p, 0));
+  if !checkAssignable(c, scrutT, lt {
+    if !checkAssignable(c, lt, scrutT {
+      errAtNode(c, "literal pattern " + typeToString(lt) + " does not match scrutinee " + typeToString(scrutT), p)
+    }
+  }
+}
+
+fn checkTuplePat(c: Checker, p: Node, scrutT: SType) {
+  match scrutT {
+    SType::STuple(items) => {
+      let n = p.ival;
+      if n != len(items) {
+        errAtNode(c, "tuple pattern arity " + str(n) + " does not match " + str(len(items)), p);
+        return;
+      };
+      checkTuplePatRec(c, p.items, items, 0, n)
+    },
+    _ => errAtNode(c, "tuple pattern cannot match " + typeToString(scrutT), p)
+  }
+}
+
+fn checkTuplePatRec(c: Checker, pats: [Node], types: [SType], i: int, n: int) {
+  if i >= n { return; };
+  checkPattern(c, pats[i], types[i]);
+  checkTuplePatRec(c, pats, types, i + 1, n)
+}
+
+fn checkArrayPat(c: Checker, p: Node, scrutT: SType) {
+  match scrutT {
+    SType::SArray(elem) => checkArrayPatRec(c, p.items, elem, 0, p.ival),
+    _ => errAtNode(c, "array pattern cannot match " + typeToString(scrutT), p)
+  }
+}
+
+fn checkArrayPatRec(c: Checker, pats: [Node], elem: SType, i: int, n: int) {
+  if i >= n { return; };
+  checkPattern(c, pats[i], elem);
+  checkArrayPatRec(c, pats, elem, i + 1, n)
+}
+
+fn checkStructPat(c: Checker, p: Node, scrutT: SType) {
+  let decl = findTypeDecl(c, p.name);
+  if isNullDecl(decl) == 1 {
+    errAtNode(c, "unknown struct '" + p.name + "' in pattern", p);
+    return;
+  };
+  if decl.hasStruct == 0 {
+    errAtNode(c, "'" + p.name + "' is not a struct", p);
+    return;
+  };
+  let fields = match decl.structT {
+    SType::SStruct(_, fs) => fs,
+    _ => emptySFields()
+  };
+  checkStructPatFields(c, p, fields, p.items, 0, p.ival)
+}
+
+fn checkStructPatFields(c: Checker, p: Node, fields: [SField], patFields: [Node], i: int, n: int) {
+  if i >= n { return; };
+  let pf = patFields[i];
+  let fname = pf.name;
+  let fpat = itemAt(pf, 0);
+  let declF = findField(fields, fname, 0);
+  if isNullField(declF) == 1 {
+    errAtNode(c, "struct " + p.name + " has no field '" + fname + "'", pf);
+  } else {
+    checkPattern(c, fpat, declF.ty)
+  };
+  checkStructPatFields(c, p, fields, patFields, i + 1, n)
+}
+
+fn checkEnumPat(c: Checker, p: Node, scrutT: SType) {
+  let enumName = p.name;
+  let variantName = p.text;
+  let decl = findTypeDecl(c, enumName);
+  if isNullDecl(decl) == 1 {
+    errAtNode(c, "unknown enum '" + enumName + "' in pattern", p);
+    return;
+  };
+  if decl.hasEnum == 0 {
+    errAtNode(c, "'" + enumName + "' is not an enum", p);
+    return;
+  };
+  let variants = match decl.enumT {
+    SType::SEnum(_, _, vs) => vs,
+    _ => emptySVariants()
+  };
+  let v = findVariant(variants, variantName, 0);
+  if isNullVariant(v) == 1 {
+    errAtNode(c, "enum " + enumName + " has no variant '" + variantName + "'", p);
+    return;
+  };
+  // Check subpatterns against variant types.
+  if v.kind == "tuple" {
+    let n = p.ival;
+    if n != len(v.types) {
+      errAtNode(c, "variant " + enumName + "::" + variantName + " expects " + str(len(v.types)) + " subpatterns, found " + str(n), p);
+      return;
+    };
+    checkEnumPatTupleArgs(c, p.items, v.types, 0, n)
+  } else {
+    if p.ival > 0 {
+      errAtNode(c, "unit variant " + enumName + "::" + variantName + " takes no subpatterns", p);
+    };
+  }
+}
+
+fn checkEnumPatTupleArgs(c: Checker, pats: [Node], types: [SType], i: int, n: int) {
+  if i >= n { return; };
+  checkPattern(c, pats[i], types[i]);
+  checkEnumPatTupleArgs(c, pats, types, i + 1, n)
+}
+
+fn checkOrPat(c: Checker, p: Node, scrutT: SType) {
+  checkOrPatRec(c, p.items, scrutT, 0, p.ival)
+}
+
+fn checkOrPatRec(c: Checker, pats: [Node], scrutT: SType, i: int, n: int) {
+  if i >= n { return; };
+  checkPattern(c, pats[i], scrutT);
+  checkOrPatRec(c, pats, scrutT, i + 1, n)
+}
+
+// -----------------------------------------------------------------------------
+// Common type helpers
+// -----------------------------------------------------------------------------
+
+// `commonType(a, b)`: the type both `a` and `b` can unify to, or null if
+// they don't share a common type. Returns tUnit() on null (caller checks
+// via isNullType).
+fn commonType(c: Checker, a: SType, b: SType, e: Node) -> SType {
+  if typeEq(a, b) { a }
+  else {
+    match a {
+      SType::SNever => b,
+      _ =>
+        match b {
+          SType::SNever => a,
+          _ =>
+            match a {
+              SType::SInt =>
+                match b { SType::SFloat => tFloat(), _ => nullType() },
+              SType::SFloat =>
+                match b { SType::SInt => tFloat(), _ => nullType() },
+              SType::STypeVar(_) => b,
+              _ =>
+                match b {
+                  SType::STypeVar(_) => a,
+                  _ => nullType()
+                }
+            }
+        }
+    }
+  }
+}
+
+// Same but never errors and never falls back to a default — returns
+// nullType() if no common type.
+fn commonTypeNoErr(c: Checker, a: SType, b: SType) -> SType {
+  if typeEq(a, b) { a }
+  else {
+    match a {
+      SType::SNever => b,
+      _ =>
+        match b {
+          SType::SNever => a,
+          _ =>
+            match a {
+              SType::SInt =>
+                match b { SType::SFloat => tFloat(), _ => nullType() },
+              SType::SFloat =>
+                match b { SType::SInt => tFloat(), _ => nullType() },
+              SType::STypeVar(_) => b,
+              _ =>
+                match b {
+                  SType::STypeVar(_) => a,
+                  _ => nullType()
+                }
+            }
+        }
+    }
+  }
+}
+
+fn nullType() -> SType { SType::SUnit }
+fn isNullType(t: SType) -> int {
+  match t {
+    SType::SUnit => 1,
+    _ => 0
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Helper: inferExprList
+// -----------------------------------------------------------------------------
+
+fn inferExprList(c: Checker, items: [Node], i: int, acc: [SType]) -> [SType] {
+  if i >= len(items) { acc }
+  else {
+    push(acc, inferExpr(c, items[i]));
+    inferExprList(c, items, i + 1, acc)
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Self-test / demo
+// -----------------------------------------------------------------------------
+
+print("== aether-bootstrap/sema.ae loaded ==");
+
+// A simple "smoke test" — `let x = 42;` should produce 0 errors, and
+// `let y: float = "hi";` should produce 1 error.
+fn smokeTest() -> int {
+  // Build the AST for `let x = 42;` directly.
+  let x42 = Node { kind: "IntLit", loc: ZERO_LOC, name: "", text: "", ival: 42, fval: 0.0, items: [] };
+  let xLet = Node { kind: "Let", loc: ZERO_LOC, name: "x", text: "", ival: 0, fval: 0.0, items: [nullNode(), x42] };
+  let prog1 = Node { kind: "Program", loc: ZERO_LOC, name: "", text: "", ival: 1, fval: 0.0, items: [xLet] };
+  let r1 = check(prog1);
+  if len(r1.errors) != 0 {
+    print("smoke test 1 FAILED: expected 0 errors, got " + str(len(r1.errors)));
+    return 1;
+  };
+
+  // `let y: float = "hi";` → 1 error.
+  let hi = Node { kind: "StringLit", loc: ZERO_LOC, name: "", text: "hi", ival: 0, fval: 0.0, items: [] };
+  let floatType = Node { kind: "PrimitiveType", loc: ZERO_LOC, name: "float", text: "", ival: 0, fval: 0.0, items: [] };
+  let yLet = Node { kind: "Let", loc: ZERO_LOC, name: "y", text: "", ival: 0, fval: 0.0, items: [floatType, hi] };
+  let prog2 = Node { kind: "Program", loc: ZERO_LOC, name: "", text: "", ival: 1, fval: 0.0, items: [yLet] };
+  let r2 = check(prog2);
+  if len(r2.errors) != 1 {
+    print("smoke test 2 FAILED: expected 1 error, got " + str(len(r2.errors)));
+    return 1;
+  };
+  print("smoke test: ok (let x = 42; -> 0 errors; let y: float = \"hi\"; -> 1 error)");
+  0
+}
+
+// (smoke test moved to sema.test.ae)

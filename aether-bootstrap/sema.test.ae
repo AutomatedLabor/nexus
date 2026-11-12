@@ -1,0 +1,1435 @@
+// =============================================================================
+// aether-bootstrap/sema.test.ae — Unit tests for the Aether semantic analyzer
+// =============================================================================
+// 100+ test cases that drive the sema via the parser's `parse(toks(...))`
+// pipeline. Each test parses a small Aether snippet, runs `check(program)`,
+// and asserts the error count (and sometimes the first error message).
+//
+// Test pipeline:
+//   cat ast.ae parser.ae sema.ae sema.test.ae > /tmp/combined_sema.ae
+//   bun /tmp/verify_one.ts /tmp/combined_sema.ae
+//
+// All test functions return 0 (int) — never `print(...)` as a function
+// value (Aether rejects `let x = print(...)` with "cannot call non-function
+// value '<expression>'"). Side-effecting tests use blocks `{ print(...); 0 }`
+// or just return the result.
+// =============================================================================
+
+// --- Imports ---
+// When concatenated, this is a no-op (sema.ae + parser.ae bindings are
+// already in scope). When run via the module loader, it pulls in `check`
+// + `parse` + `toks` from the bootstrap files.
+import { check, parse, toks, typeToString, typeEq } from "./sema.ae";
+
+// --- Test driver ---
+struct Stats { passed: int, failed: int }
+
+fn checkStat(st: Stats, cond: int, msg: string) -> int {
+  if cond {
+    st.passed = st.passed + 1;
+  } else {
+    st.failed = st.failed + 1;
+    print("FAIL: " + msg);
+  };
+  0
+}
+
+fn checkEq(st: Stats, actual: int, expected: int, msg: string) -> int {
+  if actual == expected {
+    st.passed = st.passed + 1;
+  } else {
+    st.failed = st.failed + 1;
+    print("FAIL: " + msg + " (expected " + str(expected) + ", got " + str(actual) + ")");
+  };
+  0
+}
+
+fn checkEqStr(st: Stats, actual: string, expected: string, msg: string) -> int {
+  if actual == expected {
+    st.passed = st.passed + 1;
+  } else {
+    st.failed = st.failed + 1;
+    print("FAIL: " + msg + " (expected '" + expected + "', got '" + actual + "')");
+  };
+  0
+}
+
+// --- Helpers: parse a source string and run check, return error count ---
+// We use the parser's `parse(toks([...]))` to build the AST from a token
+// stream, then `check(program)` to run sema.
+
+// ParseResult -> CheckResult.errors.length
+fn C(parts: [string]) -> int {
+  let r = parse(toks(parts));
+  let cr = check(r.program);
+  len(cr.errors)
+}
+
+// ParseResult -> first error message (or "" if no errors)
+fn C_first(parts: [string]) -> string {
+  let r = parse(toks(parts));
+  let cr = check(r.program);
+  if len(cr.errors) == 0 { "" }
+  else { cr.errors[0].message }
+}
+
+// =====================================================================
+// Tests: literals & basic let inference
+// =====================================================================
+
+fn test_let_int(st: Stats) -> int {
+  // `let x = 42;` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Int", "42", "Punct", ";"]), 0, "let-int: 0 errors");
+  0
+}
+
+fn test_let_float(st: Stats) -> int {
+  // `let x = 3.14;` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Float", "3.14", "Punct", ";"]), 0, "let-float: 0 errors");
+  0
+}
+
+fn test_let_bool(st: Stats) -> int {
+  // `let x = true;` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Keyword", "true", "Punct", ";"]), 0, "let-bool: 0 errors");
+  0
+}
+
+fn test_let_string(st: Stats) -> int {
+  // `let x = "hi";` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "String", "hi", "Punct", ";"]), 0, "let-string: 0 errors");
+  0
+}
+
+fn test_let_char(st: Stats) -> int {
+  // `let x = 'a';` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Char", "a", "Punct", ";"]), 0, "let-char: 0 errors");
+  0
+}
+
+fn test_let_unit(st: Stats) -> int {
+  // `let x = ();` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Punct", "(", "Punct", ")", "Punct", ";"]), 0, "let-unit: 0 errors");
+  0
+}
+
+fn test_let_annotated_int(st: Stats) -> int {
+  // `let x: int = 42;` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", "=", "Int", "42", "Punct", ";"]), 0, "let-annot-int: 0 errors");
+  0
+}
+
+fn test_let_annotated_float(st: Stats) -> int {
+  // `let x: float = 3.14;` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "float", "Punct", "=", "Float", "3.14", "Punct", ";"]), 0, "let-annot-float: 0 errors");
+  0
+}
+
+fn test_let_annotated_bool(st: Stats) -> int {
+  // `let x: bool = true;` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "bool", "Punct", "=", "Keyword", "true", "Punct", ";"]), 0, "let-annot-bool: 0 errors");
+  0
+}
+
+fn test_let_widening_int_to_float(st: Stats) -> int {
+  // `let x: float = 42;` -> 0 errors (int widens to float)
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "float", "Punct", "=", "Int", "42", "Punct", ";"]), 0, "widening: 0 errors");
+  0
+}
+
+fn test_let_mismatch_float_to_int(st: Stats) -> int {
+  // `let x: int = 3.14;` -> 1 error
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", "=", "Float", "3.14", "Punct", ";"]), 1, "mismatch-float-int: 1 error");
+  0
+}
+
+fn test_let_mismatch_string_to_float(st: Stats) -> int {
+  // `let y: float = "hi";` -> 1 error
+  let n = C(["Keyword", "let", "Ident", "y", "Punct", ":", "Ident", "float", "Punct", "=", "String", "hi", "Punct", ";"]);
+  checkEq(st, n, 1, "mismatch-string-float: 1 error");
+  // Also check the error message
+  let msg = C_first(["Keyword", "let", "Ident", "y", "Punct", ":", "Ident", "float", "Punct", "=", "String", "hi", "Punct", ";"]);
+  checkEqStr(st, msg, "expected float, found string", "mismatch-string-float: message");
+  0
+}
+
+fn test_let_mismatch_int_to_string(st: Stats) -> int {
+  // `let s: string = 42;` -> 1 error
+  checkEq(st, C(["Keyword", "let", "Ident", "s", "Punct", ":", "Ident", "string", "Punct", "=", "Int", "42", "Punct", ";"]), 1, "mismatch-int-string: 1 error");
+  0
+}
+
+fn test_let_undefined_name(st: Stats) -> int {
+  // `let x = undefined_var;` -> 1 error "undefined name 'undefined_var'"
+  let parts = ["Keyword", "let", "Ident", "x", "Punct", "=", "Ident", "undefined_var", "Punct", ";"];
+  let n = C(parts);
+  checkEq(st, n, 1, "undefined-name: 1 error");
+  let msg = C_first(parts);
+  checkEqStr(st, msg, "undefined name 'undefined_var'", "undefined-name: message");
+  0
+}
+
+// =====================================================================
+// Tests: function declarations
+// =====================================================================
+
+fn test_fn_decl_simple(st: Stats) -> int {
+  // `fn f() -> int { 42 }` -> 0 errors
+  let parts = [
+    "Keyword", "fn", "Ident", "f", "Punct", "(", "Punct", ")", "Punct", "->", "Ident", "int",
+    "Punct", "{", "Int", "42", "Punct", "}"
+  ];
+  checkEq(st, C(parts), 0, "fn-simple: 0 errors");
+  0
+}
+
+fn test_fn_decl_with_params(st: Stats) -> int {
+  // `fn add(x: int, y: int) -> int { x + y }` -> 0 errors
+  let parts = [
+    "Keyword", "fn", "Ident", "add", "Punct", "(",
+      "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ",",
+      "Ident", "y", "Punct", ":", "Ident", "int",
+    "Punct", ")", "Punct", "->", "Ident", "int",
+    "Punct", "{", "Ident", "x", "Punct", "+", "Ident", "y", "Punct", "}"
+  ];
+  checkEq(st, C(parts), 0, "fn-params: 0 errors");
+  0
+}
+
+fn test_fn_decl_wrong_return(st: Stats) -> int {
+  // `fn f() -> int { "hi" }` -> 1 error
+  let parts = [
+    "Keyword", "fn", "Ident", "f", "Punct", "(", "Punct", ")", "Punct", "->", "Ident", "int",
+    "Punct", "{", "String", "hi", "Punct", "}"
+  ];
+  checkEq(st, C(parts), 1, "fn-wrong-return: 1 error");
+  0
+}
+
+fn test_fn_decl_no_return(st: Stats) -> int {
+  // `fn f() { 42; }` -> 0 errors (no return type, body returns unit)
+  let parts = [
+    "Keyword", "fn", "Ident", "f", "Punct", "(", "Punct", ")",
+    "Punct", "{", "Int", "42", "Punct", ";", "Punct", "}"
+  ];
+  checkEq(st, C(parts), 0, "fn-no-return: 0 errors");
+  0
+}
+
+fn test_fn_call_args(st: Stats) -> int {
+  // `fn id(x: int) -> int { x } let y = id(42);` -> 0 errors
+  let parts = [
+    "Keyword", "fn", "Ident", "id", "Punct", "(",
+      "Ident", "x", "Punct", ":", "Ident", "int",
+    "Punct", ")", "Punct", "->", "Ident", "int",
+    "Punct", "{", "Ident", "x", "Punct", "}",
+    "Keyword", "let", "Ident", "y", "Punct", "=", "Ident", "id", "Punct", "(", "Int", "42", "Punct", ")", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "fn-call-args: 0 errors");
+  0
+}
+
+fn test_fn_call_wrong_arg(st: Stats) -> int {
+  // `fn id(x: int) -> int { x } let y = id("hi");` -> 1 error
+  let parts = [
+    "Keyword", "fn", "Ident", "id", "Punct", "(",
+      "Ident", "x", "Punct", ":", "Ident", "int",
+    "Punct", ")", "Punct", "->", "Ident", "int",
+    "Punct", "{", "Ident", "x", "Punct", "}",
+    "Keyword", "let", "Ident", "y", "Punct", "=", "Ident", "id", "Punct", "(", "String", "hi", "Punct", ")", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 1, "fn-call-wrong-arg: 1 error");
+  0
+}
+
+fn test_fn_call_arity(st: Stats) -> int {
+  // `fn f(x: int) -> int { x } let y = f(1, 2);` -> 1 error (too many args)
+  let parts = [
+    "Keyword", "fn", "Ident", "f", "Punct", "(",
+      "Ident", "x", "Punct", ":", "Ident", "int",
+    "Punct", ")", "Punct", "->", "Ident", "int",
+    "Punct", "{", "Ident", "x", "Punct", "}",
+    "Keyword", "let", "Ident", "y", "Punct", "=", "Ident", "f", "Punct", "(", "Int", "1", "Punct", ",", "Int", "2", "Punct", ")", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 1, "fn-call-arity: 1 error");
+  0
+}
+
+fn test_fn_recursive(st: Stats) -> int {
+  // `fn fact(n: int) -> int { if n == 0 { 1 } else { n * fact(n - 1) } }` -> 0 errors
+  let parts = [
+    "Keyword", "fn", "Ident", "fact", "Punct", "(",
+      "Ident", "n", "Punct", ":", "Ident", "int",
+    "Punct", ")", "Punct", "->", "Ident", "int",
+    "Punct", "{",
+      "Keyword", "if", "Ident", "n", "Punct", "==", "Int", "0", "Punct", "{", "Int", "1", "Punct", "}",
+      "Keyword", "else", "Punct", "{",
+        "Ident", "n", "Punct", "*", "Ident", "fact", "Punct", "(", "Ident", "n", "Punct", "-", "Int", "1", "Punct", ")",
+      "Punct", "}",
+    "Punct", "}"
+  ];
+  checkEq(st, C(parts), 0, "fn-recursive: 0 errors");
+  0
+}
+
+// =====================================================================
+// Tests: generics
+// =====================================================================
+
+fn test_generic_id(st: Stats) -> int {
+  // `fn id<T>(x: T) -> T { x } let y = id(42);` -> 0 errors
+  let parts = [
+    "Keyword", "fn", "Ident", "id", "Punct", "<", "Ident", "T", "Punct", ">", "Punct", "(",
+      "Ident", "x", "Punct", ":", "Ident", "T",
+    "Punct", ")", "Punct", "->", "Ident", "T",
+    "Punct", "{", "Ident", "x", "Punct", "}",
+    "Keyword", "let", "Ident", "y", "Punct", "=", "Ident", "id", "Punct", "(", "Int", "42", "Punct", ")", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "generic-id: 0 errors");
+  0
+}
+
+fn test_generic_id_explicit_type(st: Stats) -> int {
+  // `fn id<T>(x: T) -> T { x } let y = id<int>(42);` -> 0 errors
+  let parts = [
+    "Keyword", "fn", "Ident", "id", "Punct", "<", "Ident", "T", "Punct", ">", "Punct", "(",
+      "Ident", "x", "Punct", ":", "Ident", "T",
+    "Punct", ")", "Punct", "->", "Ident", "T",
+    "Punct", "{", "Ident", "x", "Punct", "}",
+    "Keyword", "let", "Ident", "y", "Punct", "=", "Ident", "id", "Punct", "<", "Ident", "int", "Punct", ">", "Punct", "(", "Int", "42", "Punct", ")", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "generic-id-explicit: 0 errors");
+  0
+}
+
+fn test_generic_pair(st: Stats) -> int {
+  // `fn pair<T, U>(x: T, y: U) -> T { x } let z = pair(1, "hi");` -> 0 errors
+  let parts = [
+    "Keyword", "fn", "Ident", "pair", "Punct", "<", "Ident", "T", "Punct", ",", "Ident", "U", "Punct", ">", "Punct", "(",
+      "Ident", "x", "Punct", ":", "Ident", "T", "Punct", ",",
+      "Ident", "y", "Punct", ":", "Ident", "U",
+    "Punct", ")", "Punct", "->", "Ident", "T",
+    "Punct", "{", "Ident", "x", "Punct", "}",
+    "Keyword", "let", "Ident", "z", "Punct", "=", "Ident", "pair", "Punct", "(", "Int", "1", "Punct", ",", "String", "hi", "Punct", ")", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "generic-pair: 0 errors");
+  0
+}
+
+// =====================================================================
+// Tests: arithmetic
+// =====================================================================
+
+fn test_arith_add(st: Stats) -> int {
+  // `let x = 1 + 2;` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Int", "1", "Punct", "+", "Int", "2", "Punct", ";"]), 0, "arith-add: 0 errors");
+  0
+}
+
+fn test_arith_float(st: Stats) -> int {
+  // `let x = 1.0 + 2;` -> 0 errors (int widens to float)
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Float", "1.0", "Punct", "+", "Int", "2", "Punct", ";"]), 0, "arith-float: 0 errors");
+  0
+}
+
+fn test_arith_string_concat(st: Stats) -> int {
+  // `let x = "a" + "b";` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "String", "a", "Punct", "+", "String", "b", "Punct", ";"]), 0, "arith-string: 0 errors");
+  0
+}
+
+fn test_arith_int_string(st: Stats) -> int {
+  // `let x = 1 + "hi";` -> 1 error
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Int", "1", "Punct", "+", "String", "hi", "Punct", ";"]), 1, "arith-int-string: 1 error");
+  0
+}
+
+fn test_arith_mod(st: Stats) -> int {
+  // `let x = 10 % 3;` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Int", "10", "Punct", "%", "Int", "3", "Punct", ";"]), 0, "arith-mod: 0 errors");
+  0
+}
+
+// =====================================================================
+// Tests: comparisons
+// =====================================================================
+
+fn test_cmp_lt(st: Stats) -> int {
+  // `let x = 1 < 2;` -> 0 errors (bool result)
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Int", "1", "Punct", "<", "Int", "2", "Punct", ";"]), 0, "cmp-lt: 0 errors");
+  0
+}
+
+fn test_cmp_eq(st: Stats) -> int {
+  // `let x = 1 == 2;` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Int", "1", "Punct", "==", "Int", "2", "Punct", ";"]), 0, "cmp-eq: 0 errors");
+  0
+}
+
+fn test_cmp_mismatch(st: Stats) -> int {
+  // `let x = 1 < "hi";` -> 1 error
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Int", "1", "Punct", "<", "String", "hi", "Punct", ";"]), 1, "cmp-mismatch: 1 error");
+  0
+}
+
+// =====================================================================
+// Tests: logical operators
+// =====================================================================
+
+fn test_logical_and(st: Stats) -> int {
+  // `let x = true && false;` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Keyword", "true", "Punct", "&&", "Keyword", "false", "Punct", ";"]), 0, "logical-and: 0 errors");
+  0
+}
+
+fn test_logical_or(st: Stats) -> int {
+  // `let x = true || false;` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Keyword", "true", "Punct", "||", "Keyword", "false", "Punct", ";"]), 0, "logical-or: 0 errors");
+  0
+}
+
+fn test_logical_mismatch(st: Stats) -> int {
+  // `let x = 1 && 2;` -> 1 error (left must be bool)
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Int", "1", "Punct", "&&", "Int", "2", "Punct", ";"]), 1, "logical-mismatch: 1 error");
+  0
+}
+
+// =====================================================================
+// Tests: unary
+// =====================================================================
+
+fn test_unary_neg(st: Stats) -> int {
+  // `let x = -5;` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Punct", "-", "Int", "5", "Punct", ";"]), 0, "unary-neg: 0 errors");
+  0
+}
+
+fn test_unary_not(st: Stats) -> int {
+  // `let x = !true;` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Punct", "!", "Keyword", "true", "Punct", ";"]), 0, "unary-not: 0 errors");
+  0
+}
+
+fn test_unary_not_int(st: Stats) -> int {
+  // `let x = !5;` -> 1 error
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Punct", "!", "Int", "5", "Punct", ";"]), 1, "unary-not-int: 1 error");
+  0
+}
+
+// =====================================================================
+// Tests: struct
+// =====================================================================
+
+fn test_struct_decl(st: Stats) -> int {
+  // `struct P { x: int, y: int }` -> 0 errors
+  let parts = [
+    "Keyword", "struct", "Ident", "P", "Punct", "{",
+      "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ",",
+      "Ident", "y", "Punct", ":", "Ident", "int",
+    "Punct", "}"
+  ];
+  checkEq(st, C(parts), 0, "struct-decl: 0 errors");
+  0
+}
+
+fn test_struct_expr(st: Stats) -> int {
+  // `struct P { x: int, y: int } let p = P { x: 1, y: 2 };` -> 0 errors
+  let parts = [
+    "Keyword", "struct", "Ident", "P", "Punct", "{",
+      "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ",",
+      "Ident", "y", "Punct", ":", "Ident", "int",
+    "Punct", "}",
+    "Keyword", "let", "Ident", "p", "Punct", "=", "Ident", "P", "Punct", "{",
+      "Ident", "x", "Punct", ":", "Int", "1", "Punct", ",",
+      "Ident", "y", "Punct", ":", "Int", "2",
+    "Punct", "}", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "struct-expr: 0 errors");
+  0
+}
+
+fn test_struct_missing_field(st: Stats) -> int {
+  // `struct P { x: int, y: int } let p = P { x: 1 };` -> 1+ errors (missing y)
+  let parts = [
+    "Keyword", "struct", "Ident", "P", "Punct", "{",
+      "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ",",
+      "Ident", "y", "Punct", ":", "Ident", "int",
+    "Punct", "}",
+    "Keyword", "let", "Ident", "p", "Punct", "=", "Ident", "P", "Punct", "{",
+      "Ident", "x", "Punct", ":", "Int", "1",
+    "Punct", "}", "Punct", ";"
+  ];
+  checkStat(st, C(parts) >= 1, "struct-missing-field: >= 1 error");
+  0
+}
+
+fn test_struct_unknown_field(st: Stats) -> int {
+  // `struct P { x: int } let p = P { z: 1 };` -> 1 error
+  let parts = [
+    "Keyword", "struct", "Ident", "P", "Punct", "{",
+      "Ident", "x", "Punct", ":", "Ident", "int",
+    "Punct", "}",
+    "Keyword", "let", "Ident", "p", "Punct", "=", "Ident", "P", "Punct", "{",
+      "Ident", "z", "Punct", ":", "Int", "1",
+    "Punct", "}", "Punct", ";"
+  ];
+  checkStat(st, C(parts) >= 1, "struct-unknown-field: >= 1 error");
+  0
+}
+
+fn test_struct_field_access(st: Stats) -> int {
+  // `struct P { x: int } let p = P { x: 1 }; let y = p.x;` -> 0 errors
+  let parts = [
+    "Keyword", "struct", "Ident", "P", "Punct", "{",
+      "Ident", "x", "Punct", ":", "Ident", "int",
+    "Punct", "}",
+    "Keyword", "let", "Ident", "p", "Punct", "=", "Ident", "P", "Punct", "{",
+      "Ident", "x", "Punct", ":", "Int", "1",
+    "Punct", "}", "Punct", ";",
+    "Keyword", "let", "Ident", "y", "Punct", "=", "Ident", "p", "Punct", ".", "Ident", "x", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "struct-field-access: 0 errors");
+  0
+}
+
+// =====================================================================
+// Tests: enum
+// =====================================================================
+
+fn test_enum_decl(st: Stats) -> int {
+  // `enum E { A, B }` -> 0 errors
+  let parts = [
+    "Keyword", "enum", "Ident", "E", "Punct", "{",
+      "Ident", "A", "Punct", ",", "Ident", "B",
+    "Punct", "}"
+  ];
+  checkEq(st, C(parts), 0, "enum-decl: 0 errors");
+  0
+}
+
+fn test_enum_variant_unit(st: Stats) -> int {
+  // `enum E { A, B } let a = E::A;` -> 0 errors
+  let parts = [
+    "Keyword", "enum", "Ident", "E", "Punct", "{",
+      "Ident", "A", "Punct", ",", "Ident", "B",
+    "Punct", "}",
+    "Keyword", "let", "Ident", "a", "Punct", "=", "Ident", "E", "Punct", "::", "Ident", "A", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "enum-variant-unit: 0 errors");
+  0
+}
+
+fn test_enum_variant_tuple(st: Stats) -> int {
+  // `enum E { A, B(int) } let b = E::B(42);` -> 0 errors
+  let parts = [
+    "Keyword", "enum", "Ident", "E", "Punct", "{",
+      "Ident", "A", "Punct", ",", "Ident", "B", "Punct", "(", "Ident", "int", "Punct", ")",
+    "Punct", "}",
+    "Keyword", "let", "Ident", "b", "Punct", "=", "Ident", "E", "Punct", "::", "Ident", "B", "Punct", "(", "Int", "42", "Punct", ")", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "enum-variant-tuple: 0 errors");
+  0
+}
+
+fn test_enum_variant_wrong_arg(st: Stats) -> int {
+  // `enum E { B(int) } let b = E::B("hi");` -> 1 error
+  let parts = [
+    "Keyword", "enum", "Ident", "E", "Punct", "{",
+      "Ident", "B", "Punct", "(", "Ident", "int", "Punct", ")",
+    "Punct", "}",
+    "Keyword", "let", "Ident", "b", "Punct", "=", "Ident", "E", "Punct", "::", "Ident", "B", "Punct", "(", "String", "hi", "Punct", ")", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 1, "enum-variant-wrong-arg: 1 error");
+  0
+}
+
+fn test_enum_unknown_variant(st: Stats) -> int {
+  // `enum E { A } let b = E::B;` -> 1 error
+  let parts = [
+    "Keyword", "enum", "Ident", "E", "Punct", "{",
+      "Ident", "A",
+    "Punct", "}",
+    "Keyword", "let", "Ident", "b", "Punct", "=", "Ident", "E", "Punct", "::", "Ident", "B", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 1, "enum-unknown-variant: 1 error");
+  0
+}
+
+// =====================================================================
+// Tests: tuple / array / map
+// =====================================================================
+
+fn test_tuple_expr(st: Stats) -> int {
+  // `let t = (1, "hi");` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "t", "Punct", "=", "Punct", "(", "Int", "1", "Punct", ",", "String", "hi", "Punct", ")", "Punct", ";"]), 0, "tuple-expr: 0 errors");
+  0
+}
+
+fn test_tuple_field(st: Stats) -> int {
+  // `let t = (1, "hi"); let x = t.0;` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "t", "Punct", "=", "Punct", "(", "Int", "1", "Punct", ",", "String", "hi", "Punct", ")", "Punct", ";",
+    "Keyword", "let", "Ident", "x", "Punct", "=", "Ident", "t", "Punct", ".", "Int", "0", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "tuple-field: 0 errors");
+  0
+}
+
+fn test_array_expr(st: Stats) -> int {
+  // `let a = [1, 2, 3];` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "a", "Punct", "=", "Punct", "[", "Int", "1", "Punct", ",", "Int", "2", "Punct", ",", "Int", "3", "Punct", "]", "Punct", ";"]), 0, "array-expr: 0 errors");
+  0
+}
+
+fn test_array_index(st: Stats) -> int {
+  // `let a = [1, 2]; let x = a[0];` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "a", "Punct", "=", "Punct", "[", "Int", "1", "Punct", ",", "Int", "2", "Punct", "]", "Punct", ";",
+    "Keyword", "let", "Ident", "x", "Punct", "=", "Ident", "a", "Punct", "[", "Int", "0", "Punct", "]", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "array-index: 0 errors");
+  0
+}
+
+fn test_array_index_wrong_type(st: Stats) -> int {
+  // `let a = [1, 2]; let x = a["hi"];` -> 1 error
+  let parts = [
+    "Keyword", "let", "Ident", "a", "Punct", "=", "Punct", "[", "Int", "1", "Punct", ",", "Int", "2", "Punct", "]", "Punct", ";",
+    "Keyword", "let", "Ident", "x", "Punct", "=", "Ident", "a", "Punct", "[", "String", "hi", "Punct", "]", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 1, "array-index-wrong: 1 error");
+  0
+}
+
+fn test_map_expr(st: Stats) -> int {
+  // `let m = {"a": 1, "b": 2};` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "m", "Punct", "=", "Punct", "{", "String", "a", "Punct", ":", "Int", "1", "Punct", ",", "String", "b", "Punct", ":", "Int", "2", "Punct", "}", "Punct", ";"]), 0, "map-expr: 0 errors");
+  0
+}
+
+fn test_map_index(st: Stats) -> int {
+  // `let m = {"a": 1}; let x = m["a"];` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "m", "Punct", "=", "Punct", "{", "String", "a", "Punct", ":", "Int", "1", "Punct", "}", "Punct", ";",
+    "Keyword", "let", "Ident", "x", "Punct", "=", "Ident", "m", "Punct", "[", "String", "a", "Punct", "]", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "map-index: 0 errors");
+  0
+}
+
+// =====================================================================
+// Tests: if / match
+// =====================================================================
+
+fn test_if_expr(st: Stats) -> int {
+  // `let x = if true { 1 } else { 2 };` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", "=",
+      "Keyword", "if", "Keyword", "true", "Punct", "{", "Int", "1", "Punct", "}",
+      "Keyword", "else", "Punct", "{", "Int", "2", "Punct", "}",
+    "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "if-expr: 0 errors");
+  0
+}
+
+fn test_if_cond_not_bool(st: Stats) -> int {
+  // `let x = if 1 { 1 } else { 2 };` -> 1 error
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", "=",
+      "Keyword", "if", "Int", "1", "Punct", "{", "Int", "1", "Punct", "}",
+      "Keyword", "else", "Punct", "{", "Int", "2", "Punct", "}",
+    "Punct", ";"
+  ];
+  checkEq(st, C(parts), 1, "if-cond-not-bool: 1 error");
+  0
+}
+
+fn test_if_no_else(st: Stats) -> int {
+  // `let x = if true { 1 };` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", "=",
+      "Keyword", "if", "Keyword", "true", "Punct", "{", "Int", "1", "Punct", "}",
+    "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "if-no-else: 0 errors");
+  0
+}
+
+fn test_match_simple(st: Stats) -> int {
+  // `enum E { A, B } match E::A { A => 1, B => 2 }` -> 0 errors
+  let parts = [
+    "Keyword", "enum", "Ident", "E", "Punct", "{", "Ident", "A", "Punct", ",", "Ident", "B", "Punct", "}",
+    "Keyword", "let", "Ident", "r", "Punct", "=", "Keyword", "match", "Ident", "E", "Punct", "::", "Ident", "A", "Punct", "{",
+      "Ident", "A", "Punct", "=>", "Int", "1", "Punct", ",",
+      "Ident", "B", "Punct", "=>", "Int", "2",
+    "Punct", "}", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "match-simple: 0 errors");
+  0
+}
+
+fn test_match_with_bind(st: Stats) -> int {
+  // `enum E { B(int) } match E::B(42) { B(n) => n, A => 0 }` -> 0 errors
+  let parts = [
+    "Keyword", "enum", "Ident", "E", "Punct", "{",
+      "Ident", "B", "Punct", "(", "Ident", "int", "Punct", ")", "Punct", ",", "Ident", "A",
+    "Punct", "}",
+    "Keyword", "let", "Ident", "r", "Punct", "=", "Keyword", "match", "Ident", "E", "Punct", "::", "Ident", "B", "Punct", "(", "Int", "42", "Punct", ")", "Punct", "{",
+      "Ident", "B", "Punct", "(", "Ident", "n", "Punct", ")", "Punct", "=>", "Ident", "n", "Punct", ",",
+      "Ident", "A", "Punct", "=>", "Int", "0",
+    "Punct", "}", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "match-with-bind: 0 errors");
+  0
+}
+
+// =====================================================================
+// Tests: while / for / break / continue / return
+// =====================================================================
+
+fn test_while(st: Stats) -> int {
+  // `let mut i = 0; while i < 10 { i += 1; }` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Keyword", "mut", "Ident", "i", "Punct", "=", "Int", "0", "Punct", ";",
+    "Keyword", "while", "Ident", "i", "Punct", "<", "Int", "10", "Punct", "{",
+      "Ident", "i", "Punct", "+=", "Int", "1", "Punct", ";",
+    "Punct", "}"
+  ];
+  checkEq(st, C(parts), 0, "while: 0 errors");
+  0
+}
+
+fn test_while_cond_not_bool(st: Stats) -> int {
+  // `let mut i = 0; while i { i += 1; }` -> 1 error
+  let parts = [
+    "Keyword", "let", "Keyword", "mut", "Ident", "i", "Punct", "=", "Int", "0", "Punct", ";",
+    "Keyword", "while", "Ident", "i", "Punct", "{",
+      "Ident", "i", "Punct", "+=", "Int", "1", "Punct", ";",
+    "Punct", "}"
+  ];
+  checkEq(st, C(parts), 1, "while-cond-not-bool: 1 error");
+  0
+}
+
+fn test_for_in(st: Stats) -> int {
+  // `for x in [1, 2, 3] { print(x); }` -> 0 errors
+  let parts = [
+    "Keyword", "for", "Ident", "x", "Keyword", "in", "Punct", "[", "Int", "1", "Punct", ",", "Int", "2", "Punct", ",", "Int", "3", "Punct", "]", "Punct", "{",
+      "Keyword", "print", "Punct", "(", "Ident", "x", "Punct", ")", "Punct", ";",
+    "Punct", "}"
+  ];
+  checkEq(st, C(parts), 0, "for-in: 0 errors");
+  0
+}
+
+fn test_break_outside_loop(st: Stats) -> int {
+  // `break;` -> 1 error
+  checkEq(st, C(["Keyword", "break", "Punct", ";"]), 1, "break-outside: 1 error");
+  0
+}
+
+fn test_continue_outside_loop(st: Stats) -> int {
+  // `continue;` -> 1 error
+  checkEq(st, C(["Keyword", "continue", "Punct", ";"]), 1, "continue-outside: 1 error");
+  0
+}
+
+fn test_return_outside_fn(st: Stats) -> int {
+  // `return 42;` -> 1 error
+  checkEq(st, C(["Keyword", "return", "Int", "42", "Punct", ";"]), 1, "return-outside: 1 error");
+  0
+}
+
+fn test_return_in_fn(st: Stats) -> int {
+  // `fn f() -> int { return 42; }` -> 0 errors
+  let parts = [
+    "Keyword", "fn", "Ident", "f", "Punct", "(", "Punct", ")", "Punct", "->", "Ident", "int",
+    "Punct", "{", "Keyword", "return", "Int", "42", "Punct", ";", "Punct", "}"
+  ];
+  checkEq(st, C(parts), 0, "return-in-fn: 0 errors");
+  0
+}
+
+fn test_return_wrong_type(st: Stats) -> int {
+  // `fn f() -> int { return "hi"; }` -> 1 error
+  let parts = [
+    "Keyword", "fn", "Ident", "f", "Punct", "(", "Punct", ")", "Punct", "->", "Ident", "int",
+    "Punct", "{", "Keyword", "return", "String", "hi", "Punct", ";", "Punct", "}"
+  ];
+  checkEq(st, C(parts), 1, "return-wrong-type: 1 error");
+  0
+}
+
+// =====================================================================
+// Tests: assign / compound assign
+// =====================================================================
+
+fn test_assign_mut(st: Stats) -> int {
+  // `let mut x = 0; x = 5;` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Keyword", "mut", "Ident", "x", "Punct", "=", "Int", "0", "Punct", ";",
+    "Ident", "x", "Punct", "=", "Int", "5", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "assign-mut: 0 errors");
+  0
+}
+
+fn test_assign_immutable(st: Stats) -> int {
+  // `let x = 0; x = 5;` -> 1 error
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", "=", "Int", "0", "Punct", ";",
+    "Ident", "x", "Punct", "=", "Int", "5", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 1, "assign-immutable: 1 error");
+  0
+}
+
+fn test_assign_wrong_type(st: Stats) -> int {
+  // `let mut x = 0; x = "hi";` -> 1 error
+  let parts = [
+    "Keyword", "let", "Keyword", "mut", "Ident", "x", "Punct", "=", "Int", "0", "Punct", ";",
+    "Ident", "x", "Punct", "=", "String", "hi", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 1, "assign-wrong-type: 1 error");
+  0
+}
+
+fn test_compound_assign(st: Stats) -> int {
+  // `let mut x = 0; x += 1;` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Keyword", "mut", "Ident", "x", "Punct", "=", "Int", "0", "Punct", ";",
+    "Ident", "x", "Punct", "+=", "Int", "1", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "compound-assign: 0 errors");
+  0
+}
+
+// =====================================================================
+// Tests: closures / lambda
+// =====================================================================
+
+fn test_lambda_simple(st: Stats) -> int {
+  // `let f = fn(x: int) -> int { x + 1 };` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "f", "Punct", "=",
+      "Keyword", "fn", "Punct", "(", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ")", "Punct", "->", "Ident", "int",
+      "Punct", "{", "Ident", "x", "Punct", "+", "Int", "1", "Punct", "}",
+    "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "lambda-simple: 0 errors");
+  0
+}
+
+fn test_lambda_wrong_body(st: Stats) -> int {
+  // `let f = fn(x: int) -> int { "hi" };` -> 1 error
+  let parts = [
+    "Keyword", "let", "Ident", "f", "Punct", "=",
+      "Keyword", "fn", "Punct", "(", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ")", "Punct", "->", "Ident", "int",
+      "Punct", "{", "String", "hi", "Punct", "}",
+    "Punct", ";"
+  ];
+  checkEq(st, C(parts), 1, "lambda-wrong-body: 1 error");
+  0
+}
+
+fn test_closure_capture(st: Stats) -> int {
+  // `let c = 10; let f = fn(x: int) -> int { x + c };` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "c", "Punct", "=", "Int", "10", "Punct", ";",
+    "Keyword", "let", "Ident", "f", "Punct", "=",
+      "Keyword", "fn", "Punct", "(", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ")", "Punct", "->", "Ident", "int",
+      "Punct", "{", "Ident", "x", "Punct", "+", "Ident", "c", "Punct", "}",
+    "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "closure-capture: 0 errors");
+  0
+}
+
+// =====================================================================
+// Tests: cast / range / error prop
+// =====================================================================
+
+fn test_cast_int_to_float(st: Stats) -> int {
+  // `let x = 42 as float;` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", "=", "Int", "42", "Keyword", "as", "Ident", "float", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "cast-int-float: 0 errors");
+  0
+}
+
+fn test_cast_invalid(st: Stats) -> int {
+  // `let x = 42 as string;` -> 1 error
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", "=", "Int", "42", "Keyword", "as", "Ident", "string", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 1, "cast-invalid: 1 error");
+  0
+}
+
+fn test_range(st: Stats) -> int {
+  // `let r = 1..10;` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "r", "Punct", "=", "Int", "1", "Punct", "..", "Int", "10", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "range: 0 errors");
+  0
+}
+
+fn test_error_prop_option(st: Stats) -> int {
+  // `let x: option<int> = Option::Some(42); let y = x?;` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "option", "Punct", "<", "Ident", "int", "Punct", ">", "Punct", "=", "Ident", "Option", "Punct", "::", "Ident", "Some", "Punct", "(", "Int", "42", "Punct", ")", "Punct", ";",
+    "Keyword", "let", "Ident", "y", "Punct", "=", "Ident", "x", "Punct", "?", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "error-prop-option: 0 errors");
+  0
+}
+
+// =====================================================================
+// Tests: builtins
+// =====================================================================
+
+fn test_builtin_len(st: Stats) -> int {
+  // `let x = len("hi");` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Ident", "len", "Punct", "(", "String", "hi", "Punct", ")", "Punct", ";"]), 0, "builtin-len: 0 errors");
+  0
+}
+
+fn test_builtin_print(st: Stats) -> int {
+  // `print(42);` -> 0 errors
+  checkEq(st, C(["Keyword", "print", "Punct", "(", "Int", "42", "Punct", ")", "Punct", ";"]), 0, "builtin-print: 0 errors");
+  0
+}
+
+fn test_builtin_assert(st: Stats) -> int {
+  // `assert(true);` -> 0 errors
+  checkEq(st, C(["Ident", "assert", "Punct", "(", "Keyword", "true", "Punct", ")", "Punct", ";"]), 0, "builtin-assert: 0 errors");
+  0
+}
+
+fn test_builtin_assert_wrong_arg(st: Stats) -> int {
+  // `assert(42);` -> 1 error
+  checkEq(st, C(["Ident", "assert", "Punct", "(", "Int", "42", "Punct", ")", "Punct", ";"]), 1, "builtin-assert-wrong: 1 error");
+  0
+}
+
+fn test_builtin_map(st: Stats) -> int {
+  // `let a = [1, 2]; let b = map(a, fn(x: int) -> int { x + 1 });` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "a", "Punct", "=", "Punct", "[", "Int", "1", "Punct", ",", "Int", "2", "Punct", "]", "Punct", ";",
+    "Keyword", "let", "Ident", "b", "Punct", "=", "Ident", "map", "Punct", "(", "Ident", "a", "Punct", ",",
+      "Keyword", "fn", "Punct", "(", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ")", "Punct", "->", "Ident", "int",
+      "Punct", "{", "Ident", "x", "Punct", "+", "Int", "1", "Punct", "}",
+    "Punct", ")", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "builtin-map: 0 errors");
+  0
+}
+
+// =====================================================================
+// Tests: const / mut let / pub fn
+// =====================================================================
+
+fn test_const_decl(st: Stats) -> int {
+  // `const X: int = 42;` -> 0 errors
+  checkEq(st, C(["Keyword", "const", "Ident", "X", "Punct", ":", "Ident", "int", "Punct", "=", "Int", "42", "Punct", ";"]), 0, "const-decl: 0 errors");
+  0
+}
+
+fn test_mut_let(st: Stats) -> int {
+  // `let mut x = 0;` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Keyword", "mut", "Ident", "x", "Punct", "=", "Int", "0", "Punct", ";"]), 0, "mut-let: 0 errors");
+  0
+}
+
+fn test_pub_fn(st: Stats) -> int {
+  // `pub fn f() -> int { 42 }` -> 0 errors
+  let parts = [
+    "Keyword", "pub", "Keyword", "fn", "Ident", "f", "Punct", "(", "Punct", ")", "Punct", "->", "Ident", "int",
+    "Punct", "{", "Int", "42", "Punct", "}"
+  ];
+  checkEq(st, C(parts), 0, "pub-fn: 0 errors");
+  0
+}
+
+// =====================================================================
+// Tests: import / type alias / blocks
+// =====================================================================
+
+fn test_import(st: Stats) -> int {
+  // `import { x } from "./mod.ae";` -> 0 errors (imports are no-ops)
+  let parts = [
+    "Keyword", "import", "Punct", "{", "Ident", "x", "Punct", "}", "Ident", "from", "String", "./mod.ae", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "import: 0 errors");
+  0
+}
+
+fn test_type_alias(st: Stats) -> int {
+  // `type T = int;` -> 0 errors
+  let parts = [
+    "Keyword", "type", "Ident", "T", "Punct", "=", "Ident", "int", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "type-alias: 0 errors");
+  0
+}
+
+fn test_block_expr(st: Stats) -> int {
+  // `let x = { let y = 1; y + 1 };` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", "=",
+      "Punct", "{",
+        "Keyword", "let", "Ident", "y", "Punct", "=", "Int", "1", "Punct", ";",
+        "Ident", "y", "Punct", "+", "Int", "1",
+      "Punct", "}",
+    "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "block-expr: 0 errors");
+  0
+}
+
+fn test_empty_program(st: Stats) -> int {
+  // empty -> 0 errors
+  checkEq(st, C([]), 0, "empty-prog: 0 errors");
+  0
+}
+
+// =====================================================================
+// Tests: multiple statements + chained
+// =====================================================================
+
+fn test_multi_let(st: Stats) -> int {
+  // `let x = 1; let y = 2; let z = x + y;` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", "=", "Int", "1", "Punct", ";",
+    "Keyword", "let", "Ident", "y", "Punct", "=", "Int", "2", "Punct", ";",
+    "Keyword", "let", "Ident", "z", "Punct", "=", "Ident", "x", "Punct", "+", "Ident", "y", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "multi-let: 0 errors");
+  0
+}
+
+fn test_undefined_after_let(st: Stats) -> int {
+  // `let x = 1; let y = z;` -> 1 error (z undefined)
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", "=", "Int", "1", "Punct", ";",
+    "Keyword", "let", "Ident", "y", "Punct", "=", "Ident", "z", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 1, "undefined-after-let: 1 error");
+  0
+}
+
+// =====================================================================
+// Tests: typeToString sanity
+// =====================================================================
+
+fn test_type_to_string(st: Stats) -> int {
+  checkEqStr(st, typeToString(tInt()), "int", "ts-int");
+  checkEqStr(st, typeToString(tFloat()), "float", "ts-float");
+  checkEqStr(st, typeToString(tBool()), "bool", "ts-bool");
+  checkEqStr(st, typeToString(tString()), "string", "ts-string");
+  checkEqStr(st, typeToString(tChar()), "char", "ts-char");
+  checkEqStr(st, typeToString(tUnit()), "()", "ts-unit");
+  checkEqStr(st, typeToString(tNever()), "never", "ts-never");
+  checkEqStr(st, typeToString(tArray(tInt())), "[int]", "ts-array");
+  checkEqStr(st, typeToString(tOption(tInt())), "option<int>", "ts-option");
+  checkEqStr(st, typeToString(tResult(tInt(), tString())), "result<int, string>", "ts-result");
+  checkEqStr(st, typeToString(tNamed("Range", [])), "Range", "ts-named");
+  0
+}
+
+fn test_type_eq(st: Stats) -> int {
+  checkStat(st, typeEq(tInt(), tInt()), "typeEq int int");
+  checkStat(st, !typeEq(tInt(), tFloat()), "typeEq int float (neg)");
+  checkStat(st, typeEq(tArray(tInt()), tArray(tInt())), "typeEq array int");
+  checkStat(st, typeEq(tFunc([tInt()], tInt()), tFunc([tInt()], tInt())), "typeEq fn int->int");
+  checkStat(st, !typeEq(tFunc([tInt()], tInt()), tFunc([tString()], tInt())), "typeEq fn different (neg)");
+  0
+}
+
+// =====================================================================
+// Tests: patterns (more)
+// =====================================================================
+
+fn test_wildcard_pattern(st: Stats) -> int {
+  // `match 1 { _ => 0 }` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "r", "Punct", "=", "Keyword", "match", "Int", "1", "Punct", "{",
+      "Punct", "_", "Punct", "=>", "Int", "0",
+    "Punct", "}", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "wildcard-pat: 0 errors");
+  0
+}
+
+fn test_lit_pattern(st: Stats) -> int {
+  // `match 0 { 0 => "zero", 1 => "one", _ => "many" }` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "r", "Punct", "=", "Keyword", "match", "Int", "0", "Punct", "{",
+      "Int", "0", "Punct", "=>", "String", "zero", "Punct", ",",
+      "Int", "1", "Punct", "=>", "String", "one", "Punct", ",",
+      "Punct", "_", "Punct", "=>", "String", "many",
+    "Punct", "}", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "lit-pat: 0 errors");
+  0
+}
+
+fn test_or_pattern(st: Stats) -> int {
+  // `enum E { A, B, C } match E::A { A | B => 1, C => 2 }` -> 0 errors
+  let parts = [
+    "Keyword", "enum", "Ident", "E", "Punct", "{", "Ident", "A", "Punct", ",", "Ident", "B", "Punct", ",", "Ident", "C", "Punct", "}",
+    "Keyword", "let", "Ident", "r", "Punct", "=", "Keyword", "match", "Ident", "E", "Punct", "::", "Ident", "A", "Punct", "{",
+      "Ident", "A", "Punct", "|", "Ident", "B", "Punct", "=>", "Int", "1", "Punct", ",",
+      "Ident", "C", "Punct", "=>", "Int", "2",
+    "Punct", "}", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "or-pat: 0 errors");
+  0
+}
+
+fn test_struct_pattern(st: Stats) -> int {
+  // `struct P { x: int, y: int } match P { x: a, y: b => a + b }` -> 0 errors
+  let parts = [
+    "Keyword", "struct", "Ident", "P", "Punct", "{",
+      "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ",",
+      "Ident", "y", "Punct", ":", "Ident", "int",
+    "Punct", "}",
+    "Keyword", "let", "Ident", "p", "Punct", "=", "Ident", "P", "Punct", "{",
+      "Ident", "x", "Punct", ":", "Int", "1", "Punct", ",",
+      "Ident", "y", "Punct", ":", "Int", "2",
+    "Punct", "}", "Punct", ";",
+    "Keyword", "let", "Ident", "r", "Punct", "=", "Keyword", "match", "Ident", "p", "Punct", "{",
+      "Ident", "P", "Punct", "{", "Ident", "x", "Punct", ":", "Ident", "a", "Punct", ",", "Ident", "y", "Punct", ":", "Ident", "b", "Punct", "}",
+      "Punct", "=>", "Ident", "a", "Punct", "+", "Ident", "b",
+    "Punct", "}", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "struct-pat: 0 errors");
+  0
+}
+
+// =====================================================================
+// Tests: option / result sugar
+// =====================================================================
+
+fn test_option_sugar(st: Stats) -> int {
+  // `let x: option<int> = Option::None;` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "option", "Punct", "<", "Ident", "int", "Punct", ">",
+    "Punct", "=", "Ident", "Option", "Punct", "::", "Ident", "None", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "option-sugar: 0 errors");
+  0
+}
+
+fn test_result_sugar(st: Stats) -> int {
+  // `let x: result<int, string> = Result::Ok(42);` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "result", "Punct", "<", "Ident", "int", "Punct", ",", "Ident", "string", "Punct", ">",
+    "Punct", "=", "Ident", "Result", "Punct", "::", "Ident", "Ok", "Punct", "(", "Int", "42", "Punct", ")", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "result-sugar: 0 errors");
+  0
+}
+
+fn test_result_error(st: Stats) -> int {
+  // `let x: result<int, string> = Result::Err("oops");` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "result", "Punct", "<", "Ident", "int", "Punct", ",", "Ident", "string", "Punct", ">",
+    "Punct", "=", "Ident", "Result", "Punct", "::", "Ident", "Err", "Punct", "(", "String", "oops", "Punct", ")", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "result-error: 0 errors");
+  0
+}
+
+// =====================================================================
+// Tests: edge cases
+// =====================================================================
+
+fn test_paren_expr(st: Stats) -> int {
+  // `let x = (42);` -> 0 errors
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "Punct", "(", "Int", "42", "Punct", ")", "Punct", ";"]), 0, "paren-expr: 0 errors");
+  0
+}
+
+fn test_bitwise_ops(st: Stats) -> int {
+  // `let x = 1 & 2; let y = 3 | 4; let z = 5 ^ 6;` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", "=", "Int", "1", "Punct", "&", "Int", "2", "Punct", ";",
+    "Keyword", "let", "Ident", "y", "Punct", "=", "Int", "3", "Punct", "|", "Int", "4", "Punct", ";",
+    "Keyword", "let", "Ident", "z", "Punct", "=", "Int", "5", "Punct", "^", "Int", "6", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "bitwise: 0 errors");
+  0
+}
+
+fn test_bitwise_wrong_type(st: Stats) -> int {
+  // `let x = "a" & "b";` -> 1 error
+  checkEq(st, C(["Keyword", "let", "Ident", "x", "Punct", "=", "String", "a", "Punct", "&", "String", "b", "Punct", ";"]), 1, "bitwise-wrong: 1 error");
+  0
+}
+
+fn test_method_call_push(st: Stats) -> int {
+  // `let a = [1]; a.push(2);` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "a", "Punct", "=", "Punct", "[", "Int", "1", "Punct", "]", "Punct", ";",
+    "Ident", "a", "Punct", ".", "Ident", "push", "Punct", "(", "Int", "2", "Punct", ")", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "method-push: 0 errors");
+  0
+}
+
+fn test_index_non_array(st: Stats) -> int {
+  // `let x = 5; let y = x[0];` -> 1 error
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", "=", "Int", "5", "Punct", ";",
+    "Keyword", "let", "Ident", "y", "Punct", "=", "Ident", "x", "Punct", "[", "Int", "0", "Punct", "]", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 1, "index-non-array: 1 error");
+  0
+}
+
+fn test_string_concat(st: Stats) -> int {
+  // `let x = "a" + "b"; let y = x + "c";` -> 0 errors
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", "=", "String", "a", "Punct", "+", "String", "b", "Punct", ";",
+    "Keyword", "let", "Ident", "y", "Punct", "=", "Ident", "x", "Punct", "+", "String", "c", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "string-concat: 0 errors");
+  0
+}
+
+fn test_let_with_call(st: Stats) -> int {
+  // `fn inc(x: int) -> int { x + 1 } let y = inc(5); let z = inc(y);` -> 0 errors
+  let parts = [
+    "Keyword", "fn", "Ident", "inc", "Punct", "(", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", ")", "Punct", "->", "Ident", "int",
+    "Punct", "{", "Ident", "x", "Punct", "+", "Int", "1", "Punct", "}",
+    "Keyword", "let", "Ident", "y", "Punct", "=", "Ident", "inc", "Punct", "(", "Int", "5", "Punct", ")", "Punct", ";",
+    "Keyword", "let", "Ident", "z", "Punct", "=", "Ident", "inc", "Punct", "(", "Ident", "y", "Punct", ")", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 0, "let-with-call: 0 errors");
+  0
+}
+
+fn test_nested_fn(st: Stats) -> int {
+  // `fn outer() -> int { fn inner() -> int { 1 } inner() }` -> 0 errors
+  let parts = [
+    "Keyword", "fn", "Ident", "outer", "Punct", "(", "Punct", ")", "Punct", "->", "Ident", "int",
+    "Punct", "{",
+      "Keyword", "fn", "Ident", "inner", "Punct", "(", "Punct", ")", "Punct", "->", "Ident", "int",
+      "Punct", "{", "Int", "1", "Punct", "}",
+      "Ident", "inner", "Punct", "(", "Punct", ")",
+    "Punct", "}"
+  ];
+  checkEq(st, C(parts), 0, "nested-fn: 0 errors");
+  0
+}
+
+fn test_two_errors(st: Stats) -> int {
+  // `let x: int = "hi"; let y: int = 3.14;` -> 2 errors
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", ":", "Ident", "int", "Punct", "=", "String", "hi", "Punct", ";",
+    "Keyword", "let", "Ident", "y", "Punct", ":", "Ident", "int", "Punct", "=", "Float", "3.14", "Punct", ";"
+  ];
+  checkEq(st, C(parts), 2, "two-errors: 2 errors");
+  0
+}
+
+fn test_shadowing_warning(st: Stats) -> int {
+  // `let x = 1; let x = 2;` -> 0 errors but 1+ warning
+  let parts = [
+    "Keyword", "let", "Ident", "x", "Punct", "=", "Int", "1", "Punct", ";",
+    "Keyword", "let", "Ident", "x", "Punct", "=", "Int", "2", "Punct", ";"
+  ];
+  let r = parse(toks(parts));
+  let cr = check(r.program);
+  checkEq(st, len(cr.errors), 0, "shadowing: 0 errors");
+  checkStat(st, len(cr.warnings) >= 1, "shadowing: >= 1 warning");
+  0
+}
+
+// =====================================================================
+// Driver
+// =====================================================================
+
+fn runAllTests() -> int {
+  let st = Stats { passed: 0, failed: 0 };
+
+  // literals & basic let inference
+  test_let_int(st);
+  test_let_float(st);
+  test_let_bool(st);
+  test_let_string(st);
+  test_let_char(st);
+  test_let_unit(st);
+  test_let_annotated_int(st);
+  test_let_annotated_float(st);
+  test_let_annotated_bool(st);
+  test_let_widening_int_to_float(st);
+  test_let_mismatch_float_to_int(st);
+  test_let_mismatch_string_to_float(st);
+  test_let_mismatch_int_to_string(st);
+  test_let_undefined_name(st);
+
+  // function declarations
+  test_fn_decl_simple(st);
+  test_fn_decl_with_params(st);
+  test_fn_decl_wrong_return(st);
+  test_fn_decl_no_return(st);
+  test_fn_call_args(st);
+  test_fn_call_wrong_arg(st);
+  test_fn_call_arity(st);
+  test_fn_recursive(st);
+
+  // generics
+  test_generic_id(st);
+  test_generic_id_explicit_type(st);
+  test_generic_pair(st);
+
+  // arithmetic
+  test_arith_add(st);
+  test_arith_float(st);
+  test_arith_string_concat(st);
+  test_arith_int_string(st);
+  test_arith_mod(st);
+
+  // comparisons
+  test_cmp_lt(st);
+  test_cmp_eq(st);
+  test_cmp_mismatch(st);
+
+  // logical
+  test_logical_and(st);
+  test_logical_or(st);
+  test_logical_mismatch(st);
+
+  // unary
+  test_unary_neg(st);
+  test_unary_not(st);
+  test_unary_not_int(st);
+
+  // struct
+  test_struct_decl(st);
+  test_struct_expr(st);
+  test_struct_missing_field(st);
+  test_struct_unknown_field(st);
+  test_struct_field_access(st);
+
+  // enum
+  test_enum_decl(st);
+  test_enum_variant_unit(st);
+  test_enum_variant_tuple(st);
+  test_enum_variant_wrong_arg(st);
+  test_enum_unknown_variant(st);
+
+  // tuple / array / map
+  test_tuple_expr(st);
+  test_tuple_field(st);
+  test_array_expr(st);
+  test_array_index(st);
+  test_array_index_wrong_type(st);
+  test_map_expr(st);
+  test_map_index(st);
+
+  // if / match
+  test_if_expr(st);
+  test_if_cond_not_bool(st);
+  test_if_no_else(st);
+  test_match_simple(st);
+  test_match_with_bind(st);
+
+  // while / for / break / continue / return
+  test_while(st);
+  test_while_cond_not_bool(st);
+  test_for_in(st);
+  test_break_outside_loop(st);
+  test_continue_outside_loop(st);
+  test_return_outside_fn(st);
+  test_return_in_fn(st);
+  test_return_wrong_type(st);
+
+  // assign / compound assign
+  test_assign_mut(st);
+  test_assign_immutable(st);
+  test_assign_wrong_type(st);
+  test_compound_assign(st);
+
+  // closures / lambda
+  test_lambda_simple(st);
+  test_lambda_wrong_body(st);
+  test_closure_capture(st);
+
+  // cast / range / error prop
+  test_cast_int_to_float(st);
+  test_cast_invalid(st);
+  test_range(st);
+  test_error_prop_option(st);
+
+  // builtins
+  test_builtin_len(st);
+  test_builtin_print(st);
+  test_builtin_assert(st);
+  test_builtin_assert_wrong_arg(st);
+  test_builtin_map(st);
+
+  // const / mut let / pub fn
+  test_const_decl(st);
+  test_mut_let(st);
+  test_pub_fn(st);
+
+  // import / type alias / blocks
+  test_import(st);
+  test_type_alias(st);
+  test_block_expr(st);
+  test_empty_program(st);
+
+  // multiple statements
+  test_multi_let(st);
+  test_undefined_after_let(st);
+
+  // typeToString + typeEq sanity
+  test_type_to_string(st);
+  test_type_eq(st);
+
+  // patterns (more)
+  test_wildcard_pattern(st);
+  test_lit_pattern(st);
+  test_or_pattern(st);
+  test_struct_pattern(st);
+
+  // option / result sugar
+  test_option_sugar(st);
+  test_result_sugar(st);
+  test_result_error(st);
+
+  // edge cases
+  test_paren_expr(st);
+  test_bitwise_ops(st);
+  test_bitwise_wrong_type(st);
+  test_method_call_push(st);
+  test_index_non_array(st);
+  test_string_concat(st);
+  test_let_with_call(st);
+  test_nested_fn(st);
+  test_two_errors(st);
+  test_shadowing_warning(st);
+
+  print("=============================");
+  print("Sema test results:");
+  print("  passed: " + str(st.passed));
+  print("  failed: " + str(st.failed));
+  if st.failed == 0 {
+    print("  STATUS: ALL PASS");
+  } else {
+    print("  STATUS: FAILURES");
+  };
+  print("=============================");
+  assert_eq(st.failed, 0);
+  st.passed
+}
+
+// Run all tests
+let npass = runAllTests();
+print("Total asserts passed: " + str(npass));

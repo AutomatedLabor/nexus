@@ -410,14 +410,14 @@ fn isKeywordTok(t: Token, v: string) -> int {
 
 fn isPunct(p: Parser, v: string) -> int { isPunctTok(peekTok(p), v) }
 fn isPunctAhead(p: Parser, v: string, n: int) -> int { isPunctTok(peekN(p, n), v) }
-fn isKeyword(p: Parser, v: string) -> int { isKeywordTok(peekTok(p), v) }
+fn isKw(p: Parser, v: string) -> int { isKeywordTok(peekTok(p), v) }
 
 fn eatPunct(p: Parser, v: string) -> int {
   if isPunct(p, v) == 1 { advanceTok(p); 1 } else { 0 }
 }
 
 fn eatKeyword(p: Parser, v: string) -> int {
-  if isKeyword(p, v) == 1 { advanceTok(p); 1 } else { 0 }
+  if isKw(p, v) == 1 { advanceTok(p); 1 } else { 0 }
 }
 
 fn errHere(p: Parser, msg: string) -> int {
@@ -514,32 +514,32 @@ fn parseProgram(p: Parser) -> Node {
 // === Statement dispatch ===
 fn parseStmt(p: Parser) -> Node {
   let start = tokLoc(peekTok(p));
-  if isKeyword(p, "let") == 1 { return parseLet(p); };
-  if isKeyword(p, "const") == 1 { return parseConst(p); };
-  if isKeyword(p, "fn") == 1 {
+  if isKw(p, "let") == 1 { return parseLet(p); };
+  if isKw(p, "const") == 1 { return parseConst(p); };
+  if isKw(p, "fn") == 1 {
     if peekN(p, 1).kind == "Ident" {
       return parseFnDecl(p);
     };
   };
-  if isKeyword(p, "enum") == 1 { return parseEnum(p); };
-  if isKeyword(p, "struct") == 1 { return parseStruct(p); };
-  if isKeyword(p, "type") == 1 { return parseTypeAlias(p); };
-  if isKeyword(p, "return") == 1 { return parseReturn(p); };
-  if isKeyword(p, "break") == 1 {
+  if isKw(p, "enum") == 1 { return parseEnum(p); };
+  if isKw(p, "struct") == 1 { return parseStruct(p); };
+  if isKw(p, "type") == 1 { return parseTypeAlias(p); };
+  if isKw(p, "return") == 1 { return parseReturn(p); };
+  if isKw(p, "break") == 1 {
     advanceTok(p);
     expectPunct(p, ";");
     return mkBreak(start);
   };
-  if isKeyword(p, "continue") == 1 {
+  if isKw(p, "continue") == 1 {
     advanceTok(p);
     expectPunct(p, ";");
     return mkContinue(start);
   };
-  if isKeyword(p, "while") == 1 { return parseWhile(p); };
-  if isKeyword(p, "for") == 1 { return parseFor(p); };
-  if isKeyword(p, "import") == 1 { return parseImport(p); };
-  if isKeyword(p, "pub") == 1 { return parsePub(p); };
-  if isKeyword(p, "print") == 1 { return parsePrintStmt(p); };
+  if isKw(p, "while") == 1 { return parseWhile(p); };
+  if isKw(p, "for") == 1 { return parseFor(p); };
+  if isKw(p, "import") == 1 { return parseImport(p); };
+  if isKw(p, "pub") == 1 { return parsePub(p); };
+  if isKw(p, "print") == 1 { return parsePrintStmt(p); };
   parseExprOrAssignStmt(p)
 }
 
@@ -794,7 +794,7 @@ fn parseImport(p: Parser) -> Node {
 fn parsePub(p: Parser) -> Node {
   let start = tokLoc(peekTok(p));
   advanceTok(p);
-  if isKeyword(p, "fn") == 1 {
+  if isKw(p, "fn") == 1 {
     let d = parseFnDecl(p);
     if d.kind == "FnDecl" {
       d.ival = 1;
@@ -906,7 +906,7 @@ fn parseType(p: Parser) -> Node {
 
 fn parseFuncType(p: Parser) -> Node {
   let start = tokLoc(peekTok(p));
-  if isKeyword(p, "fn") == 1 {
+  if isKw(p, "fn") == 1 {
     advanceTok(p);
     expectPunct(p, "(");
     let params = [];
@@ -1083,7 +1083,7 @@ fn parsePatternAtom(p: Parser) -> Node {
     expectPunct(p, "]");
     return mkArrayPat(elements, rest, locFrom(p, start));
   };
-  if isKeyword(p, "mut") == 1 {
+  if isKw(p, "mut") == 1 {
     advanceTok(p);
     let name = expectIdent(p);
     let mut typeN = nullNode();
@@ -1155,7 +1155,7 @@ fn parsePatternAtom(p: Parser) -> Node {
     let e = parseAtom(p, 1);
     return mkLitPat(e, locFrom(p, start));
   };
-  if isKeyword(p, "true") == 1 || isKeyword(p, "false") == 1 {
+  if isKw(p, "true") == 1 || isKw(p, "false") == 1 {
     let e = parseAtom(p, 1);
     return mkLitPat(e, locFrom(p, start));
   };
@@ -1645,7 +1645,7 @@ fn parseIf(p: Parser) -> Node {
   let then = parseBlock(p);
   let mut els = nullNode();
   if eatKeyword(p, "else") == 1 {
-    if isKeyword(p, "if") == 1 {
+    if isKw(p, "if") == 1 {
       els = parseIf(p);
     } else {
       els = parseBlock(p);

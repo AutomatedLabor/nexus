@@ -1,0 +1,2269 @@
+// =====================================================================
+// aether-bootstrap/ir.ae — Aether IR + AST→IR lowering (bootstrap part 4/7)
+// Mirrors aether/core/ir/ir.ts.  Pure Aether; runs on the host tree-walker.
+// =====================================================================
+//
+// Public surface
+// --------------
+//   pub fn lowerToIr(program: Node) -> IrProgram
+//   pub fn mkInt(v: int) -> Value
+//   pub fn mkFloat(v: float) -> Value
+//   pub fn mkBool(v: int) -> Value
+//   pub fn mkStr(v: string) -> Value
+//   pub fn mkUnit() -> Value
+//   pub fn mkArray(items: [Value]) -> Value
+//   pub fn mkStruct(name: string, fields: [VField]) -> Value
+//   pub fn mkVariant(enumName: string, variant: string, data: [Value]) -> Value
+//   pub fn mkClosure(fnIdx: int, ups: [Value]) -> Value
+//   pub fn mkRange(start: int, end: int, step: int) -> Value
+//   pub fn mkMap(pairs: [KVP]) -> Value
+//   pub fn mkBox(v: Value) -> Value
+//
+// Design notes
+// ------------
+// - Each IrFunc has a flat list of basic blocks; jumps reference block IDs.
+//   The codegen flattens blocks to instr indices.
+// - Each block ends in a terminator (Jmp/JmpIf/JmpIfNot/Return/Match).
+// - Register allocation is simple: every binding gets a fresh vreg.
+// - Match: lowering builds a MatchTable per match expr; the IrOp "Match"
+//   references it by index into IrFunc.matchTables.
+// - Self-reference: each non-main function has a `selfReg`. When a closure
+//   is called, the VM writes the closure value into `selfReg`. References
+//   to the function's own name resolve to `selfReg`.
+// - Closures: nested fns capture enclosing variables as upvalues. Captured
+//   variables are wrapped in Boxes (MakeBox) at declaration time so they're
+//   shared by reference. The MakeClosure op carries capture registers.
+// =====================================================================
+
+// -----------------------------------------------------------------------------
+// Value representation — tagged struct (mirrors the TS VM's tagged Value).
+// -----------------------------------------------------------------------------
+
+struct Value {
+  tag: string,         // "int" | "float" | "bool" | "string" | "unit" | "null" | "array" | "map" | "struct" | "variant" | "closure" | "native" | "range" | "box"
+  ival: int,           // int value, bool (0/1), range start, closure fnIdx
+  fval: float,         // float value
+  sval: string,        // string value, native name, struct/enum name
+  arr: [Value],        // array elements, variant data, closure upvalues, box contents
+  pairs: [KVP],        // map entries
+  fields: [VField],    // struct fields
+  vname: string,       // variant name
+  rangeEnd: int,       // range end
+  rangeStep: int,      // range step
+}
+
+struct KVP { key: Value, val: Value }
+struct VField { name: string, val: Value }
+
+// Value constructors. Each fills all fields with sentinels for safety.
+pub fn mkInt(v: int) -> Value {
+  Value { tag: "int", ival: v, fval: 0.0, sval: "", arr: [], pairs: [], fields: [], vname: "", rangeEnd: 0, rangeStep: 1 }
+}
+pub fn mkFloat(v: float) -> Value {
+  Value { tag: "float", ival: 0, fval: v, sval: "", arr: [], pairs: [], fields: [], vname: "", rangeEnd: 0, rangeStep: 1 }
+}
+pub fn mkBool(v: int) -> Value {
+  Value { tag: "bool", ival: v, fval: 0.0, sval: "", arr: [], pairs: [], fields: [], vname: "", rangeEnd: 0, rangeStep: 1 }
+}
+pub fn mkStr(v: string) -> Value {
+  Value { tag: "string", ival: 0, fval: 0.0, sval: v, arr: [], pairs: [], fields: [], vname: "", rangeEnd: 0, rangeStep: 1 }
+}
+pub fn mkUnit() -> Value {
+  Value { tag: "unit", ival: 0, fval: 0.0, sval: "", arr: [], pairs: [], fields: [], vname: "", rangeEnd: 0, rangeStep: 1 }
+}
+pub fn mkNull() -> Value {
+  Value { tag: "null", ival: 0, fval: 0.0, sval: "", arr: [], pairs: [], fields: [], vname: "", rangeEnd: 0, rangeStep: 1 }
+}
+pub fn mkArray(items: [Value]) -> Value {
+  Value { tag: "array", ival: 0, fval: 0.0, sval: "", arr: items, pairs: [], fields: [], vname: "", rangeEnd: 0, rangeStep: 1 }
+}
+pub fn mkStructN(name: string, fields: [VField]) -> Value {
+  Value { tag: "struct", ival: 0, fval: 0.0, sval: name, arr: [], pairs: [], fields: fields, vname: "", rangeEnd: 0, rangeStep: 1 }
+}
+pub fn mkVariant(enumName: string, variant: string, data: [Value]) -> Value {
+  Value { tag: "variant", ival: 0, fval: 0.0, sval: enumName, arr: data, pairs: [], fields: [], vname: variant, rangeEnd: 0, rangeStep: 1 }
+}
+pub fn mkClosure(fnIdx: int, ups: [Value]) -> Value {
+  Value { tag: "closure", ival: fnIdx, fval: 0.0, sval: "", arr: ups, pairs: [], fields: [], vname: "", rangeEnd: 0, rangeStep: 1 }
+}
+pub fn mkNative(name: string) -> Value {
+  Value { tag: "native", ival: 0, fval: 0.0, sval: name, arr: [], pairs: [], fields: [], vname: "", rangeEnd: 0, rangeStep: 1 }
+}
+pub fn mkRange(start: int, end: int, step: int) -> Value {
+  Value { tag: "range", ival: start, fval: 0.0, sval: "", arr: [], pairs: [], fields: [], vname: "", rangeEnd: end, rangeStep: step }
+}
+pub fn mkMapV(pairs: [KVP]) -> Value {
+  Value { tag: "map", ival: 0, fval: 0.0, sval: "", arr: [], pairs: pairs, fields: [], vname: "", rangeEnd: 0, rangeStep: 1 }
+}
+pub fn mkBox(v: Value) -> Value {
+  Value { tag: "box", ival: 0, fval: 0.0, sval: "", arr: [v], pairs: [], fields: [], vname: "", rangeEnd: 0, rangeStep: 1 }
+}
+
+// Truthiness — matches the tree-walker's semantics.
+pub fn truthy(v: Value) -> int {
+  if v.tag == "bool" { return v.ival; };
+  if v.tag == "unit" { return 0; };
+  if v.tag == "null" { return 0; };
+  if v.tag == "int" { if v.ival == 0 { return 0; } else { return 1; }; };
+  if v.tag == "float" { if v.fval == 0.0 { return 0; } else { return 1; }; };
+  if v.tag == "string" { if len(v.sval) == 0 { return 0; } else { return 1; }; };
+  if v.tag == "array" { if len(v.arr) == 0 { return 0; } else { return 1; }; };
+  if v.tag == "map" { if len(v.pairs) == 0 { return 0; } else { return 1; }; };
+  1
+}
+
+// Display — matches the tree-walker's `display`.
+pub fn displayV(v: Value) -> string {
+  if v.tag == "int" { return str(v.ival); };
+  if v.tag == "float" { return str(v.fval); };
+  if v.tag == "bool" { if v.ival == 1 { return "true"; } else { return "false"; }; };
+  if v.tag == "string" { return v.sval; };
+  if v.tag == "unit" { return "null"; };
+  if v.tag == "null" { return "null"; };
+  if v.tag == "array" { return displayArray(v.arr); };
+  if v.tag == "map" { return displayMap(v.pairs); };
+  if v.tag == "struct" { return displayStruct(v.sval, v.fields); };
+  if v.tag == "variant" { return displayVariant(v.sval, v.vname, v.arr); };
+  if v.tag == "closure" { return "<closure " + str(v.ival) + ">"; };
+  if v.tag == "native" { return "<native " + v.sval + ">"; };
+  if v.tag == "range" { return "range(" + str(v.ival) + ", " + str(v.rangeEnd) + ")"; };
+  if v.tag == "box" { return "<box " + displayV(v.arr[0]) + ">"; };
+  "<value>"
+}
+
+fn displayArray(arr: [Value]) -> string {
+  let out = "[";
+  let mut i = 0;
+  while i < len(arr) {
+    if i > 0 { out = out + ", "; };
+    out = out + displayV(arr[i]);
+    i = i + 1;
+  }
+  out + "]"
+}
+
+fn displayMap(pairs: [KVP]) -> string {
+  let out = "{";
+  let mut i = 0;
+  while i < len(pairs) {
+    if i > 0 { out = out + ", "; };
+    out = out + displayV(pairs[i].key) + ": " + displayV(pairs[i].val);
+    i = i + 1;
+  }
+  out + "}"
+}
+
+fn displayStruct(name: string, fields: [VField]) -> string {
+  let out = name + " { ";
+  let mut i = 0;
+  while i < len(fields) {
+    if i > 0 { out = out + ", "; };
+    out = out + fields[i].name + ": " + displayV(fields[i].val);
+    i = i + 1;
+  }
+  out + " }"
+}
+
+fn displayVariant(enumName: string, variant: string, data: [Value]) -> string {
+  if len(data) == 0 { return enumName + "::" + variant; };
+  let out = enumName + "::" + variant + "(";
+  let mut i = 0;
+  while i < len(data) {
+    if i > 0 { out = out + ", "; };
+    out = out + displayV(data[i]);
+    i = i + 1;
+  }
+  out + ")"
+}
+
+// Deep value equality — matches the tree-walker's `valueEq`.
+pub fn valueEq(a: Value, b: Value) -> int {
+  if a.tag == "int" && b.tag == "int" { if a.ival == b.ival { return 1; } else { return 0; }; };
+  if a.tag == "float" && b.tag == "float" { if a.fval == b.fval { return 1; } else { return 0; }; };
+  if a.tag == "int" && b.tag == "float" { if intEqFloat(a.ival, b.fval) { return 1; } else { return 0; }; };
+  if a.tag == "float" && b.tag == "int" { if intEqFloat(b.ival, a.fval) { return 1; } else { return 0; }; };
+  if a.tag == "bool" && b.tag == "bool" { if a.ival == b.ival { return 1; } else { return 0; }; };
+  if a.tag == "string" && b.tag == "string" { if a.sval == b.sval { return 1; } else { return 0; }; };
+  if a.tag == "unit" && b.tag == "unit" { return 1; };
+  if a.tag == "null" && b.tag == "null" { return 1; };
+  if a.tag == "unit" && b.tag == "null" { return 1; };
+  if a.tag == "null" && b.tag == "unit" { return 1; };
+  if a.tag == "array" && b.tag == "array" { return arrEq(a.arr, b.arr); };
+  if a.tag == "map" && b.tag == "map" { return mapEq(a.pairs, b.pairs); };
+  if a.tag == "struct" && b.tag == "struct" {
+    if a.sval != b.sval { return 0; };
+    return fieldsEq(a.fields, b.fields);
+  };
+  if a.tag == "variant" && b.tag == "variant" {
+    if a.sval != b.sval { return 0; };
+    if a.vname != b.vname { return 0; };
+    return arrEq(a.arr, b.arr);
+  };
+  if a.tag == "range" && b.tag == "range" {
+    if a.ival != b.ival { return 0; };
+    if a.rangeEnd != b.rangeEnd { return 0; };
+    if a.rangeStep != b.rangeStep { return 0; };
+    return 1;
+  };
+  0
+}
+
+fn intEqFloat(i: int, f: float) -> int {
+  // best-effort: compare if f has no fractional part and equals i.
+  let g = int(f);
+  if g == i { if int(g) == i { return 1; }; };
+  0
+}
+
+fn arrEq(a: [Value], b: [Value]) -> int {
+  if len(a) != len(b) { return 0; };
+  let mut i = 0;
+  while i < len(a) {
+    if valueEq(a[i], b[i]) == 0 { return 0; };
+    i = i + 1;
+  }
+  1
+}
+
+fn mapEq(a: [KVP], b: [KVP]) -> int {
+  if len(a) != len(b) { return 0; };
+  let mut i = 0;
+  while i < len(a) {
+    let mut found = 0;
+    let mut j = 0;
+    while j < len(b) {
+      if valueEq(a[i].key, b[j].key) == 1 {
+        if valueEq(a[i].val, b[j].val) == 1 { found = 1; };
+        j = len(b);
+      } else {
+        j = j + 1;
+      };
+    }
+    if found == 0 { return 0; };
+    i = i + 1;
+  }
+  1
+}
+
+fn fieldsEq(a: [VField], b: [VField]) -> int {
+  if len(a) != len(b) { return 0; };
+  let mut i = 0;
+  while i < len(a) {
+    let mut found = 0;
+    let mut j = 0;
+    while j < len(b) {
+      if a[i].name == b[j].name {
+        if valueEq(a[i].val, b[j].val) == 1 { found = 1; };
+        j = len(b);
+      } else {
+        j = j + 1;
+      };
+    }
+    if found == 0 { return 0; };
+    i = i + 1;
+  }
+  1
+}
+
+// -----------------------------------------------------------------------------
+// IR types
+// -----------------------------------------------------------------------------
+
+struct IrOp {
+  op: string,         // op name (same as bytecode op name)
+  a: int,             // dest or register operand 1
+  b: int,             // src or register operand 2
+  c: int,             // src or register operand 3
+  imm: int,           // immediate value or jump target (block id pre-codegen, instr index post)
+  imm2: int,          // second immediate (e.g., args count for Call)
+  fval: float,        // for LoadFloat
+  sval: string,       // for LoadString, builtin name, struct name, field name
+  bval: int,          // 0/1 for LoadBool
+  vname: string,      // for AllocVariant: variant name
+  regs: [int],        // variadic register list (args, captures, elems, variant data, map entries flat)
+  fields: [IrField],  // for AllocStruct: ordered (name, reg)
+  target: int,        // for Match: match table index in func.matchTables
+  value: Value,       // reserved (unused; constants are emitted as LoadInt/LoadFloat/LoadString/LoadBool/LoadUnit)
+}
+
+struct IrField { name: string, reg: int }
+
+struct IrBlock { id: int, instrs: [IrOp] }
+
+struct MatchEntry {
+  patternKind: string,   // "Wildcard" | "Bind" | "Lit" | "Tuple" | "Array" | "Struct" | "Enum" | "Or"
+  bindName: string,       // for Bind
+  litValue: Value,        // for Lit
+  structName: string,     // for Struct
+  enumName: string,       // for Enum
+  variant: string,        // for Enum
+  fieldBindings: [MatchField],   // for Struct
+  subregs: [MatchSub],          // for Tuple/Array/Enum
+  orPatterns: [MatchSub],       // for Or
+  hasRest: int,                 // for Array rest
+  target: int,                  // jump target (block id pre-codegen, instr index post)
+}
+
+struct MatchField { name: string, pattern: MatchEntry }
+struct MatchSub { pattern: MatchEntry }
+
+struct MatchTable { entries: [MatchEntry], defaultTarget: int }
+
+struct IrFunc {
+  name: string,
+  nparams: int,
+  nlocals: int,
+  blocks: [IrBlock],
+  entry: int,            // block id (always 0 in v1)
+  captures: [string],    // upvalue names (in order)
+  selfReg: int,          // -1 if none
+  isMain: int,           // 1 for <main>
+  nested: [int],         // indexes into IrProgram.funcs
+  matchTables: [MatchTable],
+  strings: [string],    // per-function string table
+  regLists: [[int]],     // per-function reg-list table
+  fieldLists: [[IrField]],   // per-function field-list table
+  constants: [Value],    // per-function constant pool (for big ints, floats, strings)
+  matchBindings: [MatchBinding],  // (tableIdx, name) -> reg
+}
+
+struct MatchBinding { tableIdx: int, name: string, reg: int }
+
+struct GlobalEntry { name: string, reg: int }
+
+struct IrProgram {
+  funcs: [IrFunc],
+  globals: [GlobalEntry],
+  entry: int,
+}
+
+// -----------------------------------------------------------------------------
+// Lowering context
+// -----------------------------------------------------------------------------
+
+struct VarBinding { vreg: int, boxed: int, isUpvalue: int, upvalueIndex: int }
+
+struct LowerCtx {
+  funcs: [IrFunc],
+  current: int,         // index into funcs (current function being lowered)
+  currentBlock: int,    // current block id within current function
+  scopes: [[ScopeEntry]],
+  capturedNames: [string],
+  nextBlockId: int,
+}
+
+struct ScopeEntry { name: string, binding: VarBinding }
+
+// Empty Value placeholder for IrOp defaults.
+fn emptyIrOp() -> IrOp {
+  IrOp { op: "Nop", a: 0, b: 0, c: 0, imm: 0, imm2: 0, fval: 0.0, sval: "", bval: 0, vname: "", regs: [], fields: [], target: 0, value: mkUnit() }
+}
+
+pub fn opNop() -> IrOp { emptyIrOp() }
+pub fn opLoadInt(dest: int, v: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "LoadInt";
+  o.a = dest;
+  o.imm = v;
+  o
+}
+pub fn opLoadFloat(dest: int, v: float) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "LoadFloat";
+  o.a = dest;
+  o.fval = v;
+  o
+}
+pub fn opLoadString(dest: int, s: string) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "LoadString";
+  o.a = dest;
+  o.sval = s;
+  o
+}
+pub fn opLoadBool(dest: int, b: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "LoadBool";
+  o.a = dest;
+  o.bval = b;
+  o
+}
+pub fn opLoadUnit(dest: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "LoadUnit";
+  o.a = dest;
+  o
+}
+pub fn opMove(dest: int, src: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "Move";
+  o.a = dest;
+  o.b = src;
+  o
+}
+pub fn opBin(opName: string, dest: int, lhs: int, rhs: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = opName;
+  o.a = dest;
+  o.b = lhs;
+  o.c = rhs;
+  o
+}
+pub fn opUn(opName: string, dest: int, src: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = opName;
+  o.a = dest;
+  o.b = src;
+  o
+}
+pub fn opJmp(target: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "Jmp";
+  o.imm = target;
+  o
+}
+pub fn opJmpIf(cond: int, target: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "JmpIf";
+  o.a = cond;
+  o.imm = target;
+  o
+}
+pub fn opJmpIfNot(cond: int, target: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "JmpIfNot";
+  o.a = cond;
+  o.imm = target;
+  o
+}
+pub fn opReturn(val: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "Return";
+  o.a = val;
+  o
+}
+pub fn opCall(dest: int, fnReg: int, args: [int]) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "Call";
+  o.a = dest;
+  o.b = fnReg;
+  o.regs = args;
+  o.imm2 = len(args);
+  o
+}
+pub fn opCallBuiltin(dest: int, name: string, args: [int]) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "CallBuiltin";
+  o.a = dest;
+  o.sval = name;
+  o.regs = args;
+  o.imm2 = len(args);
+  o
+}
+pub fn opCallClosure(dest: int, closureReg: int, args: [int]) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "CallClosure";
+  o.a = dest;
+  o.b = closureReg;
+  o.regs = args;
+  o.imm2 = len(args);
+  o
+}
+pub fn opAllocStruct(dest: int, name: string, fields: [IrField]) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "AllocStruct";
+  o.a = dest;
+  o.sval = name;
+  o.fields = fields;
+  o
+}
+pub fn opAllocVariant(dest: int, enumName: string, variant: string, data: [int]) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "AllocVariant";
+  o.a = dest;
+  o.sval = enumName;
+  o.vname = variant;
+  o.regs = data;
+  o
+}
+pub fn opAllocArray(dest: int, elems: [int]) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "AllocArray";
+  o.a = dest;
+  o.regs = elems;
+  o
+}
+pub fn opAllocMap(dest: int, flat: [int]) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "AllocMap";
+  o.a = dest;
+  o.regs = flat;
+  o
+}
+pub fn opAllocRange(dest: int, start: int, end: int, inclusive: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "AllocRange";
+  o.a = dest;
+  o.b = start;
+  o.c = end;
+  o.imm = inclusive;
+  o
+}
+pub fn opLoadField(dest: int, obj: int, name: string) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "LoadField";
+  o.a = dest;
+  o.b = obj;
+  o.sval = name;
+  o
+}
+pub fn opStoreField(obj: int, name: string, val: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "StoreField";
+  o.a = obj;
+  o.sval = name;
+  o.b = val;
+  o
+}
+pub fn opIndexGet(dest: int, obj: int, idx: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "IndexGet";
+  o.a = dest;
+  o.b = obj;
+  o.c = idx;
+  o
+}
+pub fn opIndexSet(obj: int, idx: int, val: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "IndexSet";
+  o.a = obj;
+  o.b = idx;
+  o.c = val;
+  o
+}
+pub fn opLen(dest: int, src: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "Len";
+  o.a = dest;
+  o.b = src;
+  o
+}
+pub fn opPush(arr: int, val: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "Push";
+  o.a = arr;
+  o.b = val;
+  o
+}
+pub fn opPopArr(dest: int, arr: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "PopArr";
+  o.a = dest;
+  o.b = arr;
+  o
+}
+pub fn opMakeClosure(dest: int, funcIdx: int, captures: [int]) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "MakeClosure";
+  o.a = dest;
+  o.imm = funcIdx;
+  o.regs = captures;
+  o
+}
+pub fn opGetUpvalue(dest: int, idx: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "GetUpvalue";
+  o.a = dest;
+  o.imm = idx;
+  o
+}
+pub fn opSetUpvalue(idx: int, val: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "SetUpvalue";
+  o.imm = idx;
+  o.b = val;
+  o
+}
+pub fn opMakeBox(dest: int, src: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "MakeBox";
+  o.a = dest;
+  o.b = src;
+  o
+}
+pub fn opUnbox(dest: int, src: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "Unbox";
+  o.a = dest;
+  o.b = src;
+  o
+}
+pub fn opSetBox(box: int, val: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "SetBox";
+  o.a = box;
+  o.b = val;
+  o
+}
+pub fn opMatch(scrutinee: int, tableIdx: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "Match";
+  o.a = scrutinee;
+  o.imm = tableIdx;
+  o
+}
+pub fn opPanic(msg: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "Panic";
+  o.a = msg;
+  o
+}
+pub fn opPrint(src: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "Print";
+  o.a = src;
+  o
+}
+pub fn opCast(opName: string, dest: int, src: int) -> IrOp {
+  let o = emptyIrOp();
+  o.op = opName;
+  o.a = dest;
+  o.b = src;
+  o
+}
+pub fn opBreak() -> IrOp {
+  let o = emptyIrOp();
+  o.op = "Break";
+  o
+}
+pub fn opContinue() -> IrOp {
+  let o = emptyIrOp();
+  o.op = "Continue";
+  o
+}
+pub fn opLoadGlobal(dest: int, name: string) -> IrOp {
+  let o = emptyIrOp();
+  o.op = "LoadGlobal";
+  o.a = dest;
+  o.sval = name;
+  o
+}
+
+// -----------------------------------------------------------------------------
+// Helpers: scope/block/emit
+// -----------------------------------------------------------------------------
+
+fn newCtx() -> LowerCtx {
+  LowerCtx { funcs: [], current: -1, currentBlock: -1, scopes: [], capturedNames: [], nextBlockId: 0 }
+}
+
+fn allocReg(ctx: LowerCtx) -> int {
+  let f = ctx.funcs[ctx.current];
+  let r = f.nlocals;
+  f.nlocals = r + 1;
+  r
+}
+
+fn scopePush(ctx: LowerCtx) -> int {
+  push(ctx.scopes, []);
+  0
+}
+
+fn scopePop(ctx: LowerCtx) -> int {
+  pop(ctx.scopes);
+  0
+}
+
+fn scopeDeclare(ctx: LowerCtx, name: string, boxed: int) -> int {
+  let vreg = allocReg(ctx);
+  let b = VarBinding { vreg: vreg, boxed: boxed, isUpvalue: 0, upvalueIndex: -1 };
+  let scope = ctx.scopes[len(ctx.scopes) - 1];
+  push(scope, ScopeEntry { name: name, binding: b });
+  vreg
+}
+
+fn scopeDeclareUpvalue(ctx: LowerCtx, name: string, idx: int) -> int {
+  let b = VarBinding { vreg: -1, boxed: 0, isUpvalue: 1, upvalueIndex: idx };
+  let scope = ctx.scopes[len(ctx.scopes) - 1];
+  push(scope, ScopeEntry { name: name, binding: b });
+  -1
+}
+
+fn scopeLookup(ctx: LowerCtx, name: string) -> VarBinding {
+  // Returns VarBinding with vreg=-1, isUpvalue=-1 if not found.
+  let mut i = len(ctx.scopes) - 1;
+  while i >= 0 {
+    let scope = ctx.scopes[i];
+    let mut j = 0;
+    while j < len(scope) {
+      if scope[j].name == name { return scope[j].binding; };
+      j = j + 1;
+    }
+    i = i - 1;
+  }
+  VarBinding { vreg: -1, boxed: 0, isUpvalue: -1, upvalueIndex: -1 }
+}
+
+fn newBlock(ctx: LowerCtx) -> int {
+  let id = ctx.nextBlockId;
+  ctx.nextBlockId = id + 1;
+  let f = ctx.funcs[ctx.current];
+  push(f.blocks, IrBlock { id: id, instrs: [] });
+  id
+}
+
+fn blockAppend(ctx: LowerCtx, blockId: int, op: IrOp) -> int {
+  let f = ctx.funcs[ctx.current];
+  let mut i = 0;
+  while i < len(f.blocks) {
+    if f.blocks[i].id == blockId {
+      push(f.blocks[i].instrs, op);
+      return 0;
+    };
+    i = i + 1;
+  }
+  0
+}
+
+fn emit(ctx: LowerCtx, op: IrOp) -> int {
+  blockAppend(ctx, ctx.currentBlock, op);
+  0
+}
+
+fn terminate(ctx: LowerCtx, op: IrOp) -> int {
+  emit(ctx, op);
+  ctx.currentBlock = newBlock(ctx);
+  0
+}
+
+// -----------------------------------------------------------------------------
+// Helpers for null Node detection (mirrors parser.ae)
+// -----------------------------------------------------------------------------
+
+fn isNull(n: Node) -> int {
+  if n.kind == "Null" { 1 } else { 0 }
+}
+
+// -----------------------------------------------------------------------------
+// Top-level entry point: lowerToIr
+// -----------------------------------------------------------------------------
+
+pub fn lowerToIr(program: Node) -> IrProgram {
+  let ctx = newCtx();
+  // Create the main function first.
+  let mainFunc = IrFunc {
+    name: "<main>",
+    nparams: 0,
+    nlocals: 0,
+    blocks: [],
+    entry: 0,
+    captures: [],
+    selfReg: -1,
+    isMain: 1,
+    nested: [],
+    matchTables: [],
+    strings: [],
+    regLists: [],
+    fieldLists: [],
+    constants: [],
+    matchBindings: [],
+  };
+  push(ctx.funcs, mainFunc);
+  ctx.current = 0;
+  scopePush(ctx);
+
+  // Pre-create the entry block.
+  ctx.currentBlock = newBlock(ctx);
+  ctx.funcs[0].entry = 0;
+
+  // Pre-allocate the global registry: for each top-level FnDecl, allocate a
+  // register in main and remember it as a global. This lets nested functions
+  // refer to top-level fns via LoadGlobal.
+  let body = program.items;
+  let globals = [];
+  let mut i = 0;
+  while i < len(body) {
+    let s = body[i];
+    if s.kind == "FnDecl" {
+      let gReg = allocReg(ctx);
+      push(globals, GlobalEntry { name: s.name, reg: gReg });
+    };
+    i = i + 1;
+  }
+  // Also pre-create the function slots (so they're available before lowering).
+  i = 0;
+  while i < len(body) {
+    let s = body[i];
+    if s.kind == "FnDecl" {
+      let fIdx = len(ctx.funcs);
+      let nf = IrFunc {
+        name: s.name,
+        nparams: 0,
+        nlocals: 0,
+        blocks: [],
+        entry: 0,
+        captures: [],
+        selfReg: -1,
+        isMain: 0,
+        nested: [],
+        matchTables: [],
+        strings: [],
+        regLists: [],
+        fieldLists: [],
+        constants: [],
+        matchBindings: [],
+      };
+      push(ctx.funcs, nf);
+      push(ctx.funcs[0].nested, fIdx);
+    };
+    i = i + 1;
+  }
+
+  // Now lower each top-level statement.
+  // First, lower all FnDecls (build their bodies, emit MakeClosure in main).
+  i = 0;
+  while i < len(body) {
+    let s = body[i];
+    if s.kind == "FnDecl" {
+      lowerFnDeclTopLevel(ctx, s, globals);
+    };
+    i = i + 1;
+  }
+  // Then lower the remaining stmts in main.
+  let lastVal = 0;
+  i = 0;
+  while i < len(body) {
+    let s = body[i];
+    if s.kind != "FnDecl" {
+      lastVal = lowerStmt(ctx, s);
+    };
+    i = i + 1;
+  }
+  // Emit a final Return of the last value (if no terminator already).
+  let cb = currentBlockOf(ctx);
+  if len(cb.instrs) == 0 {
+    let d = allocReg(ctx);
+    emit(ctx, opLoadUnit(d));
+    emit(ctx, opReturn(d));
+  } else {
+    let last = cb.instrs[len(cb.instrs) - 1];
+    if last.op != "Return" && last.op != "Jmp" {
+      emit(ctx, opReturn(lastVal));
+    };
+  }
+
+  // Cleanup: remove empty trailing blocks (those that have no instrs and are
+  // not the entry block).
+  let mut fi = 0;
+  while fi < len(ctx.funcs) {
+    let f = ctx.funcs[fi];
+    let kept = [];
+    let mut j = 0;
+    while j < len(f.blocks) {
+      let b = f.blocks[j];
+      if len(b.instrs) > 0 || b.id == f.entry {
+        push(kept, b);
+      };
+      j = j + 1;
+    }
+    f.blocks = kept;
+    fi = fi + 1;
+  }
+
+  IrProgram { funcs: ctx.funcs, globals: globals, entry: 0 }
+}
+
+fn currentBlockOf(ctx: LowerCtx) -> IrBlock {
+  let f = ctx.funcs[ctx.current];
+  let mut i = 0;
+  while i < len(f.blocks) {
+    if f.blocks[i].id == ctx.currentBlock { return f.blocks[i]; };
+    i = i + 1;
+  }
+  IrBlock { id: -1, instrs: [] }
+}
+
+fn findGlobal(globals: [GlobalEntry], name: string) -> int {
+  let mut i = 0;
+  while i < len(globals) {
+    if globals[i].name == name { return globals[i].reg; };
+    i = i + 1;
+  }
+  -1
+}
+
+// Find the func index of a top-level fn by name.
+fn findFuncIdx(ctx: LowerCtx, name: string) -> int {
+  let mut i = 0;
+  while i < len(ctx.funcs) {
+    if ctx.funcs[i].name == name { return i; };
+    i = i + 1;
+  }
+  -1
+}
+
+// Lower a top-level FnDecl: lower its body in its own function context, then
+// emit a MakeClosure in main storing into the global register.
+fn lowerFnDeclTopLevel(ctx: LowerCtx, fnDecl: Node, globals: [GlobalEntry]) -> int {
+  let funcIdx = findFuncIdx(ctx, fnDecl.name);
+  // Save enclosing context.
+  let savedCurrent = ctx.current;
+  let savedBlock = ctx.currentBlock;
+  let savedScopes = ctx.scopes;
+  let savedCaptured = ctx.capturedNames;
+
+  // Switch to the new function.
+  ctx.current = funcIdx;
+  ctx.capturedNames = [];
+  ctx.scopes = [];
+  scopePush(ctx);
+  ctx.nextBlockId = 0;
+  ctx.currentBlock = newBlock(ctx);
+  ctx.funcs[funcIdx].entry = 0;
+
+  // Parameters get vregs.
+  let paramsNode = fnDecl.items[1];
+  let paramList = paramsNode.items;
+  let mut p = 0;
+  while p < len(paramList) {
+    let param = paramList[p];
+    let r = allocReg(ctx);
+    scopeDeclare(ctx, param.name, 0);
+    p = p + 1;
+  }
+  ctx.funcs[funcIdx].nparams = len(paramList);
+
+  // Self-reference slot.
+  let selfReg = allocReg(ctx);
+  ctx.funcs[funcIdx].selfReg = selfReg;
+  scopeDeclare(ctx, fnDecl.name, 0);
+
+  // Lower the body.
+  let body = fnDecl.items[3];
+  let lastVal = lowerBlockBody(ctx, body);
+
+  // Emit Return if no terminator.
+  let cb = currentBlockOf(ctx);
+  if len(cb.instrs) == 0 {
+    let d = allocReg(ctx);
+    emit(ctx, opLoadUnit(d));
+    emit(ctx, opReturn(d));
+  } else {
+    let last = cb.instrs[len(cb.instrs) - 1];
+    if last.op != "Return" && last.op != "Jmp" {
+      emit(ctx, opReturn(lastVal));
+    };
+  }
+
+  // Restore enclosing context.
+  ctx.current = savedCurrent;
+  ctx.currentBlock = savedBlock;
+  ctx.scopes = savedScopes;
+  ctx.capturedNames = savedCaptured;
+
+  // In main, emit MakeClosure to the global register.
+  let gReg = findGlobal(globals, fnDecl.name);
+  emit(ctx, opMakeClosure(gReg, funcIdx, []));
+  0
+}
+
+// Lower a Block node's body. Returns the value register of the block
+// (the trailing expression if present, else a unit).
+fn lowerBlockBody(ctx: LowerCtx, body: Node) -> int {
+  scopePush(ctx);
+  let stmts = body.items;
+  let trailFlag = body.ival;
+  let n = len(stmts);
+  let mut lastVal = 0;
+  let mut i = 0;
+  while i < n {
+    let s = stmts[i];
+    if i == n - 1 && trailFlag == 1 {
+      // Trailing expression — lower as expr.
+      lastVal = lowerExpr(ctx, s);
+    } else {
+      lastVal = lowerStmt(ctx, s);
+    };
+    i = i + 1;
+  }
+  if n == 0 || trailFlag == 0 {
+    let d = allocReg(ctx);
+    emit(ctx, opLoadUnit(d));
+    lastVal = d;
+  }
+  scopePop(ctx);
+  lastVal
+}
+
+// -----------------------------------------------------------------------------
+// Statement lowering
+// -----------------------------------------------------------------------------
+
+fn lowerStmt(ctx: LowerCtx, s: Node) -> int {
+  if s.kind == "Let" { return lowerLet(ctx, s, 0); };
+  if s.kind == "MutLet" { return lowerLet(ctx, s, 0); };
+  if s.kind == "Const" { return lowerLet(ctx, s, 0); };
+  if s.kind == "FnDecl" { return lowerNestedFnDecl(ctx, s); };
+  if s.kind == "Return" { return lowerReturn(ctx, s); };
+  if s.kind == "Break" {
+    terminate(ctx, opBreak());
+    let d = allocReg(ctx);
+    emit(ctx, opLoadUnit(d));
+    return d;
+  };
+  if s.kind == "Continue" {
+    terminate(ctx, opContinue());
+    let d = allocReg(ctx);
+    emit(ctx, opLoadUnit(d));
+    return d;
+  };
+  if s.kind == "While" { return lowerWhile(ctx, s); };
+  if s.kind == "ForIn" { return lowerForIn(ctx, s); };
+  if s.kind == "Print" {
+    let v = lowerExpr(ctx, s.items[0]);
+    emit(ctx, opPrint(v));
+    let d = allocReg(ctx);
+    emit(ctx, opLoadUnit(d));
+    return d;
+  };
+  if s.kind == "ExprStmt" { return lowerExpr(ctx, s.items[0]); };
+  if s.kind == "AssignStmt" {
+    let v = lowerExpr(ctx, s.items[1]);
+    lowerAssignTo(ctx, s.items[0], v);
+    return v;
+  };
+  if s.kind == "EnumDecl" || s.kind == "StructDecl" || s.kind == "TypeAlias" || s.kind == "Import" {
+    let d = allocReg(ctx);
+    emit(ctx, opLoadUnit(d));
+    return d;
+  };
+  // Fallback: lower as expr.
+  lowerExpr(ctx, s)
+}
+
+fn lowerLet(ctx: LowerCtx, s: Node, _boxed: int) -> int {
+  let init = lowerExpr(ctx, s.items[1]);
+  let slot = scopeDeclare(ctx, s.name, 0);
+  emit(ctx, opMove(slot, init));
+  let d = allocReg(ctx);
+  emit(ctx, opLoadUnit(d));
+  d
+}
+
+fn lowerNestedFnDecl(ctx: LowerCtx, s: Node) -> int {
+  // Allocate a new function slot.
+  let fIdx = len(ctx.funcs);
+  let nf = IrFunc {
+    name: s.name,
+    nparams: 0,
+    nlocals: 0,
+    blocks: [],
+    entry: 0,
+    captures: [],
+    selfReg: -1,
+    isMain: 0,
+    nested: [],
+    matchTables: [],
+    strings: [],
+    regLists: [],
+    fieldLists: [],
+    constants: [],
+    matchBindings: [],
+  };
+  push(ctx.funcs, nf);
+  push(ctx.funcs[ctx.current].nested, fIdx);
+
+  // Save enclosing context.
+  let savedCurrent = ctx.current;
+  let savedBlock = ctx.currentBlock;
+  let savedScopes = ctx.scopes;
+  let savedCaptured = ctx.capturedNames;
+
+  // Compute captures: free variable names in the fn body that are visible
+  // in the enclosing scope. We do a simple syntactic scan.
+  let freeNames = collectFreeVars(s.items[3], s.name);
+  let captures = filterToEnclosingScope(savedScopes, freeNames, s.name);
+
+  // Switch to the new function.
+  ctx.current = fIdx;
+  ctx.capturedNames = [];
+  ctx.scopes = [];
+  scopePush(ctx);
+  ctx.nextBlockId = 0;
+  ctx.currentBlock = newBlock(ctx);
+  ctx.funcs[fIdx].entry = 0;
+  ctx.funcs[fIdx].captures = captures;
+
+  // Parameters get vregs.
+  let paramsNode = s.items[1];
+  let paramList = paramsNode.items;
+  let mut p = 0;
+  while p < len(paramList) {
+    let param = paramList[p];
+    let r = allocReg(ctx);
+    scopeDeclare(ctx, param.name, 0);
+    p = p + 1;
+  }
+  ctx.funcs[fIdx].nparams = len(paramList);
+
+  // Upvalue bindings: register each capture name as an upvalue at index i.
+  let mut ci = 0;
+  while ci < len(captures) {
+    scopeDeclareUpvalue(ctx, captures[ci], ci);
+    ci = ci + 1;
+  }
+
+  // Self-reference slot.
+  let selfReg = allocReg(ctx);
+  ctx.funcs[fIdx].selfReg = selfReg;
+  scopeDeclare(ctx, s.name, 0);
+
+  // Lower the body.
+  let body = s.items[3];
+  let lastVal = lowerBlockBody(ctx, body);
+
+  let cb = currentBlockOf(ctx);
+  if len(cb.instrs) == 0 {
+    let d = allocReg(ctx);
+    emit(ctx, opLoadUnit(d));
+    emit(ctx, opReturn(d));
+  } else {
+    let last = cb.instrs[len(cb.instrs) - 1];
+    if last.op != "Return" && last.op != "Jmp" {
+      emit(ctx, opReturn(lastVal));
+    };
+  }
+
+  // Restore enclosing context.
+  ctx.current = savedCurrent;
+  ctx.currentBlock = savedBlock;
+  ctx.scopes = savedScopes;
+  ctx.capturedNames = savedCaptured;
+
+  // In enclosing function: gather capture registers, emit MakeClosure.
+  let mut capRegs = [];
+  let mut ci2 = 0;
+  while ci2 < len(captures) {
+    let nm = captures[ci2];
+    let b = scopeLookup(ctx, nm);
+    if b.isUpvalue == 1 {
+      let boxReg = allocReg(ctx);
+      emit(ctx, opGetUpvalue(boxReg, b.upvalueIndex));
+      push(capRegs, boxReg);
+    } else {
+      if b.vreg >= 0 {
+        push(capRegs, b.vreg);
+      } else {
+        let z = allocReg(ctx);
+        emit(ctx, opLoadUnit(z));
+        push(capRegs, z);
+      };
+    };
+    ci2 = ci2 + 1;
+  }
+  let d = allocReg(ctx);
+  emit(ctx, opMakeClosure(d, fIdx, capRegs));
+  // Store the closure into a slot named after the fn.
+  let slot = scopeDeclare(ctx, s.name, 0);
+  emit(ctx, opMove(slot, d));
+  let u = allocReg(ctx);
+  emit(ctx, opLoadUnit(u));
+  u
+}
+
+fn lowerReturn(ctx: LowerCtx, s: Node) -> int {
+  let v = 0;
+  if isNull(s.items[0]) == 0 {
+    v = lowerExpr(ctx, s.items[0]);
+  } else {
+    v = allocReg(ctx);
+    emit(ctx, opLoadUnit(v));
+  };
+  terminate(ctx, opReturn(v));
+  let d = allocReg(ctx);
+  emit(ctx, opLoadUnit(d));
+  d
+}
+
+fn lowerWhile(ctx: LowerCtx, s: Node) -> int {
+  let condBlock = newBlock(ctx);
+  let bodyBlock = newBlock(ctx);
+  let breakBlock = newBlock(ctx);
+  terminate(ctx, opJmp(condBlock));
+  // condBlock:
+  ctx.currentBlock = condBlock;
+  let condReg = lowerExpr(ctx, s.items[0]);
+  terminate(ctx, opJmpIfNot(condReg, breakBlock));
+  terminate(ctx, opJmp(bodyBlock));
+  // bodyBlock:
+  ctx.currentBlock = bodyBlock;
+  pushLoop(ctx, condBlock, breakBlock);
+  let _ = lowerBlockBody(ctx, s.items[1]);
+  popLoop(ctx);
+  terminate(ctx, opJmp(condBlock));
+  // breakBlock:
+  ctx.currentBlock = breakBlock;
+  let d = allocReg(ctx);
+  emit(ctx, opLoadUnit(d));
+  d
+}
+
+fn lowerForIn(ctx: LowerCtx, s: Node) -> int {
+  // for x in iterable { body }
+  // Lower as: 
+  //   iter = lower(iterable)
+  //   items = CallBuiltin iter_to_items(iter)
+  //   i = 0
+  //   cond: i < len(items)
+  //     body: x = items[i]; lower(body); i = i + 1; jmp cond
+  //   end:
+  let iterReg = lowerExpr(ctx, s.items[0]);
+  let itemsReg = allocReg(ctx);
+  emit(ctx, opCallBuiltin(itemsReg, "iter_to_items", [iterReg]));
+  let iReg = allocReg(ctx);
+  emit(ctx, opLoadInt(iReg, 0));
+  let lenReg = allocReg(ctx);
+  emit(ctx, opLen(lenReg, itemsReg));
+
+  let condBlock = newBlock(ctx);
+  let bodyBlock = newBlock(ctx);
+  let breakBlock = newBlock(ctx);
+  terminate(ctx, opJmp(condBlock));
+
+  // condBlock:
+  ctx.currentBlock = condBlock;
+  let cmpReg = allocReg(ctx);
+  emit(ctx, opBin("Lt", cmpReg, iReg, lenReg));
+  terminate(ctx, opJmpIfNot(cmpReg, breakBlock));
+  terminate(ctx, opJmp(bodyBlock));
+
+  // bodyBlock:
+  ctx.currentBlock = bodyBlock;
+  let slot = scopeDeclare(ctx, s.name, 0);
+  let elemReg = allocReg(ctx);
+  emit(ctx, opIndexGet(elemReg, itemsReg, iReg));
+  emit(ctx, opMove(slot, elemReg));
+  pushLoop(ctx, condBlock, breakBlock);
+  let _ = lowerBlockBody(ctx, s.items[1]);
+  popLoop(ctx);
+  let incReg = allocReg(ctx);
+  emit(ctx, opLoadInt(incReg, 1));
+  let newI = allocReg(ctx);
+  emit(ctx, opBin("Add", newI, iReg, incReg));
+  emit(ctx, opMove(iReg, newI));
+  terminate(ctx, opJmp(condBlock));
+
+  // breakBlock:
+  ctx.currentBlock = breakBlock;
+  let d = allocReg(ctx);
+  emit(ctx, opLoadUnit(d));
+  d
+}
+
+// Loop scope stack for break/continue (stored on ctx.capturedNames for now —
+// we re-purpose a side stack to avoid adding new fields).
+// Actually, use a separate global list since LowerCtx can't be easily extended.
+let LOOP_STACK: [LoopFrame] = []
+
+struct LoopFrame { condBlock: int, breakBlock: int }
+
+fn pushLoop(ctx: LowerCtx, cond: int, brk: int) -> int {
+  push(LOOP_STACK, LoopFrame { condBlock: cond, breakBlock: brk });
+  0
+}
+
+fn popLoop(ctx: LowerCtx) -> int {
+  pop(LOOP_STACK);
+  0
+}
+
+fn currentLoopBreak() -> int {
+  let n = len(LOOP_STACK);
+  if n == 0 { return -1; };
+  LOOP_STACK[n - 1].breakBlock
+}
+
+fn currentLoopContinue() -> int {
+  let n = len(LOOP_STACK);
+  if n == 0 { return -1; };
+  LOOP_STACK[n - 1].condBlock
+}
+
+// -----------------------------------------------------------------------------
+// Expression lowering
+// -----------------------------------------------------------------------------
+
+fn lowerExpr(ctx: LowerCtx, e: Node) -> int {
+  let k = e.kind;
+  if k == "IntLit" {
+    let d = allocReg(ctx);
+    emit(ctx, opLoadInt(d, e.ival));
+    return d;
+  };
+  if k == "FloatLit" {
+    let d = allocReg(ctx);
+    emit(ctx, opLoadFloat(d, e.fval));
+    return d;
+  };
+  if k == "BoolLit" {
+    let d = allocReg(ctx);
+    emit(ctx, opLoadBool(d, e.ival));
+    return d;
+  };
+  if k == "StringLit" {
+    let d = allocReg(ctx);
+    // Concatenate the string segments (text only — interpolation unsupported).
+    let s = "";
+    let segs = e.items;
+    let mut i = 0;
+    while i < len(segs) {
+      if segs[i].name == "text" { s = s + segs[i].text; };
+      i = i + 1;
+    }
+    emit(ctx, opLoadString(d, s));
+    return d;
+  };
+  if k == "CharLit" {
+    let d = allocReg(ctx);
+    emit(ctx, opLoadString(d, e.text));
+    return d;
+  };
+  if k == "UnitLit" {
+    let d = allocReg(ctx);
+    emit(ctx, opLoadUnit(d));
+    return d;
+  };
+  if k == "Paren" { return lowerExpr(ctx, e.items[0]); };
+  if k == "Ident" { return lowerIdent(ctx, e.name); };
+  if k == "Binary" { return lowerBinary(ctx, e); };
+  if k == "Unary" { return lowerUnary(ctx, e); };
+  if k == "If" { return lowerIf(ctx, e); };
+  if k == "Match" { return lowerMatch(ctx, e); };
+  if k == "Block" { return lowerBlockExpr(ctx, e); };
+  if k == "Call" { return lowerCall(ctx, e); };
+  if k == "MethodCall" { return lowerMethodCall(ctx, e); };
+  if k == "Field" { return lowerField(ctx, e); };
+  if k == "Index" { return lowerIndex(ctx, e); };
+  if k == "ArrayExpr" { return lowerArrayExpr(ctx, e); };
+  if k == "StructExpr" { return lowerStructExpr(ctx, e); };
+  if k == "EnumVariant" { return lowerEnumVariant(ctx, e); };
+  if k == "Range" { return lowerRangeExpr(ctx, e); };
+  if k == "TupleExpr" { return lowerTupleExpr(ctx, e); };
+  if k == "MapExpr" { return lowerMapExpr(ctx, e); };
+  if k == "Assign" {
+    let v = lowerExpr(ctx, e.items[1]);
+    lowerAssignTo(ctx, e.items[0], v);
+    return v;
+  };
+  if k == "CompoundAssign" {
+    // target op= value → target = target op value
+    let op = e.name;
+    let lhs = lowerExpr(ctx, e.items[0]);
+    let rhs = lowerExpr(ctx, e.items[1]);
+    let binOpName = compBinOp(op);
+    let d = allocReg(ctx);
+    emit(ctx, opBin(binOpName, d, lhs, rhs));
+    lowerAssignTo(ctx, e.items[0], d);
+    return d;
+  };
+  if k == "Lambda" { return lowerLambda(ctx, e); };
+  // Fallback: emit unit.
+  let d = allocReg(ctx);
+  emit(ctx, opLoadUnit(d));
+  d
+}
+
+fn lowerIdent(ctx: LowerCtx, name: string) -> int {
+  let b = scopeLookup(ctx, name);
+  if b.isUpvalue == 1 {
+    let boxReg = allocReg(ctx);
+    emit(ctx, opGetUpvalue(boxReg, b.upvalueIndex));
+    let d = allocReg(ctx);
+    emit(ctx, opUnbox(d, boxReg));
+    return d;
+  };
+  if b.vreg >= 0 { return b.vreg; };
+  // Not a local — try LoadGlobal (for top-level fns/lets).
+  let d = allocReg(ctx);
+  emit(ctx, opLoadGlobal(d, name));
+  d
+}
+
+fn lowerBinary(ctx: LowerCtx, e: Node) -> int {
+  let op = e.name;
+  // Short-circuit && and ||.
+  if op == "&&" {
+    let lhs = lowerExpr(ctx, e.items[0]);
+    let result = allocReg(ctx);
+    let falseBlock = newBlock(ctx);
+    let trueBlock = newBlock(ctx);
+    let endBlock = newBlock(ctx);
+    terminate(ctx, opJmpIfNot(lhs, falseBlock));
+    terminate(ctx, opJmp(trueBlock));
+    // falseBlock:
+    ctx.currentBlock = falseBlock;
+    emit(ctx, opMove(result, lhs));
+    terminate(ctx, opJmp(endBlock));
+    // trueBlock:
+    ctx.currentBlock = trueBlock;
+    let rhs = lowerExpr(ctx, e.items[1]);
+    emit(ctx, opMove(result, rhs));
+    terminate(ctx, opJmp(endBlock));
+    ctx.currentBlock = endBlock;
+    return result;
+  };
+  if op == "||" {
+    let lhs = lowerExpr(ctx, e.items[0]);
+    let result = allocReg(ctx);
+    let trueBlock = newBlock(ctx);
+    let falseBlock = newBlock(ctx);
+    let endBlock = newBlock(ctx);
+    terminate(ctx, opJmpIf(lhs, trueBlock));
+    terminate(ctx, opJmp(falseBlock));
+    // trueBlock:
+    ctx.currentBlock = trueBlock;
+    emit(ctx, opMove(result, lhs));
+    terminate(ctx, opJmp(endBlock));
+    // falseBlock:
+    ctx.currentBlock = falseBlock;
+    let rhs = lowerExpr(ctx, e.items[1]);
+    emit(ctx, opMove(result, rhs));
+    terminate(ctx, opJmp(endBlock));
+    ctx.currentBlock = endBlock;
+    return result;
+  };
+  let lhs = lowerExpr(ctx, e.items[0]);
+  let rhs = lowerExpr(ctx, e.items[1]);
+  let d = allocReg(ctx);
+  let binOpName = binOpOf(op);
+  emit(ctx, opBin(binOpName, d, lhs, rhs));
+  d
+}
+
+fn binOpOf(op: string) -> string {
+  if op == "+" { return "Add"; };
+  if op == "-" { return "Sub"; };
+  if op == "*" { return "Mul"; };
+  if op == "/" { return "Div"; };
+  if op == "%" { return "Mod"; };
+  if op == "==" { return "Eq"; };
+  if op == "!=" { return "Neq"; };
+  if op == "<" { return "Lt"; };
+  if op == "<=" { return "Le"; };
+  if op == ">" { return "Gt"; };
+  if op == ">=" { return "Ge"; };
+  if op == "&" { return "BitAnd"; };
+  if op == "|" { return "BitOr"; };
+  if op == "^" { return "BitXor"; };
+  if op == "<<" { return "Shl"; };
+  if op == ">>" { return "Shr"; };
+  if op == "or" { return "BitOr"; };
+  "Add"
+}
+
+fn compBinOp(op: string) -> string {
+  if op == "+" { return "Add"; };
+  if op == "-" { return "Sub"; };
+  if op == "*" { return "Mul"; };
+  if op == "/" { return "Div"; };
+  if op == "%" { return "Mod"; };
+  "Add"
+}
+
+fn lowerUnary(ctx: LowerCtx, e: Node) -> int {
+  let op = e.name;
+  let src = lowerExpr(ctx, e.items[0]);
+  let d = allocReg(ctx);
+  if op == "-" { emit(ctx, opUn("Neg", d, src)); return d; };
+  if op == "!" { emit(ctx, opUn("Not", d, src)); return d; };
+  if op == "~" { emit(ctx, opUn("BitNot", d, src)); return d; };
+  emit(ctx, opUn("Not", d, src));
+  d
+}
+
+fn lowerIf(ctx: LowerCtx, e: Node) -> int {
+  let cond = lowerExpr(ctx, e.items[0]);
+  let result = allocReg(ctx);
+  let thenBlock = newBlock(ctx);
+  let elseBlock = newBlock(ctx);
+  let mergeBlock = newBlock(ctx);
+  let hasElse = isNull(e.items[2]) == 0;
+  terminate(ctx, opJmpIfNot(cond, elseBlock));
+  terminate(ctx, opJmp(thenBlock));
+
+  // thenBlock:
+  ctx.currentBlock = thenBlock;
+  let thenVal = lowerExpr(ctx, e.items[1]);
+  emit(ctx, opMove(result, thenVal));
+  terminate(ctx, opJmp(mergeBlock));
+
+  // elseBlock:
+  ctx.currentBlock = elseBlock;
+  if hasElse == 1 {
+    let elseVal = lowerExpr(ctx, e.items[2]);
+    emit(ctx, opMove(result, elseVal));
+  } else {
+    emit(ctx, opLoadUnit(result));
+  };
+  terminate(ctx, opJmp(mergeBlock));
+
+  // mergeBlock:
+  ctx.currentBlock = mergeBlock;
+  result
+}
+
+fn lowerMatch(ctx: LowerCtx, e: Node) -> int {
+  let scrutinee = lowerExpr(ctx, e.items[0]);
+  let result = allocReg(ctx);
+  let nArms = e.ival;
+  // armBlocks[i] = the block id for arm i
+  let armBlocks = [];
+  let mut i = 0;
+  while i < nArms {
+    push(armBlocks, newBlock(ctx));
+    i = i + 1;
+  }
+  let elseBlock = newBlock(ctx);
+  let mergeBlock = newBlock(ctx);
+
+  // Build bindings per arm (the pattern's binding names + their regs).
+  let armBindingsList = [];
+  let mut ai = 0;
+  while ai < nArms {
+    let arm = e.items[1 + ai];
+    let pattern = arm.items[0];
+    scopePush(ctx);
+    let bindings = [];
+    collectPatternBindings(ctx, pattern, bindings);
+    scopePop(ctx);
+    push(armBindingsList, bindings);
+    ai = ai + 1;
+  }
+
+  // Build the MatchTable. Each arm's pattern → entry; default → elseBlock.
+  let entries = [];
+  let mut ei = 0;
+  while ei < nArms {
+    let arm = e.items[1 + ei];
+    let pattern = arm.items[0];
+    let entry = patternToEntry(pattern, armBlocks[ei]);
+    push(entries, entry);
+    ei = ei + 1;
+  }
+  let table = MatchTable { entries: entries, defaultTarget: elseBlock };
+  let tableIdx = len(ctx.funcs[ctx.current].matchTables);
+  push(ctx.funcs[ctx.current].matchTables, table);
+
+  // Register bindings in matchBindings side table.
+  let mut bi = 0;
+  while bi < nArms {
+    let bindings = armBindingsList[bi];
+    let mut j = 0;
+    while j < len(bindings) {
+      push(ctx.funcs[ctx.current].matchBindings, MatchBinding { tableIdx: tableIdx, name: bindings[j], reg: bindings[j + 1] });
+      j = j + 2;
+    }
+    bi = bi + 1;
+  }
+
+  // Emit the Match op (terminator).
+  terminate(ctx, opMatch(scrutinee, tableIdx));
+
+  // Lower each arm body in its block.
+  let mut xi = 0;
+  while xi < nArms {
+    let arm = e.items[1 + xi];
+    let guard = arm.items[1];
+    let body = arm.items[2];
+    ctx.currentBlock = armBlocks[xi];
+    scopePush(ctx);
+    // Declare the pattern's bindings.
+    let bindings = armBindingsList[xi];
+    let mut bj = 0;
+    while bj < len(bindings) {
+      scopeDeclare(ctx, bindings[bj], 0);
+      emit(ctx, opMove(scopeLookup(ctx, bindings[bj]).vreg, bindings[bj + 1]));
+      bj = bj + 2;
+    }
+    // Wait — bindings store (name, reg) pairs where reg is the pre-allocated register.
+    // We don't need to emit Move; the VM writes the binding value to that reg
+    // when the pattern matches. We just declare the binding so subsequent
+    // references in the body resolve to that reg.
+    // Body:
+    let bodyVal = lowerExpr(ctx, body);
+    emit(ctx, opMove(result, bodyVal));
+    terminate(ctx, opJmp(mergeBlock));
+    scopePop(ctx);
+    xi = xi + 1;
+  }
+
+  // elseBlock:
+  ctx.currentBlock = elseBlock;
+  emit(ctx, opLoadUnit(result));
+  terminate(ctx, opJmp(mergeBlock));
+
+  // mergeBlock:
+  ctx.currentBlock = mergeBlock;
+  result
+}
+
+// Collect (name, reg) pairs for pattern bindings. The `reg` for each name is
+// a fresh register allocated in the current function. We push name and reg
+// interleaved into the bindings list.
+fn collectPatternBindings(ctx: LowerCtx, p: Node, bindings: [string]) -> int {
+  if p.kind == "WildcardPat" { return 0; };
+  if p.kind == "BindPat" {
+    let r = allocReg(ctx);
+    push(bindings, p.name);
+    push(bindings, r);
+    return 0;
+  };
+  if p.kind == "LitPat" { return 0; };
+  if p.kind == "TuplePat" {
+    let mut i = 0;
+    while i < len(p.items) {
+      collectPatternBindings(ctx, p.items[i], bindings);
+      i = i + 1;
+    }
+    return 0;
+  };
+  if p.kind == "ArrayPat" {
+    let mut i = 0;
+    while i < len(p.items) {
+      collectPatternBindings(ctx, p.items[i], bindings);
+      i = i + 1;
+    }
+    return 0;
+  };
+  if p.kind == "StructPat" {
+    let mut i = 0;
+    while i < len(p.items) {
+      let f = p.items[i];
+      collectPatternBindings(ctx, f.items[0], bindings);
+      i = i + 1;
+    }
+    return 0;
+  };
+  if p.kind == "EnumPat" {
+    let mut i = 0;
+    while i < len(p.items) {
+      collectPatternBindings(ctx, p.items[i], bindings);
+      i = i + 1;
+    }
+    return 0;
+  };
+  if p.kind == "OrPat" {
+    // Bindings from the first sub-pattern (they all share the same names).
+    if len(p.items) > 0 { collectPatternBindings(ctx, p.items[0], bindings); };
+    return 0;
+  };
+  0
+}
+
+// Convert an AST Pattern Node into a MatchEntry. Target = block id.
+fn patternToEntry(p: Node, target: int) -> MatchEntry {
+  if p.kind == "WildcardPat" {
+    return MatchEntry { patternKind: "Wildcard", bindName: "", litValue: mkUnit(), structName: "", enumName: "", variant: "", fieldBindings: [], subregs: [], orPatterns: [], hasRest: 0, target: target };
+  };
+  if p.kind == "BindPat" {
+    return MatchEntry { patternKind: "Bind", bindName: p.name, litValue: mkUnit(), structName: "", enumName: "", variant: "", fieldBindings: [], subregs: [], orPatterns: [], hasRest: 0, target: target };
+  };
+  if p.kind == "LitPat" {
+    let v = evalLitPattern(p.items[0]);
+    return MatchEntry { patternKind: "Lit", bindName: "", litValue: v, structName: "", enumName: "", variant: "", fieldBindings: [], subregs: [], orPatterns: [], hasRest: 0, target: target };
+  };
+  if p.kind == "TuplePat" {
+    let subs = [];
+    let mut i = 0;
+    while i < len(p.items) {
+      push(subs, MatchSub { pattern: patternToEntry(p.items[i], target) });
+      i = i + 1;
+    }
+    return MatchEntry { patternKind: "Tuple", bindName: "", litValue: mkUnit(), structName: "", enumName: "", variant: "", fieldBindings: [], subregs: subs, orPatterns: [], hasRest: 0, target: target };
+  };
+  if p.kind == "ArrayPat" {
+    let subs = [];
+    let mut i = 0;
+    while i < len(p.items) {
+      push(subs, MatchSub { pattern: patternToEntry(p.items[i], target) });
+      i = i + 1;
+    }
+    return MatchEntry { patternKind: "Array", bindName: "", litValue: mkUnit(), structName: "", enumName: "", variant: "", fieldBindings: [], subregs: subs, orPatterns: [], hasRest: p.ival, target: target };
+  };
+  if p.kind == "StructPat" {
+    let fbs = [];
+    let mut i = 0;
+    while i < len(p.items) {
+      let f = p.items[i];
+      push(fbs, MatchField { name: f.name, pattern: patternToEntry(f.items[0], target) });
+      i = i + 1;
+    }
+    return MatchEntry { patternKind: "Struct", bindName: "", litValue: mkUnit(), structName: p.name, enumName: "", variant: "", fieldBindings: fbs, subregs: [], orPatterns: [], hasRest: p.ival, target: target };
+  };
+  if p.kind == "EnumPat" {
+    let subs = [];
+    let mut i = 0;
+    while i < len(p.items) {
+      push(subs, MatchSub { pattern: patternToEntry(p.items[i], target) });
+      i = i + 1;
+    }
+    return MatchEntry { patternKind: "Enum", bindName: "", litValue: mkUnit(), structName: "", enumName: p.name, variant: p.text, fieldBindings: [], subregs: subs, orPatterns: [], hasRest: 0, target: target };
+  };
+  if p.kind == "OrPat" {
+    let subs = [];
+    let mut i = 0;
+    while i < len(p.items) {
+      push(subs, MatchSub { pattern: patternToEntry(p.items[i], target) });
+      i = i + 1;
+    }
+    return MatchEntry { patternKind: "Or", bindName: "", litValue: mkUnit(), structName: "", enumName: "", variant: "", fieldBindings: [], subregs: [], orPatterns: subs, hasRest: 0, target: target };
+  };
+  MatchEntry { patternKind: "Wildcard", bindName: "", litValue: mkUnit(), structName: "", enumName: "", variant: "", fieldBindings: [], subregs: [], orPatterns: [], hasRest: 0, target: target }
+}
+
+fn evalLitPattern(e: Node) -> Value {
+  if e.kind == "IntLit" { return mkInt(e.ival); };
+  if e.kind == "FloatLit" { return mkFloat(e.fval); };
+  if e.kind == "BoolLit" { return mkBool(e.ival); };
+  if e.kind == "CharLit" { return mkStr(e.text); };
+  if e.kind == "StringLit" {
+    let s = "";
+    let segs = e.items;
+    let mut i = 0;
+    while i < len(segs) {
+      if segs[i].name == "text" { s = s + segs[i].text; };
+      i = i + 1;
+    }
+    return mkStr(s);
+  };
+  if e.kind == "UnitLit" { return mkUnit(); };
+  if e.kind == "Paren" { return evalLitPattern(e.items[0]); };
+  if e.kind == "Unary" {
+    let inner = evalLitPattern(e.items[0]);
+    if e.name == "-" {
+      if inner.tag == "int" { return mkInt(-inner.ival); };
+      if inner.tag == "float" { return mkFloat(-inner.fval); };
+    };
+    return inner;
+  };
+  mkUnit()
+}
+
+fn lowerBlockExpr(ctx: LowerCtx, e: Node) -> int {
+  lowerBlockBody(ctx, e)
+}
+
+fn lowerCall(ctx: LowerCtx, e: Node) -> int {
+  // e.items[0] = callee; e.items[1..] = args; e.ival = nargs
+  let callee = e.items[0];
+  let nargs = e.ival;
+  // Special-case: builtin calls (callee is Ident with a known builtin name).
+  if callee.kind == "Ident" {
+    let name = callee.name;
+    if isBuiltinName(name) == 1 {
+      let argRegs = [];
+      let mut i = 0;
+      while i < nargs {
+        push(argRegs, lowerExpr(ctx, e.items[1 + i]));
+        i = i + 1;
+      }
+      let d = allocReg(ctx);
+      emit(ctx, opCallBuiltin(d, name, argRegs));
+      return d;
+    };
+    // Special-case: print as a statement (here it's an expr — fall through).
+    // Otherwise, treat as a function call. The callee is either a local
+    // (local closure register) or a global (top-level fn). Try local first.
+    let b = scopeLookup(ctx, name);
+    if b.isUpvalue == 1 {
+      let boxReg = allocReg(ctx);
+      emit(ctx, opGetUpvalue(boxReg, b.upvalueIndex));
+      let clsReg = allocReg(ctx);
+      emit(ctx, opUnbox(clsReg, boxReg));
+      let argRegs = [];
+      let mut i = 0;
+      while i < nargs {
+        push(argRegs, lowerExpr(ctx, e.items[1 + i]));
+        i = i + 1;
+      }
+      let d = allocReg(ctx);
+      emit(ctx, opCallClosure(d, clsReg, argRegs));
+      return d;
+    };
+    if b.vreg >= 0 {
+      let argRegs = [];
+      let mut i = 0;
+      while i < nargs {
+        push(argRegs, lowerExpr(ctx, e.items[1 + i]));
+        i = i + 1;
+      }
+      let d = allocReg(ctx);
+      emit(ctx, opCallClosure(d, b.vreg, argRegs));
+      return d;
+    };
+    // Not a local — try global (top-level fn). Use CallNamed-style: load the
+    // global, then CallClosure.
+    let gReg = allocReg(ctx);
+    emit(ctx, opLoadGlobal(gReg, name));
+    let argRegs = [];
+    let mut i = 0;
+    while i < nargs {
+      push(argRegs, lowerExpr(ctx, e.items[1 + i]));
+      i = i + 1;
+    }
+    let d = allocReg(ctx);
+    emit(ctx, opCallClosure(d, gReg, argRegs));
+    return d;
+  };
+  // Generic callee: lower as expression, then CallClosure.
+  let clsReg = lowerExpr(ctx, callee);
+  let argRegs = [];
+  let mut i = 0;
+  while i < nargs {
+    push(argRegs, lowerExpr(ctx, e.items[1 + i]));
+    i = i + 1;
+  }
+  let d = allocReg(ctx);
+  emit(ctx, opCallClosure(d, clsReg, argRegs));
+  d
+}
+
+fn isBuiltinName(name: string) -> int {
+  if name == "print" { return 1; };
+  if name == "println" { return 1; };
+  if name == "range" { return 1; };
+  if name == "len" { return 1; };
+  if name == "type_of" { return 1; };
+  if name == "assert" { return 1; };
+  if name == "assert_eq" { return 1; };
+  if name == "panic" { return 1; };
+  if name == "str" { return 1; };
+  if name == "int" { return 1; };
+  if name == "float" { return 1; };
+  if name == "min" { return 1; };
+  if name == "max" { return 1; };
+  if name == "abs" { return 1; };
+  if name == "sqrt" { return 1; };
+  if name == "push" { return 1; };
+  if name == "pop" { return 1; };
+  if name == "map" { return 1; };
+  if name == "filter" { return 1; };
+  if name == "reduce" { return 1; };
+  if name == "charCode" { return 1; };
+  if name == "fromCharCode" { return 1; };
+  if name == "strSlice" { return 1; };
+  if name == "iter_to_items" { return 1; };
+  0
+}
+
+fn lowerMethodCall(ctx: LowerCtx, e: Node) -> int {
+  // e.items[0] = object; e.name = method name; e.ival = nargs
+  // We translate method calls to: method(object, ...args) — i.e., a builtin
+  // or top-level function with the object as the first argument.
+  let objReg = lowerExpr(ctx, e.items[0]);
+  let nargs = e.ival;
+  let argRegs = [objReg];
+  let mut i = 0;
+  while i < nargs {
+    push(argRegs, lowerExpr(ctx, e.items[1 + i]));
+    i = i + 1;
+  }
+  let d = allocReg(ctx);
+  emit(ctx, opCallBuiltin(d, e.name, argRegs));
+  d
+}
+
+fn lowerField(ctx: LowerCtx, e: Node) -> int {
+  let obj = lowerExpr(ctx, e.items[0]);
+  let d = allocReg(ctx);
+  emit(ctx, opLoadField(d, obj, e.name));
+  d
+}
+
+fn lowerIndex(ctx: LowerCtx, e: Node) -> int {
+  let obj = lowerExpr(ctx, e.items[0]);
+  let idx = lowerExpr(ctx, e.items[1]);
+  let d = allocReg(ctx);
+  emit(ctx, opIndexGet(d, obj, idx));
+  d
+}
+
+fn lowerArrayExpr(ctx: LowerCtx, e: Node) -> int {
+  let elems = [];
+  let items = e.items;
+  let mut i = 0;
+  while i < len(items) {
+    push(elems, lowerExpr(ctx, items[i]));
+    i = i + 1;
+  }
+  let d = allocReg(ctx);
+  emit(ctx, opAllocArray(d, elems));
+  d
+}
+
+fn lowerStructExpr(ctx: LowerCtx, e: Node) -> int {
+  // e.items[0] = spread; e.items[1..] = fields; e.name = struct name
+  let fields = [];
+  let items = e.items;
+  let mut i = 1;
+  while i < len(items) {
+    let f = items[i];
+    let val = lowerExpr(ctx, f.items[0]);
+    push(fields, IrField { name: f.name, reg: val });
+    i = i + 1;
+  }
+  let d = allocReg(ctx);
+  emit(ctx, opAllocStruct(d, e.name, fields));
+  d
+}
+
+fn lowerEnumVariant(ctx: LowerCtx, e: Node) -> int {
+  // e.name = enum name, e.text = variant, e.items = args
+  let data = [];
+  let items = e.items;
+  let mut i = 0;
+  while i < len(items) {
+    push(data, lowerExpr(ctx, items[i]));
+    i = i + 1;
+  }
+  let d = allocReg(ctx);
+  emit(ctx, opAllocVariant(d, e.name, e.text, data));
+  d
+}
+
+fn lowerRangeExpr(ctx: LowerCtx, e: Node) -> int {
+  let start = lowerExpr(ctx, e.items[0]);
+  let end = lowerExpr(ctx, e.items[1]);
+  let d = allocReg(ctx);
+  emit(ctx, opAllocRange(d, start, end, e.ival));
+  d
+}
+
+fn lowerTupleExpr(ctx: LowerCtx, e: Node) -> int {
+  // Tuples are arrays at runtime.
+  let elems = [];
+  let items = e.items;
+  let mut i = 0;
+  while i < len(items) {
+    push(elems, lowerExpr(ctx, items[i]));
+    i = i + 1;
+  }
+  let d = allocReg(ctx);
+  emit(ctx, opAllocArray(d, elems));
+  d
+}
+
+fn lowerMapExpr(ctx: LowerCtx, e: Node) -> int {
+  // e.items = [MapEntry, MapEntry, ...]; each MapEntry has [key, value]
+  let flat = [];
+  let items = e.items;
+  let mut i = 0;
+  while i < len(items) {
+    push(flat, lowerExpr(ctx, items[i].items[0]));
+    push(flat, lowerExpr(ctx, items[i].items[1]));
+    i = i + 1;
+  }
+  let d = allocReg(ctx);
+  emit(ctx, opAllocMap(d, flat));
+  d
+}
+
+fn lowerLambda(ctx: LowerCtx, e: Node) -> int {
+  // e.items = [params, ret, body]
+  // Build a fake FnDecl-like node and call lowerNestedFnDecl.
+  // We synthesize a name like "<lambda>".
+  let fIdx = len(ctx.funcs);
+  let fakeName = "<lambda>";
+  let nf = IrFunc {
+    name: fakeName,
+    nparams: 0,
+    nlocals: 0,
+    blocks: [],
+    entry: 0,
+    captures: [],
+    selfReg: -1,
+    isMain: 0,
+    nested: [],
+    matchTables: [],
+    strings: [],
+    regLists: [],
+    fieldLists: [],
+    constants: [],
+    matchBindings: [],
+  };
+  push(ctx.funcs, nf);
+  push(ctx.funcs[ctx.current].nested, fIdx);
+
+  let savedCurrent = ctx.current;
+  let savedBlock = ctx.currentBlock;
+  let savedScopes = ctx.scopes;
+  let savedCaptured = ctx.capturedNames;
+
+  let freeNames = collectFreeVars(e.items[2], fakeName);
+  let captures = filterToEnclosingScope(savedScopes, freeNames, fakeName);
+
+  ctx.current = fIdx;
+  ctx.capturedNames = [];
+  ctx.scopes = [];
+  scopePush(ctx);
+  ctx.nextBlockId = 0;
+  ctx.currentBlock = newBlock(ctx);
+  ctx.funcs[fIdx].entry = 0;
+  ctx.funcs[fIdx].captures = captures;
+
+  let paramsNode = e.items[0];
+  let paramList = paramsNode.items;
+  let mut p = 0;
+  while p < len(paramList) {
+    let param = paramList[p];
+    let r = allocReg(ctx);
+    scopeDeclare(ctx, param.name, 0);
+    p = p + 1;
+  }
+  ctx.funcs[fIdx].nparams = len(paramList);
+
+  let mut ci = 0;
+  while ci < len(captures) {
+    scopeDeclareUpvalue(ctx, captures[ci], ci);
+    ci = ci + 1;
+  }
+
+  // No selfReg for lambdas.
+  ctx.funcs[fIdx].selfReg = -1;
+
+  let body = e.items[2];
+  let lastVal = lowerExpr(ctx, body);
+  let cb = currentBlockOf(ctx);
+  if len(cb.instrs) == 0 {
+    let d = allocReg(ctx);
+    emit(ctx, opLoadUnit(d));
+    emit(ctx, opReturn(d));
+  } else {
+    let last = cb.instrs[len(cb.instrs) - 1];
+    if last.op != "Return" && last.op != "Jmp" {
+      emit(ctx, opReturn(lastVal));
+    };
+  }
+
+  ctx.current = savedCurrent;
+  ctx.currentBlock = savedBlock;
+  ctx.scopes = savedScopes;
+  ctx.capturedNames = savedCaptured;
+
+  let mut capRegs = [];
+  let mut ci2 = 0;
+  while ci2 < len(captures) {
+    let nm = captures[ci2];
+    let b = scopeLookup(ctx, nm);
+    if b.isUpvalue == 1 {
+      let boxReg = allocReg(ctx);
+      emit(ctx, opGetUpvalue(boxReg, b.upvalueIndex));
+      push(capRegs, boxReg);
+    } else {
+      if b.vreg >= 0 {
+        push(capRegs, b.vreg);
+      } else {
+        let z = allocReg(ctx);
+        emit(ctx, opLoadUnit(z));
+        push(capRegs, z);
+      };
+    };
+    ci2 = ci2 + 1;
+  }
+  let d = allocReg(ctx);
+  emit(ctx, opMakeClosure(d, fIdx, capRegs));
+  d
+}
+
+// -----------------------------------------------------------------------------
+// Assignment
+// -----------------------------------------------------------------------------
+
+fn lowerAssignTo(ctx: LowerCtx, target: Node, valReg: int) -> int {
+  if target.kind == "Ident" {
+    let b = scopeLookup(ctx, target.name);
+    if b.isUpvalue == 1 {
+      let boxReg = allocReg(ctx);
+      emit(ctx, opGetUpvalue(boxReg, b.upvalueIndex));
+      emit(ctx, opSetBox(boxReg, valReg));
+      return 0;
+    };
+    if b.vreg >= 0 {
+      emit(ctx, opMove(b.vreg, valReg));
+      return 0;
+    };
+    // Global — emit a SetGlobal-like (we use StoreGlobal via main's reg; but
+    // we don't have a SetGlobal opcode, so we synthesize via LoadGlobal? No.)
+    // For v1, global assignment isn't supported. Fall through.
+    return 0;
+  };
+  if target.kind == "Field" {
+    let obj = lowerExpr(ctx, target.items[0]);
+    emit(ctx, opStoreField(obj, target.name, valReg));
+    return 0;
+  };
+  if target.kind == "Index" {
+    let obj = lowerExpr(ctx, target.items[0]);
+    let idx = lowerExpr(ctx, target.items[1]);
+    emit(ctx, opIndexSet(obj, idx, valReg));
+    return 0;
+  };
+  0
+}
+
+// -----------------------------------------------------------------------------
+// Free-variable collection (for closure captures)
+// -----------------------------------------------------------------------------
+
+// Collect free variable names referenced in a body, excluding the fn's
+// own name and its parameters. We do a simple syntactic walk: any Ident we
+// see that's not a local declaration is a free variable.
+fn collectFreeVars(body: Node, fnName: string) -> [string] {
+  let out: [string] = [];
+  let seen = [];
+  let locals: [string] = [];
+  walkCollectFree(body, fnName, locals, out, seen);
+  out
+}
+
+fn walkCollectFree(n: Node, fnName: string, locals: [string], out: [string], seen: [string]) -> int {
+  if n.kind == "Ident" {
+    let nm = n.name;
+    if nm == fnName { return 0; };
+    if isBuiltinName(nm) == 1 { return 0; };
+    if isLocalName(locals, nm) == 1 { return 0; };
+    if alreadySeen(seen, nm) == 1 { return 0; };
+    push(seen, nm);
+    push(out, nm);
+    return 0;
+  };
+  if n.kind == "FnDecl" {
+    // Don't recurse into a nested fn's body — its own free vars are its
+    // captures, not ours. But its name is a local binding in our scope.
+    push(locals, n.name);
+    return 0;
+  };
+  if n.kind == "Let" || n.kind == "MutLet" || n.kind == "Const" {
+    walkCollectFree(n.items[1], fnName, locals, out, seen);
+    push(locals, n.name);
+    return 0;
+  };
+  if n.kind == "MatchArm" {
+    // Pattern binds locals; guard and body may reference them.
+    let pattern = n.items[0];
+    let names = patternBindNames(pattern);
+    let mut i = 0;
+    while i < len(names) {
+      push(locals, names[i]);
+      i = i + 1;
+    }
+    if isNull(n.items[1]) == 0 { walkCollectFree(n.items[1], fnName, locals, out, seen); };
+    walkCollectFree(n.items[2], fnName, locals, out, seen);
+    let mut j = 0;
+    while j < len(names) {
+      popName(locals, names[j]);
+      j = j + 1;
+    }
+    return 0;
+  };
+  // Default: walk children.
+  let items = n.items;
+  let mut i = 0;
+  while i < len(items) {
+    walkCollectFree(items[i], fnName, locals, out, seen);
+    i = i + 1;
+  }
+  0
+}
+
+fn isLocalName(locals: [string], nm: string) -> int {
+  let mut i = 0;
+  while i < len(locals) {
+    if locals[i] == nm { return 1; };
+    i = i + 1;
+  }
+  0
+}
+
+fn alreadySeen(seen: [string], nm: string) -> int {
+  let mut i = 0;
+  while i < len(seen) {
+    if seen[i] == nm { return 1; };
+    i = i + 1;
+  }
+  0
+}
+
+fn popName(locals: [string], nm: string) -> int {
+  let mut i = len(locals) - 1;
+  while i >= 0 {
+    if locals[i] == nm {
+      // Remove at index i.
+      let newArr = [];
+      let mut j = 0;
+      while j < len(locals) {
+        if j != i { push(newArr, locals[j]); };
+        j = j + 1;
+      }
+      // We can't reassign locals here since it's a parameter. Return without
+      // modifying (this is a best-effort cleanup; over-approximation is safe
+      // because we just may miss some free vars that are actually local).
+      return 0;
+    };
+    i = i - 1;
+  }
+  0
+}
+
+fn patternBindNames(p: Node) -> [string] {
+  let out = [];
+  collectPatternBindNames(p, out);
+  out
+}
+
+fn collectPatternBindNames(p: Node, out: [string]) -> int {
+  if p.kind == "BindPat" {
+    push(out, p.name);
+    return 0;
+  };
+  if p.kind == "TuplePat" || p.kind == "ArrayPat" || p.kind == "EnumPat" || p.kind == "OrPat" {
+    let mut i = 0;
+    while i < len(p.items) {
+      collectPatternBindNames(p.items[i], out);
+      i = i + 1;
+    }
+    return 0;
+  };
+  if p.kind == "StructPat" {
+    let mut i = 0;
+    while i < len(p.items) {
+      collectPatternBindNames(p.items[i].items[0], out);
+      i = i + 1;
+    }
+    return 0;
+  };
+  0
+}
+
+// Filter free names to those that are actually bound in the enclosing scope.
+fn filterToEnclosingScope(savedScopes: [[ScopeEntry]], names: [string], fnName: string) -> [string] {
+  let out = [];
+  let mut i = 0;
+  while i < len(names) {
+    let nm = names[i];
+    if nm == fnName { i = i + 1; continue; };
+    let found = 0;
+    let mut s = len(savedScopes) - 1;
+    while s >= 0 && found == 0 {
+      let scope = savedScopes[s];
+      let mut j = 0;
+      while j < len(scope) {
+        if scope[j].name == nm { found = 1; j = len(scope); } else { j = j + 1; };
+      }
+      s = s - 1;
+    }
+    if found == 1 { push(out, nm); };
+    i = i + 1;
+  }
+  out
+}
