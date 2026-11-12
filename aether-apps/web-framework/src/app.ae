@@ -1,0 +1,508 @@
+// aether-apps/web-framework/src/app.ae
+// ===================================
+// A tiny web framework: routing + middleware + path params + JSON.
+//
+// Public API:
+//   new()                       -> App
+//   route(app, method, path, handler)  -> App
+//   get(app, path, handler)     -> App
+//   post(app, path, handler)   -> App
+//   use(app, middleware)        -> App
+//   handle(app, method, path)   -> Response ({status, body, headers})
+//   json(body)                  -> string
+//   serve(app)                  -> () (prints "would serve on :8080")
+//   notFound(body)              -> Response helper
+//   ok(body)                    -> Response helper
+//   status(resp)                -> int
+//   body(resp)                  -> string
+//   param(req, name)            -> string
+//   setHeader(resp, k, v)       -> Response
+//
+// Conventions:
+//   - Request: a map with `method`, `path`, `params` (a map of path-param
+//     name -> string value), and `headers` (a map of header name -> value).
+//   - Response: a map with `status` (int), `body` (string), and `headers`
+//     (a map of header name -> value).
+//   - Handler: `fn(req) -> Response` — a closure that takes a Request map
+//     and returns a Response map.
+//   - Middleware: `fn(req, resp) -> ()` — a closure that runs BEFORE the
+//     handler. It can mutate `req` (e.g., add a header) and pre-set `resp`
+//     (e.g., to short-circuit with a 401). The handler then runs; if it
+//     returns a Response, it overrides any resp set by middleware.
+//   - Routes are tried in registration order; first match wins.
+//   - Path params: `/users/:id` matches `/users/42` and binds `id = "42"`.
+//     `/posts/:pid/comments/:cid` matches `/posts/7/comments/3` and binds
+//     `pid = "7"`, `cid = "3"`.
+//
+// No real networking — `serve(app)` just prints a banner. The framework
+// is for testing request handlers in-process; the caller dispatches via
+// `handle`.
+
+//----------------------------------------------------------------------------
+// Types
+//----------------------------------------------------------------------------
+
+// An App is a struct with two lists: registered routes and middleware.
+struct App {
+  routes: any,    // [Route]
+  middlewares: any, // [Middleware]
+}
+
+// A Route is a struct with the method, the parsed path pattern (an array
+// of segments where each segment is either a literal string or a param
+// marker `:` + name), and the handler.
+struct Route {
+  method: string,
+  pattern: any,  // [Segment]
+  handler: any,  // fn(Req) -> Resp
+}
+
+// A Segment is a 2-element array: ["lit", value] or ["param", name].
+// (We can't use a struct here because the sema doesn't allow generic
+// struct field types and we need to dispatch on the kind at runtime.)
+
+// A Request is a Map<string, any> with keys: method, path, params, headers.
+// A Response is a Map<string, any> with keys: status, body, headers.
+
+//----------------------------------------------------------------------------
+// Construction
+//----------------------------------------------------------------------------
+
+// new() — return an empty App.
+pub fn new() -> App {
+  App {
+    routes: [],
+    middlewares: [],
+  }
+}
+
+//----------------------------------------------------------------------------
+// Route registration
+//----------------------------------------------------------------------------
+
+// route(app, method, path, handler) — register a route.
+// `method` is uppercased internally. `path` is parsed into segments.
+// Returns app for chaining.
+pub fn route(app: App, method: string, path: string, handler: any) -> App {
+  let r = Route {
+    method: toUpper(method),
+    pattern: parse_path(path),
+    handler: handler,
+  };
+  push(app.routes, r);
+  app
+}
+
+// get(app, path, handler) — convenience for `route(app, "GET", path, handler)`.
+pub fn get(app: App, path: string, handler: any) -> App {
+  route(app, "GET", path, handler)
+}
+
+// post(app, path, handler) — convenience for `route(app, "POST", path, handler)`.
+pub fn post(app: App, path: string, handler: any) -> App {
+  route(app, "POST", path, handler)
+}
+
+// use(app, middleware) — register a middleware function.
+// `middleware` is `fn(req, resp) -> ()`. Returns app for chaining.
+pub fn use(app: App, middleware: any) -> App {
+  push(app.middlewares, middleware);
+  app
+}
+
+//----------------------------------------------------------------------------
+// Path parsing
+//----------------------------------------------------------------------------
+
+// parse_path(path) — split on `/` and tag each segment as "lit" or "param".
+//   "/users/:id"        -> [["lit", "users"], ["param", "id"]]
+//   "/posts/:pid/x/:c"  -> [["lit", "posts"], ["param", "pid"], ["lit", "x"], ["param", "c"]]
+//   "/"                 -> []
+//   "/items"            -> [["lit", "items"]]
+// We always strip a leading `/` so the segments array is consistent.
+fn parse_path(path: string) -> [any] {
+  let stripped = strip_leading_slash(path);
+  if stripped == "" {
+    []
+  } else {
+    let parts = split_on_char(stripped, '/');
+    let mut out = [];
+    let mut i = 0;
+    while i < len(parts) {
+      let p = parts[i];
+      if starts_with(p, ":") {
+        push(out, ["param", strSlice(p, 1, len(p))]);
+      } else {
+        push(out, ["lit", p]);
+      };
+      i = i + 1;
+    }
+    out
+  }
+}
+
+// match_path(pattern, path) — try to match a path against a pattern.
+// Returns a Map of param name -> string value if matched, or `()` (unit)
+// if no match. (We can't return Option easily so we use unit as None.)
+fn match_path(pattern: [any], path: string) -> any {
+  let stripped = strip_leading_slash(path);
+  let parts = if stripped == "" {
+    []
+  } else {
+    split_on_char(stripped, '/')
+  };
+  if len(parts) != len(pattern) {
+    ()
+  } else {
+    let params = mapNew();
+    let mut i = 0;
+    let mut ok = true;
+    while i < len(parts) && ok {
+      let seg = pattern[i];
+      let p = parts[i];
+      if seg[0] == "lit" {
+        if seg[1] != p {
+          ok = false;
+        };
+      } else {
+        // param
+        mapSet(params, seg[1], p);
+      };
+      i = i + 1;
+    }
+    if ok {
+      params
+    } else {
+      ()
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Dispatch
+//----------------------------------------------------------------------------
+
+// handle(app, method, path) — dispatch a request.
+//   1. Find the first matching route (method + path).
+//   2. Build the request map (method, path, params, headers).
+//   3. Run each middleware in order. Each middleware gets (req, resp) and
+//      can mutate either. The middleware can pre-set resp (e.g., 401).
+//   4. Run the handler with req. The handler returns a Response.
+//   5. If the handler returned a Response, use it; else use whatever the
+//      middleware left in resp.
+//   6. If no route matched, return 404 with "Not Found".
+pub fn handle(app: App, method: string, path: string) -> any {
+  let upper = toUpper(method);
+  let matched = find_route(app.routes, upper, path);
+  if matched == () {
+    // No route matched — return 404.
+    let resp = mapNew();
+    mapSet(resp, "status", 404);
+    mapSet(resp, "body", "Not Found");
+    mapSet(resp, "headers", mapNew());
+    resp
+  } else {
+    let m = matched;
+    let params = m[0];
+    let handler = m[1];
+    let req = mapNew();
+    mapSet(req, "method", upper);
+    mapSet(req, "path", path);
+    mapSet(req, "params", params);
+    let req_headers = mapNew();
+    mapSet(req, "headers", req_headers);
+    // Run middleware.
+    let resp = mapNew();
+    mapSet(resp, "status", 200);
+    mapSet(resp, "body", "");
+    mapSet(resp, "headers", mapNew());
+    let mut i = 0;
+    while i < len(app.middlewares) {
+      (app.middlewares[i])(req, resp);
+      i = i + 1;
+    }
+    // Run the handler.
+    let handler_resp = handler(req);
+    if type_of(handler_resp) == "map" {
+      handler_resp
+    } else {
+      // Handler returned non-map (e.g., unit) — use resp from middleware.
+      resp
+    }
+  }
+}
+
+// find_route(routes, method, path) — return [params, handler] on first match,
+// or `()` (unit) if no route matched.
+fn find_route(routes: [any], method: string, path: string) -> any {
+  let mut i = 0;
+  let mut found = ();
+  while i < len(routes) && found == () {
+    let r = routes[i];
+    if r.method == method {
+      let params = match_path(r.pattern, path);
+      if params != () {
+        found = [params, r.handler];
+      };
+    };
+    i = i + 1;
+  }
+  found
+}
+
+//----------------------------------------------------------------------------
+// JSON-ish serializer
+//----------------------------------------------------------------------------
+
+// json(body) — serialize a map to a JSON-ish string.
+//   - Map<string, any> -> {"k": v, ...}
+//   - Array -> [v, ...]
+//   - String -> "v" (escaped for ", \, \n)
+//   - Int / Float -> raw
+//   - Bool -> true/false
+//   - Unit () -> null
+//   - Nested maps and arrays are serialized recursively.
+pub fn json(body: any) -> string {
+  serialize_val(body)
+}
+
+fn serialize_val(v: any) -> string {
+  let t = type_of(v);
+  if t == "string" {
+    "\"" + escape_string(v) + "\""
+  } else {
+    if t == "int" || t == "float" {
+      str(v)
+    } else {
+      if t == "bool" {
+        if v { "true" } else { "false" }
+      } else {
+        if t == "unit" {
+          "null"
+        } else {
+          if t == "array" {
+            serialize_array(v)
+          } else {
+            if t == "map" {
+              serialize_map(v)
+            } else {
+              "null"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn serialize_array(arr: [any]) -> string {
+  let mut out = "[";
+  let mut i = 0;
+  while i < len(arr) {
+    if i > 0 {
+      out = out + ", ";
+    };
+    out = out + serialize_val(arr[i]);
+    i = i + 1;
+  }
+  out + "]"
+}
+
+fn serialize_map(m: any) -> string {
+  let mut out = "{";
+  let ks = mapKeys(m);
+  let mut i = 0;
+  while i < len(ks) {
+    if i > 0 {
+      out = out + ", ";
+    };
+    let k = ks[i];
+    out = out + "\"" + escape_string(k) + "\": " + serialize_val(mapGet(m, k));
+    i = i + 1;
+  }
+  out + "}"
+}
+
+fn escape_string(s: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(s) {
+    let c = charCode(s, i);
+    if c == 34 {
+      out = out + "\\\"";
+    } else {
+      if c == 92 {
+        out = out + "\\\\";
+      } else {
+        if c == 10 {
+          out = out + "\\n";
+        } else {
+          if c == 9 {
+            out = out + "\\t";
+          } else {
+            if c == 13 {
+              out = out + "\\r";
+            } else {
+              out = out + fromCharCode(c);
+            }
+          }
+        }
+      }
+    };
+    i = i + 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// Response helpers
+//----------------------------------------------------------------------------
+
+// ok(body) — return a 200 Response with body.
+pub fn ok(body: string) -> any {
+  let r = mapNew();
+  mapSet(r, "status", 200);
+  mapSet(r, "body", body);
+  mapSet(r, "headers", mapNew());
+  r
+}
+
+// notFound(body) — return a 404 Response.
+pub fn notFound(body: string) -> any {
+  let r = mapNew();
+  mapSet(r, "status", 404);
+  mapSet(r, "body", body);
+  mapSet(r, "headers", mapNew());
+  r
+}
+
+// badRequest(body) — return a 400 Response.
+pub fn badRequest(body: string) -> any {
+  let r = mapNew();
+  mapSet(r, "status", 400);
+  mapSet(r, "body", body);
+  mapSet(r, "headers", mapNew());
+  r
+}
+
+// serverError(body) — return a 500 Response.
+pub fn serverError(body: string) -> any {
+  let r = mapNew();
+  mapSet(r, "status", 500);
+  mapSet(r, "body", body);
+  mapSet(r, "headers", mapNew());
+  r
+}
+
+// status(resp) — return the status code of a Response.
+pub fn status(resp: any) -> int {
+  if mapHas(resp, "status") {
+    mapGet(resp, "status")
+  } else {
+    0
+  }
+}
+
+// body(resp) — return the body string of a Response.
+pub fn body(resp: any) -> string {
+  if mapHas(resp, "body") {
+    mapGet(resp, "body")
+  } else {
+    ""
+  }
+}
+
+// setHeader(resp, k, v) — set a header on a Response (mutates). Returns resp.
+pub fn setHeader(resp: any, k: string, v: string) -> any {
+  let h = mapGet(resp, "headers");
+  mapSet(h, k, v);
+  resp
+}
+
+// param(req, name) — return the path param value, or "" if not set.
+pub fn param(req: any, name: string) -> string {
+  let p = mapGet(req, "params");
+  if mapHas(p, name) {
+    mapGet(p, name)
+  } else {
+    ""
+  }
+}
+
+//----------------------------------------------------------------------------
+// "Server"
+//----------------------------------------------------------------------------
+
+// serve(app) — print a banner. No real networking; this is for testing
+// that the app boots cleanly (every middleware + handler is registered
+// without crashing).
+pub fn serve(app: App) -> () {
+  print("would serve on :8080");
+  print("  " + str(len(app.routes)) + " route(s)");
+  print("  " + str(len(app.middlewares)) + " middleware(s)");
+  print("(no real network — call handle(app, method, path) to dispatch)")
+}
+
+//----------------------------------------------------------------------------
+// String helpers (because stdlib has no built-in toUpper / split / startsWith)
+//----------------------------------------------------------------------------
+
+fn toUpper(s: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(s) {
+    let c = charCode(s, i);
+    if c >= 97 && c <= 122 {
+      out = out + fromCharCode(c - 32);
+    } else {
+      out = out + fromCharCode(c);
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// strip_leading_slash(path) — remove one leading `/` if present.
+fn strip_leading_slash(s: string) -> string {
+  if len(s) > 0 && charCode(s, 0) == 47 {
+    strSlice(s, 1, len(s))
+  } else {
+    s
+  }
+}
+
+// split_on_char(s, c) — split s on every occurrence of single-char c.
+fn split_on_char(s: string, c: int) -> [string] {
+  let mut out = [];
+  let mut cur = "";
+  let mut i = 0;
+  while i < len(s) {
+    let ch = charCode(s, i);
+    if ch == c {
+      push(out, cur);
+      cur = "";
+    } else {
+      cur = cur + fromCharCode(ch);
+    };
+    i = i + 1;
+  }
+  push(out, cur);
+  out
+}
+
+// starts_with(s, prefix) — true if s starts with the prefix string.
+fn starts_with(s: string, prefix: string) -> bool {
+  if len(prefix) > len(s) {
+    false
+  } else {
+    let mut ok = true;
+    let mut i = 0;
+    while i < len(prefix) && ok {
+      if charCode(s, i) != charCode(prefix, i) {
+        ok = false;
+      };
+      i = i + 1;
+    }
+    ok
+  }
+}

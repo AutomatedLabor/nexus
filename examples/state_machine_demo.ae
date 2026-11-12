@@ -1,0 +1,102 @@
+// state_machine_demo.ae
+// ======================
+// A turnstile finite-state machine. Two states (Locked, Unlocked)
+// and two events (Coin, Push). Transitions:
+//   Locked + Coin   -> Unlocked (no output)
+//   Locked + Push   -> Locked   (output: "BEEP")
+//   Unlocked + Coin -> Unlocked (no output)
+//   Unlocked + Push -> Locked   (output: "CLICK")
+// We run a sequence of events through the FSM and print the state +
+// output after each step.
+
+// State ids.
+let S_LOCKED = 0;
+let S_UNLOCKED = 1;
+// Event ids.
+let E_COIN = 0;
+let E_PUSH = 1;
+
+// State name as a printable string.
+fn state_name(s: int) -> string {
+  if s == S_LOCKED { "Locked" } else { "Unlocked" }
+}
+
+// Event name as a printable string.
+fn event_name(e: int) -> string {
+  if e == E_COIN { "Coin" } else { "Push" }
+}
+
+// Transition function. Returns (next_state, output_text). The output
+// is empty string when no audible action happens, or a short label
+// like "BEEP"/"CLICK" otherwise.
+fn step(state: int, event: int) -> (int, string) {
+  if state == S_LOCKED {
+    if event == E_COIN {
+      (S_UNLOCKED, "")
+    } else {
+      (S_LOCKED, "BEEP")
+    }
+  } else {
+    if event == E_COIN {
+      (S_UNLOCKED, "")
+    } else {
+      (S_LOCKED, "CLICK")
+    }
+  }
+}
+
+// Run a sequence of events starting from an initial state. Returns
+// the final state after each event. Prints a one-line trace per step.
+fn run_trace(initial: int, events: [int]) -> int {
+  let mut s = initial;
+  let mut i = 0;
+  while i < len(events) {
+    let e = events[i];
+    let out = step(s, e);
+    let ns = out.0;
+    let act = out.1;
+    let label = if act == "" { "(silent)" } else { act };
+    print(f"  {state_name(s)} + {event_name(e)} -> {state_name(ns)}  {label}");
+    s = ns;
+    i = i + 1;
+  }
+  s
+}
+
+print("== Turnstile finite-state machine ==");
+print("");
+
+let events = [E_COIN, E_PUSH, E_PUSH, E_COIN, E_COIN, E_PUSH];
+print("starting state: Locked");
+print("event sequence: Coin, Push, Push, Coin, Coin, Push");
+print("");
+
+let final_state = run_trace(S_LOCKED, events);
+print("");
+print(f"final state: {state_name(final_state)}");
+print("");
+
+// Trace of expected states after each event:
+//   Locked   + Coin -> Unlocked  (silent)      // customer pays
+//   Unlocked + Push -> Locked    (CLICK)       // customer pushes through
+//   Locked   + Push -> Locked    (BEEP)        // customer pushes locked turnstile
+//   Locked   + Coin -> Unlocked  (silent)      // pay again
+//   Unlocked + Coin -> Unlocked  (silent)      // extra coin: still unlocked
+//   Unlocked + Push -> Locked    (CLICK)       // customer exits
+assert_eq(final_state, S_LOCKED);
+
+// A trace starting from Unlocked.
+print("starting state: Unlocked");
+print("event sequence: Push");
+let final2 = run_trace(S_UNLOCKED, [E_PUSH]);
+assert_eq(final2, S_LOCKED);
+print("");
+
+// A longer all-pushed sequence: should beep on every step.
+print("starting state: Locked");
+print("event sequence: Push, Push, Push");
+let final3 = run_trace(S_LOCKED, [E_PUSH, E_PUSH, E_PUSH]);
+assert_eq(final3, S_LOCKED);
+print("");
+
+print("All assertions passed.");

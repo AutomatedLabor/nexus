@@ -1,0 +1,139 @@
+// mergesort_iterative.ae
+// ======================
+// Bottom-up (iterative) merge sort. Unlike recursive merge sort, we
+// start by treating every element as a sorted run of length 1, then
+// iteratively merge pairs of runs into runs of length 2, then 4, then
+// 8, etc., until the whole array is one sorted run.
+//
+// We build a list of single-element arrays, then repeatedly merge
+// adjacent pairs until only one array remains. The result is the
+// fully sorted array. We use no recursion.
+
+// Concatenate two int arrays into a new array.
+fn concat(a: [int], b: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(a) { push(out, a[i]); i = i + 1; }
+  let mut j = 0;
+  while j < len(b) { push(out, b[j]); j = j + 1; }
+  out
+}
+
+// Merge two sorted arrays into a sorted array.
+fn merge(left: [int], right: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  let mut j = 0;
+  while (i < len(left)) && (j < len(right)) {
+    if left[i] <= right[j] {
+      push(out, left[i]);
+      i = i + 1;
+    } else {
+      push(out, right[j]);
+      j = j + 1;
+    };
+  }
+  while i < len(left) { push(out, left[i]); i = i + 1; }
+  while j < len(right) { push(out, right[j]); j = j + 1; }
+  out
+}
+
+// One pass: merge adjacent pairs of runs in `runs`. Returns the new
+// (half-as-long) list of runs.
+fn merge_pass(runs: [[int]]) -> [[int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(runs) {
+    if i + 1 < len(runs) {
+      push(out, merge(runs[i], runs[i + 1]));
+      i = i + 2;
+    } else {
+      push(out, runs[i]);
+      i = i + 1;
+    }
+  }
+  out
+}
+
+// Bottom-up iterative merge sort.
+fn msort(arr: [int]) -> [int] {
+  // Build the initial list of single-element runs.
+  let mut runs = [];
+  let mut i = 0;
+  while i < len(arr) {
+    push(runs, [arr[i]]);
+    i = i + 1;
+  }
+  // Merge pairs until one run remains.
+  while len(runs) > 1 {
+    runs = merge_pass(runs);
+  }
+  if len(runs) == 0 { [] } else { runs[0] }
+}
+
+// Render an int array as a comma-separated "[a, b, c]" string.
+fn show(arr: [int]) -> string {
+  let mut out = "[";
+  let mut i = 0;
+  while i < len(arr) {
+    if i > 0 { out = out + ", " };
+    out = out + str(arr[i]);
+    i = i + 1;
+  }
+  out + "]"
+}
+
+print("== Merge sort (iterative, bottom-up) ==");
+print("");
+
+let cases = [
+  [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5],
+  [5, 4, 3, 2, 1],
+  [1, 2, 3, 4, 5],
+  [42],
+  [],
+  [7, 7, 7, 7],
+  [3, -1, 4, -1, 5, -9, 2, 6, -5, 3]
+];
+let mut i = 0;
+while i < len(cases) {
+  let arr = cases[i];
+  let sorted = msort(arr);
+  print(f"  {show(arr)} -> {show(sorted)}");
+  i = i + 1;
+}
+print("");
+
+// Show the intermediate run-list after each pass for a small example.
+print("trace of merge passes for [4, 3, 2, 1]:");
+let mut runs = [];
+let mut k = 0;
+let example = [4, 3, 2, 1];
+while k < len(example) { push(runs, [example[k]]); k = k + 1; }
+print(f"  initial runs: {show_runs(runs)}");
+let mut guard = 0;
+while (len(runs) > 1) && (guard < 8) {
+  runs = merge_pass(runs);
+  print(f"  after pass:    {show_runs(runs)}");
+  guard = guard + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(msort([]), []);
+assert_eq(msort([1]), [1]);
+assert_eq(msort([3, 1, 2]), [1, 2, 3]);
+assert_eq(msort([5, 4, 3, 2, 1]), [1, 2, 3, 4, 5]);
+assert_eq(msort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]), [1, 1, 2, 3, 3, 4, 5, 5, 5, 6, 9]);
+print("All assertions passed.");
+
+fn show_runs(runs: [[int]]) -> string {
+  let mut out = "[";
+  let mut i = 0;
+  while i < len(runs) {
+    if i > 0 { out = out + ", " };
+    out = out + show(runs[i]);
+    i = i + 1;
+  }
+  out + "]"
+}

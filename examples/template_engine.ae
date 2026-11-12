@@ -1,0 +1,141 @@
+// template_engine.ae
+// ===================
+// A tiny `{{var}}` template engine. Given a template string with
+// `{{name}}` placeholders and a map from name to value, render the
+// template by replacing each placeholder with the corresponding
+// value. Unknown placeholders are left as-is (or replaced with an
+// empty string via a flag).
+//
+// We represent the variable map as parallel arrays (keys, vals) — a
+// poor man's hash map — to avoid relying on Aether's `map` literal
+// type, which behaves differently across evaluator versions.
+
+// Look up `key` in the parallel (keys, vals) arrays; return `val` if
+// found, otherwise "".
+fn lookup(keys: [string], vals: [string], key: string) -> string {
+  let mut i = 0;
+  let mut out = "";
+  let mut found = false;
+  while (i < len(keys)) && (!found) {
+    if keys[i] == key {
+      out = vals[i];
+      found = true;
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// Render a template string, replacing `{{name}}` with the value
+// from the (keys, vals) map. If `drop_unknown` is true, unknown
+// placeholders are removed; otherwise they're left as `{{name}}`.
+fn render(template: string, keys: [string], vals: [string], drop_unknown: bool) -> string {
+  let mut out = "";
+  let mut i = 0;
+  let n = len(template);
+  while i < n {
+    let c = str(template[i]);
+    // Detect `{{`
+    if (c == "{") && (i + 1 < n) && (str(template[i + 1]) == "{") {
+      // Find the closing `}}`.
+      let mut j = i + 2;
+      let mut closed = -1;
+      while (j + 1 < n) && (closed == -1) {
+        if (str(template[j]) == "}") && (str(template[j + 1]) == "}") {
+          closed = j;
+        };
+        j = j + 1;
+      }
+      if closed == -1 {
+        // No closing — copy rest literally.
+        out = out + c;
+        i = i + 1;
+      } else {
+        let name = trim(slice(template, i + 2, closed));
+        let v = lookup(keys, vals, name);
+        if v == "" {
+          if !drop_unknown {
+            out = out + "{{" + name + "}}"
+          }
+        } else {
+          out = out + v
+        };
+        i = closed + 2;
+      };
+    } else {
+      out = out + c;
+      i = i + 1;
+    };
+  }
+  out
+}
+
+// Trim leading/trailing whitespace from a string.
+fn trim(s: string) -> string {
+  let mut lo = 0;
+  let mut hi = len(s);
+  while (lo < hi) && is_ws(str(s[lo])) { lo = lo + 1; }
+  while (hi > lo) && is_ws(str(s[hi - 1])) { hi = hi - 1; }
+  slice(s, lo, hi)
+}
+
+fn is_ws(c: string) -> bool {
+  (c == " ") || (c == "\t") || (c == "\n") || (c == "\r")
+}
+
+// Slice `s` from `lo` (inclusive) to `hi` (exclusive).
+fn slice(s: string, lo: int, hi: int) -> string {
+  let mut out = "";
+  let mut i = lo;
+  while i < hi {
+    out = out + str(s[i]);
+    i = i + 1;
+  }
+  out
+}
+
+print("== Template engine ==");
+print("");
+
+let template = "Hello, {{name}}!\nYou have {{count}} new messages.\nYour last login was on {{date}}.\n";
+let keys = ["name", "count", "date"];
+let vals = ["Alice", "5", "2024-01-15"];
+
+print("template:");
+print(template);
+print("");
+
+print("rendered:");
+let rendered = render(template, keys, vals, false);
+print(rendered);
+print("");
+
+// With an unknown placeholder.
+let template2 = "Hi {{name}}, your friend {{friend}} says hi.";
+let rendered2 = render(template2, keys, vals, false);
+print("with unknown placeholder (keep):");
+print(rendered2);
+print("");
+
+let rendered3 = render(template2, keys, vals, true);
+print("with unknown placeholder (drop):");
+print(rendered3);
+print("");
+
+// With extra whitespace inside the braces.
+let template3 = "x={{  n  }}; y={{y}}";
+let keys3 = ["n", "y"];
+let vals3 = ["42", "hello"];
+let rendered4 = render(template3, keys3, vals3, false);
+print("with extra whitespace inside braces:");
+print(rendered4);
+print("");
+
+// Sanity assertions.
+assert_eq(rendered, "Hello, Alice!\nYou have 5 new messages.\nYour last login was on 2024-01-15.\n");
+assert_eq(rendered2, "Hi Alice, your friend {{friend}} says hi.");
+assert_eq(rendered3, "Hi Alice, your friend  says hi.");
+assert_eq(rendered4, "x=42; y=hello");
+assert_eq(render("no placeholders", [], [], false), "no placeholders");
+assert_eq(render("hi {{x}} hi", ["x"], ["world"], false), "hi world hi");
+print("All assertions passed.");

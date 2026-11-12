@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aether-compiler"
+version = "0.1.0"
+description = "Pure-Python port of the Aether compiler front-end (lexer + parser)."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Aether Project" }]
+requires-python = ">=3.10"
+
+# No external runtime dependencies — the port uses only the Python
+# standard library (``dataclasses``, ``typing``, ``unicodedata``).
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["aether_compiler*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra"

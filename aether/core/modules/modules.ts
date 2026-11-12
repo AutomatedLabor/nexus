@@ -63,6 +63,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { compile, type RunOptions, type Value } from "../index";
 import { newEnv, type Env } from "../eval/eval";
+import { stdlibBuiltins } from "../../stdlib/index";
 
 //----------------------------------------------------------------------------
 // Public types
@@ -88,6 +89,14 @@ export interface ModuleRunOptions extends RunOptions {
    * behavior; library modules shouldn't print).
    */
   suppressLibraryStdout?: boolean;
+  /**
+   * Stdlib builtins to wire into every module's run. If omitted, the loader
+   * uses `stdlibBuiltins()` from `aether/stdlib` (the full stdlib set). The
+   * evaluator installs these AFTER the inline builtins, so inline names
+   * (e.g. mutating `push`) keep precedence; non-shared names like `mapNew`
+   * and `regex` become available to Aether code.
+   */
+  stdlibBuiltins?: Record<string, (...args: any[]) => any>;
 }
 
 /** Result of `runModule`. */
@@ -377,8 +386,20 @@ export class ModuleGraph {
       ? opts.stdout ?? ((s: string) => { (this._entryOutput = this._entryOutput ?? []).push(s); })
       : () => {};
 
+    // Wire stdlib builtins (mapNew, mapSet, etc.) WITHOUT clobbering the
+    // inline builtins (mutating push, Aether-aware map/filter/reduce, etc.).
+    // The evaluator installs `stdlibBuiltins` AFTER the inline builtins and
+    // skips any shared name, so precedence is preserved.
+    // If the caller supplied their own `opts.stdlibBuiltins`, respect that.
+    const runOpts: ModuleRunOptions = {
+      ...opts,
+      env,
+      stdout,
+      stdlibBuiltins: opts.stdlibBuiltins ?? stdlibBuiltins(),
+    };
+
     // Compile + run the cleaned source.
-    const result = compile(pre.source, { ...opts, env, stdout });
+    const result = compile(pre.source, runOpts);
     if (result.runtime?.error) {
       this.error = `runtime error in '${absPath}': ${result.runtime.error.message}`;
       this.stack.pop();

@@ -1,0 +1,106 @@
+// json_minify.ae
+// ===============
+// A tiny JSON minifier. Given a JSON string with optional whitespace
+// (spaces, tabs, newlines), produce an equivalent JSON string with
+// all insignificant whitespace stripped. Whitespace inside strings
+// is preserved.
+//
+// We scan the input one character at a time, tracking whether we're
+// inside a string. When outside a string, we drop whitespace; when
+// inside, we copy verbatim and also handle escape sequences.
+
+// Is the char `c` considered insignificant whitespace?
+fn is_ws(c: string) -> bool {
+  c == " " || c == "\t" || c == "\n" || c == "\r"
+}
+
+// Minify a JSON string. Returns the minified output.
+fn minify(s: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  let mut in_str = false;
+  while i < len(s) {
+    let c = str(s[i]);
+    if in_str {
+      out = out + c;
+      if c == "\\" {
+        // copy the next char verbatim (skip it being interpreted)
+        i = i + 1;
+        if i < len(s) { out = out + str(s[i]) };
+      } else {
+        if c == "\"" { in_str = false };
+      };
+    } else {
+      if is_ws(c) {
+        // skip whitespace
+      } else {
+        out = out + c;
+        if c == "\"" { in_str = true };
+      };
+    };
+    i = i + 1;
+  }
+  out
+}
+
+print("== JSON minifier ==");
+print("");
+
+let samples = [
+  // pretty object
+  "{\n  \"name\": \"Alice\",\n  \"age\": 30,\n  \"city\": \"NYC\"\n}",
+  // pretty array
+  "[ 1, 2, 3, 4, 5 ]",
+  // nested
+  "{\n  \"users\": [\n    {\"id\": 1, \"name\": \"Bob\"},\n    {\"id\": 2, \"name\": \"Carol\"}\n  ],\n  \"count\": 2\n}",
+  // string with internal whitespace
+  "{\"greeting\": \"Hello,   world!\\n  This is a test.\", \"n\": 42}",
+  // empty
+  "  {  }  ",
+  // already minified
+  "{\"a\":1,\"b\":2}"
+];
+
+let mut i = 0;
+while i < len(samples) {
+  let src = samples[i];
+  let dst = minify(src);
+  print(f"input  ({len(src)} chars):");
+  print("  " + oneline(src));
+  print(f"output ({len(dst)} chars):");
+  print("  " + dst);
+  print("");
+  i = i + 1;
+}
+
+// Sanity assertions.
+assert_eq(minify("[ 1, 2, 3 ]"), "[1,2,3]");
+assert_eq(minify("{ \"a\" : 1 , \"b\" : 2 }"), "{\"a\":1,\"b\":2}");
+assert_eq(minify("{\"x\":\"hello world\"}"), "{\"x\":\"hello world\"}");
+assert_eq(minify("  {  }  "), "{}");
+// whitespace inside strings preserved
+assert_eq(minify("{\"x\":\"a b  c\\td\"}"), "{\"x\":\"a b  c\\td\"}");
+// backslash escape inside string: next char copied verbatim
+assert_eq(minify("{\"x\":\"a\\\"b\"}"), "{\"x\":\"a\\\"b\"}");
+print("All assertions passed.");
+
+// Render a string on a single line by replacing newlines/tabs with
+// visible escape forms (for printing).
+fn oneline(s: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(s) {
+    let c = str(s[i]);
+    if c == "\n" {
+      out = out + "\\n"
+    } else {
+      if c == "\t" {
+        out = out + "\\t"
+      } else {
+        out = out + c
+      }
+    };
+    i = i + 1;
+  }
+  out
+}

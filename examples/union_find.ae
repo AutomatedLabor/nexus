@@ -1,0 +1,126 @@
+// union_find.ae
+// =============
+// Union-Find (disjoint set) with path compression and union-by-rank.
+// We build a disjoint-set forest, support `find(x)` (return root of
+// the tree containing x) and `union(a, b)` (merge the two sets), and
+// use it to detect cycles in an undirected graph.
+
+// Make a "set" data structure: two parallel arrays `parent` and
+// `rank`, indexed by node id.
+fn make_set(n: int) -> ([int], [int]) {
+  let mut parent = [];
+  let mut rank = [];
+  let mut i = 0;
+  while i < n {
+    push(parent, i);
+    push(rank, 0);
+    i = i + 1;
+  }
+  (parent, rank)
+}
+
+// Find with path compression (iterative; recursion would be cleaner
+// but the loop is more obvious). Returns the root of the set
+// containing x.
+fn find(parent: [int], x: int) -> int {
+  let mut root = x;
+  while parent[root] != root { root = parent[root] }
+  // Compress: point every node along the path directly at root.
+  let mut cur = x;
+  while parent[cur] != root {
+    let nxt = parent[cur];
+    parent[cur] = root;
+    cur = nxt;
+  }
+  root
+}
+
+// Union by rank. Returns true if the two were in different sets (a
+// merge actually happened), false if they were already joined.
+fn union(parent: [int], rank: [int], a: int, b: int) -> bool {
+  let ra = find(parent, a);
+  let rb = find(parent, b);
+  if ra == rb { false } else {
+    if rank[ra] < rank[rb] {
+      parent[ra] = rb
+    } else {
+      if rank[ra] == rank[rb] { rank[ra] = rank[ra] + 1 };
+      parent[rb] = ra
+    };
+    true
+  }
+}
+
+// Detect whether an undirected graph (as an edge list of (u, v)
+// pairs) contains a cycle. We process every edge; if `find(u) ==
+// find(v)`, the two endpoints are already connected and the edge
+// would close a cycle.
+fn has_cycle(n: int, edges: [(int, int)]) -> bool {
+  let s = make_set(n);
+  let parent = s.0;
+  let rank = s.1;
+  let mut i = 0;
+  let mut cycle = false;
+  while (i < len(edges)) && (!cycle) {
+    let e = edges[i];
+    if find(parent, e.0) == find(parent, e.1) {
+      cycle = true
+    } else {
+      let _ = union(parent, rank, e.0, e.1)
+    };
+    i = i + 1;
+  }
+  cycle
+}
+
+print("== Union-Find with path compression ==");
+print("");
+
+// Build a set of 8 elements.
+let n = 8;
+let s = make_set(n);
+let parent = s.0;
+let rank = s.1;
+
+// Union a few pairs.
+print("union operations:");
+let unions = [(0, 1), (1, 2), (3, 4), (5, 6), (6, 7), (4, 5)];
+let mut i = 0;
+while i < len(unions) {
+  let p = unions[i];
+  let merged = union(parent, rank, p.0, p.1);
+  print(f"  union({p.0}, {p.1}) -> merged={merged}");
+  i = i + 1;
+}
+print("");
+
+// Now there are two sets: {0,1,2} and {3,4,5,6,7}.
+print(f"find(0) = {find(parent, 0)}");
+print(f"find(1) = {find(parent, 1)}");
+print(f"find(2) = {find(parent, 2)}");
+print(f"find(3) = {find(parent, 3)}");
+print(f"find(4) = {find(parent, 4)}");
+print(f"find(5) = {find(parent, 5)}");
+print(f"find(6) = {find(parent, 6)}");
+print(f"find(7) = {find(parent, 7)}");
+print("");
+
+// Merge the two remaining sets.
+let m = union(parent, rank, 2, 7);
+print(f"union(2, 7) -> merged={m}  (all 8 elements now in one set)");
+print(f"find(0) = {find(parent, 0)}  (same root as find(7) = {find(parent, 7)})");
+print("");
+
+// Cycle detection on two graphs.
+let g1 = [(0, 1), (1, 2), (2, 3), (3, 0)];   // 4-cycle
+let g2 = [(0, 1), (1, 2), (2, 3), (3, 4)];   // path, no cycle
+print(f"graph 1 has cycle: {has_cycle(5, g1)}");
+print(f"graph 2 has cycle: {has_cycle(5, g2)}");
+print("");
+
+// Sanity assertions.
+assert_eq(m, true);
+assert_eq(find(parent, 0), find(parent, 7));
+assert_eq(has_cycle(5, g1), true);
+assert_eq(has_cycle(5, g2), false);
+print("All assertions passed.");

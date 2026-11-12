@@ -1,0 +1,159 @@
+// lru_cache_demo.ae
+// ==================
+// A small LRU cache demo: put 5 items into a cache of capacity 3,
+// observe the eviction, then `get` each key to show which survived.
+// We represent the cache as a 3-tuple `(cap, keys, vals)` where the
+// parallel arrays are ordered LRU (index 0) to MRU (last index).
+
+// Find the index of `key` in `arr`, or -1 if absent.
+fn index_of(arr: [int], key: int) -> int {
+  let mut i = 0;
+  let mut found = -1;
+  while i < len(arr) {
+    if arr[i] == key { found = i };
+    i = i + 1;
+  }
+  found
+}
+
+// Move the entry at index `i` to the end of both parallel arrays.
+fn move_to_end(keys: [int], vals: [int], i: int) -> ([int], [int]) {
+  let k = keys[i];
+  let v = vals[i];
+  let mut new_keys = [];
+  let mut new_vals = [];
+  let mut j = 0;
+  while j < len(keys) {
+    if j != i {
+      push(new_keys, keys[j]);
+      push(new_vals, vals[j]);
+    };
+    j = j + 1;
+  }
+  push(new_keys, k);
+  push(new_vals, v);
+  (new_keys, new_vals)
+}
+
+// Build an empty cache of capacity `cap`.
+fn lru_new(cap: int) -> (int, [int], [int]) {
+  (cap, [], [])
+}
+
+// `get(cache, key) -> (cache', value)`. Returns the value if present
+// (and marks the entry MRU), or -9999 if absent. The returned cache
+// reflects the MRU bump.
+fn lru_get(cache: (int, [int], [int]), key: int) -> ((int, [int], [int]), int) {
+  let cap = cache.0;
+  let keys = cache.1;
+  let vals = cache.2;
+  let i = index_of(keys, key);
+  if i == -1 {
+    (cache, -9999)
+  } else {
+    let moved = move_to_end(keys, vals, i);
+    let mk = moved.0;
+    let mv = moved.1;
+    ((cap, mk, mv), mv[len(mv) - 1])
+  }
+}
+// `put(cache, key, value) -> cache'`. If key is present, update and
+// bump to MRU. Otherwise insert at MRU; if over capacity, evict LRU.
+fn lru_put(cache: (int, [int], [int]), key: int, val: int) -> (int, [int], [int]) {
+  let cap = cache.0;
+  let keys = cache.1;
+  let vals = cache.2;
+  let i = index_of(keys, key);
+  if i != -1 {
+    let moved = move_to_end(keys, vals, i);
+    let mk = moved.0;
+    let mv = moved.1;
+    // overwrite the last (which is the key we moved)
+    mv[len(mv) - 1] = val;
+    (cap, mk, mv)
+  } else {
+    push(keys, key);
+    push(vals, val);
+    if len(keys) > cap {
+      // evict LRU (index 0)
+      let mut nk = [];
+      let mut nv = [];
+      let mut j = 1;
+      while j < len(keys) {
+        push(nk, keys[j]);
+        push(nv, vals[j]);
+        j = j + 1;
+      }
+      (cap, nk, nv)
+    } else {
+      (cap, keys, vals)
+    }
+  }
+}
+
+print("== LRU cache demo (capacity 3) ==");
+print("");
+
+let mut cache = lru_new(3);
+cache = lru_put(cache, 1, 100);
+cache = lru_put(cache, 2, 200);
+cache = lru_put(cache, 3, 300);
+print("after put(1,100), put(2,200), put(3,300):");
+print(f"  keys: {show_keys(cache.1)}  vals: {show_vals(cache.2)}");
+print("");
+
+cache = lru_put(cache, 4, 400);  // evicts key 1 (LRU)
+print("after put(4,400) -- evicts LRU (key 1):");
+print(f"  keys: {show_keys(cache.1)}  vals: {show_vals(cache.2)}");
+print("");
+
+let r2 = lru_get(cache, 2);  // bump key 2 to MRU
+cache = r2.0;
+print(f"after get(2) = {r2.1}  -- bump key 2 to MRU:");
+print(f"  keys: {show_keys(cache.1)}  vals: {show_vals(cache.2)}");
+print("");
+
+cache = lru_put(cache, 5, 500);  // evicts key 3 (LRU now)
+print("after put(5,500) -- evicts LRU (key 3):");
+print(f"  keys: {show_keys(cache.1)}  vals: {show_vals(cache.2)}");
+print("");
+
+// After these operations the cache should be [4, 2, 5] (LRU->MRU).
+let final_keys = cache.1;
+let final_vals = cache.2;
+print("final cache contents (LRU -> MRU):");
+let mut i = 0;
+while i < len(final_keys) {
+  print(f"  key {final_keys[i]} = {final_vals[i]}");
+  i = i + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(final_keys, [4, 2, 5]);
+assert_eq(final_vals, [400, 200, 500]);
+let r_miss = lru_get(cache, 1);
+assert_eq(r_miss.1, -9999);
+print("All assertions passed.");
+
+fn show_keys(arr: [int]) -> string {
+  let mut out = "[";
+  let mut i = 0;
+  while i < len(arr) {
+    if i > 0 { out = out + ", " };
+    out = out + str(arr[i]);
+    i = i + 1;
+  }
+  out + "]"
+}
+
+fn show_vals(arr: [int]) -> string {
+  let mut out = "[";
+  let mut i = 0;
+  while i < len(arr) {
+    if i > 0 { out = out + ", " };
+    out = out + str(arr[i]);
+    i = i + 1;
+  }
+  out + "]"
+}

@@ -1,0 +1,120 @@
+// topo_sort_courses.ae
+// ====================
+// Topological sort of course prerequisites. Each course may require
+// one or more other courses first. We use Kahn's algorithm: count
+// incoming edges, queue nodes with zero in-degree, pop and emit them,
+// decrement neighbors, repeat. If we emit fewer than the total node
+// count, the graph has a cycle.
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+// Kahn's algorithm. `adj` is an adjacency list: adj[u] is the list
+// of courses that depend on `u` (i.e. `u` is a prereq of each).
+// Returns the topologically sorted list of node indices, or an
+// empty list if a cycle exists.
+fn topo_sort(n: int, adj: [[int]]) -> [int] {
+  let mut in_deg = repeat(n, 0);
+  // Compute in-degrees by scanning every adjacency list.
+  let mut i = 0;
+  while i < n {
+    let mut j = 0;
+    while j < len(adj[i]) {
+      let v = adj[i][j];
+      in_deg[v] = in_deg[v] + 1;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  // Queue of zero-in-degree nodes (use a simple FIFO array).
+  let mut queue = [];
+  let mut k = 0;
+  while k < n {
+    if in_deg[k] == 0 { push(queue, k) };
+    k = k + 1;
+  }
+  let mut out = [];
+  let mut head = 0;
+  while head < len(queue) {
+    let u = queue[head];
+    head = head + 1;
+    push(out, u);
+    let mut j = 0;
+    while j < len(adj[u]) {
+      let v = adj[u][j];
+      in_deg[v] = in_deg[v] - 1;
+      if in_deg[v] == 0 { push(queue, v) };
+      j = j + 1;
+    }
+  }
+  if len(out) == n { out } else { [] }
+}
+
+print("== Topological sort: course prerequisites ==");
+print("");
+
+// Courses (encoded as indices):
+//   0 = "Intro to CS"
+//   1 = "Data Structures"
+//   2 = "Algorithms"
+//   3 = "Databases"
+//   4 = "Operating Systems"
+//   5 = "Compilers"
+//   6 = "Networks"
+//
+// Prereqs:
+//   0 -> 1 (Intro before DS)
+//   1 -> 2 (DS before Algorithms)
+//   1 -> 3 (DS before Databases)
+//   2 -> 5 (Algorithms before Compilers)
+//   3 -> 4 (Databases before OS)  -- OK, somewhat artificial
+//   0 -> 6 (Intro before Networks)
+let names = ["Intro to CS", "Data Structures", "Algorithms",
+             "Databases", "Operating Systems", "Compilers", "Networks"];
+let n = 7;
+let adj = [
+  [1, 6],
+  [2, 3],
+  [5],
+  [4],
+  [],
+  [],
+  []
+];
+let order = topo_sort(n, adj);
+print(f"course graph has {n} nodes, {order_len(adj)} edges");
+let mut i = 0;
+while i < len(order) {
+  let c = order[i];
+  print(f"  {i + 1}. {names[c]}");
+  i = i + 1;
+}
+print("");
+
+// A cyclic graph: A -> B -> C -> A.
+let adj_cycle = [[1], [2], [0]];
+let order_cycle = topo_sort(3, adj_cycle);
+print(f"cyclic graph topo sort: {order_cycle} (empty = cycle detected)");
+
+// Sanity assertions.
+assert_eq(len(order), n);
+assert_eq(order_cycle, []);
+assert_eq(topo_sort(3, [[1], [], [1]]), [0, 2, 1]);
+print("All assertions passed.");
+
+// Helper: count total edges across the adjacency list (declared last;
+// Aether lets us forward-reference top-level functions from above).
+fn order_len(adj: [[int]]) -> int {
+  let mut total = 0;
+  let mut i = 0;
+  while i < len(adj) {
+    total = total + len(adj[i]);
+    i = i + 1;
+  }
+  total
+}

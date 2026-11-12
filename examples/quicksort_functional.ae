@@ -1,0 +1,76 @@
+// quicksort_functional.ae
+// =======================
+// Quicksort in functional style. We pick the first element as the
+// pivot, partition the rest into "less or equal" and "greater" with
+// `filter`, then recursively sort each and concatenate.
+//
+// This is not in-place quicksort (it allocates new arrays at every
+// step), but it's a clean, idiomatic functional implementation.
+
+// Concatenate two int arrays into a new array.
+fn concat(a: [int], b: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(a) { push(out, a[i]); i = i + 1; }
+  let mut j = 0;
+  while j < len(b) { push(out, b[j]); j = j + 1; }
+  out
+}
+
+// Functional quicksort. Returns a new sorted array.
+fn qsort(arr: [int]) -> [int] {
+  if len(arr) <= 1 {
+    arr
+  } else {
+    let pivot = arr[0];
+    // tail = arr[1..]
+    let mut tail = [];
+    let mut i = 1;
+    while i < len(arr) { push(tail, arr[i]); i = i + 1; }
+    let le = filter(tail, fn(x: int) -> bool { x <= pivot });
+    let gt = filter(tail, fn(x: int) -> bool { x > pivot });
+    concat(concat(qsort(le), [pivot]), qsort(gt))
+  }
+}
+
+// Render an int array as a comma-separated "[a, b, c]" string.
+fn show(arr: [int]) -> string {
+  let mut out = "[";
+  let mut i = 0;
+  while i < len(arr) {
+    if i > 0 { out = out + ", " };
+    out = out + str(arr[i]);
+    i = i + 1;
+  }
+  out + "]"
+}
+
+print("== Quicksort (functional) ==");
+print("");
+
+let cases = [
+  [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5],
+  [5, 4, 3, 2, 1],
+  [1, 2, 3, 4, 5],
+  [42],
+  [],
+  [7, 7, 7, 7],
+  [3, -1, 4, -1, 5, -9, 2, 6, -5, 3]
+];
+let mut i = 0;
+while i < len(cases) {
+  let arr = cases[i];
+  let sorted = qsort(arr);
+  print(f"  {show(arr)} -> {show(sorted)}");
+  i = i + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(qsort([]), []);
+assert_eq(qsort([1]), [1]);
+assert_eq(qsort([3, 1, 2]), [1, 2, 3]);
+assert_eq(qsort([5, 4, 3, 2, 1]), [1, 2, 3, 4, 5]);
+assert_eq(qsort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]), [1, 1, 2, 3, 3, 4, 5, 5, 5, 6, 9]);
+assert_eq(qsort([3, -1, 4, -1, 5, -9, 2, 6, -5, 3]), [-9, -5, -1, -1, 2, 3, 3, 4, 5, 6]);
+print("All assertions passed.");

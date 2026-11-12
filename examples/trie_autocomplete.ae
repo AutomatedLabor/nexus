@@ -1,0 +1,171 @@
+// trie_autocomplete.ae
+// =====================
+// A trie (prefix tree) for autocomplete. We insert words one letter at
+// a time, walking/creating child nodes. Each node tracks whether a
+// word ends here. For autocomplete, we descend to the prefix, then DFS
+// to collect all complete words below.
+//
+// Tries are represented as a flat array of node records. Each node is
+// a tuple (is_word: int, children: [int]) where children is a parallel
+// pair of arrays (letters: [string], next: [int]) so we can find a
+// child by letter without a hash map.
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+// A trie is stored as 4 parallel arrays indexed by node id:
+//   is_word[id]   : 1 if this node marks the end of a word
+//   letters[id]   : list of edge labels (single chars)
+//   nexts[id]     : list of child node ids (parallel to letters)
+//   parent[id]    : parent id, or -1 for root
+// We allocate a fresh node and append to all four arrays.
+fn new_trie() -> ([int], [[string]], [[int]], [int]) {
+  let is_word = [0];
+  let letters = [[]];
+  let nexts = [[]];
+  let parent = [-1];
+  (is_word, letters, nexts, parent)
+}
+
+// Find (or create) the child of node `u` with edge label `c`.
+// Mutates the trie arrays in place.
+fn step(is_word: [int], letters: [[string]], nexts: [[int]], parent: [int],
+       u: int, c: string) -> int {
+  let ls = letters[u];
+  let mut i = 0;
+  let mut found = -1;
+  while i < len(ls) {
+    if ls[i] == c { found = nexts[u][i] };
+    i = i + 1;
+  }
+  if found != -1 {
+    found
+  } else {
+    // allocate a new node
+    let id = len(is_word);
+    push(is_word, 0);
+    push(letters, []);
+    push(nexts, []);
+    push(parent, u);
+    push(letters[u], c);
+    push(nexts[u], id);
+    id
+  }
+}
+
+// Insert a word into the trie.
+fn insert(trie: ([int], [[string]], [[int]], [int]), word: string) -> int {
+  let is_word = trie.0;
+  let letters = trie.1;
+  let nexts = trie.2;
+  let parent = trie.3;
+  let mut u = 0;
+  let mut i = 0;
+  while i < len(word) {
+    u = step(is_word, letters, nexts, parent, u, str(word[i]));
+    i = i + 1;
+  }
+  is_word[u] = 1;
+  0
+}
+
+// Collect all complete words below node `start`. We walk the trie
+// depth-first, accumulating letters in a string buffer. Each time we
+// hit a node with is_word == 1, we emit the current prefix.
+fn collect(is_word: [int], letters: [[string]], nexts: [[int]],
+           start: int, prefix: string) -> [string] {
+  let mut out = [];
+  if is_word[start] == 1 { push(out, prefix) };
+  let ls = letters[start];
+  let mut i = 0;
+  while i < len(ls) {
+    let sub = collect(is_word, letters, nexts, nexts[start][i], prefix + ls[i]);
+    let mut j = 0;
+    while j < len(sub) { push(out, sub[j]); j = j + 1; }
+    i = i + 1;
+  }
+  out
+}
+
+// Find the node id matching `prefix`, or -1 if not present.
+fn find_node(trie: ([int], [[string]], [[int]], [int]), prefix: string) -> int {
+  let is_word = trie.0;
+  let letters = trie.1;
+  let nexts = trie.2;
+  let parent = trie.3;
+  let mut u = 0;
+  let mut i = 0;
+  let mut ok = true;
+  while (i < len(prefix)) && ok {
+    let c = str(prefix[i]);
+    let ls = letters[u];
+    let mut j = 0;
+    let mut next_id = -1;
+    while j < len(ls) {
+      if ls[j] == c { next_id = nexts[u][j] };
+      j = j + 1;
+    }
+    if next_id == -1 { ok = false } else { u = next_id };
+    i = i + 1;
+  }
+  if ok { u } else { -1 }
+}
+
+// Autocomplete: return all words in the trie that start with `prefix`.
+fn autocomplete(trie: ([int], [[string]], [[int]], [int]), prefix: string) -> [string] {
+  let u = find_node(trie, prefix);
+  if u == -1 {
+    []
+  } else {
+    collect(trie.0, trie.1, trie.2, u, prefix)
+  }
+}
+
+print("== Trie autocomplete ==");
+print("");
+
+let t = new_trie();
+let words = ["cat", "car", "card", "care", "careful", "dog", "do", "door"];
+print("inserted words:");
+let mut i = 0;
+while i < len(words) {
+  let _ = insert(t, words[i]);
+  print("  " + words[i]);
+  i = i + 1;
+}
+print("");
+
+let prefixes = ["ca", "car", "do", "x"];
+let mut k = 0;
+while k < len(prefixes) {
+  let p = prefixes[k];
+  let matches = autocomplete(t, p);
+  print(f"autocomplete(\"{p}\") -> {show_words(matches)}");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(autocomplete(t, "ca"), ["cat", "car", "card", "care", "careful"]);
+assert_eq(autocomplete(t, "car"), ["car", "card", "care", "careful"]);
+assert_eq(autocomplete(t, "do"), ["do", "dog", "door"]);
+assert_eq(autocomplete(t, "x"), []);
+assert_eq(autocomplete(t, "cat"), ["cat"]);
+print("All assertions passed.");
+
+// Render a [string] as a comma-separated, quoted list.
+fn show_words(arr: [string]) -> string {
+  let mut out = "[";
+  let mut i = 0;
+  while i < len(arr) {
+    if i > 0 { out = out + ", " };
+    out = out + "\"" + arr[i] + "\"";
+    i = i + 1;
+  }
+  out + "]"
+}

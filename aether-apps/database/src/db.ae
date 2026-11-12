@@ -1,0 +1,624 @@
+// aether-apps/database/src/db.ae
+// =================================
+// A key-value store with a SQL-ish query language, written in pure Aether.
+//
+// Two storage layers share one DB handle:
+//   - **KV store**: a real `Map` (via stdlib `mapNew`/`mapSet`/`mapGet`/...)
+//     keyed by any value. O(1) average get/put. Use `put`/`get`/`delete`/
+//     `scan`/`count`/`keys`.
+//   - **Table**: an array of row `Map`s (column name -> value). Use `insert`/
+//     `select`/`update`/`query` for SQL-ish operations.
+//
+// The `query` function parses a tiny SQL subset:
+//   - `SELECT * FROM <table>` — all columns of every row
+//   - `SELECT a, b FROM <table>` — project columns
+//   - `... WHERE col = <int|bool|string>` — equality filter
+//   - `... WHERE col = <int> AND col2 = <int>` — AND filter (multiple)
+//
+// Limitations (documented in README.md):
+//   - No OR, no < / > / <= / >=, no JOIN, no GROUP BY, no ORDER BY.
+//   - Column names are alphanumeric identifiers.
+//   - String literals must be double-quoted.
+//   - Integer literals are signed decimal.
+//   - The KV store and the table are independent. `query` runs against the
+//     table only.
+//
+// All public functions return either the updated DB (for chaining) or a
+// result value. Mutations are in-place: `put` mutates `db.storage` and
+// returns `db`; `insert` mutates `db.rows` and returns the new row id.
+//
+// No `for in` loops (defensive against the v1 evaluator's for-loop-scope
+// quirk). All iteration uses `while` with explicit indices.
+
+//----------------------------------------------------------------------------
+// Types
+//----------------------------------------------------------------------------
+
+// A DB is a struct with three fields. The sema doesn't accept generic
+// struct field types (like `map<string, any>`), so we use `any` and rely
+// on the runtime type checks inside each function.
+struct DB {
+  storage: any,   // Map<any, any> — KV store
+  rows: any,      // [Map<string, any>] — table rows
+  columns: any,   // [string] — schema (best-effort, optional)
+  next_id: int,   // auto-increment id for inserted rows
+}
+
+//----------------------------------------------------------------------------
+// Construction
+//----------------------------------------------------------------------------
+
+// new() — return an empty DB.
+pub fn new() -> DB {
+  DB {
+    storage: mapNew(),
+    rows: [],
+    columns: [],
+    next_id: 1,
+  }
+}
+
+//----------------------------------------------------------------------------
+// KV store operations
+//----------------------------------------------------------------------------
+
+// put(db, key, val) — store key -> val in the KV map. Returns db for chaining.
+pub fn put(db: DB, key: any, val: any) -> DB {
+  mapSet(db.storage, key, val);
+  db
+}
+
+// get(db, key) — return the value for key, or unit () if not present.
+pub fn get(db: DB, key: any) -> any {
+  if mapHas(db.storage, key) {
+    mapGet(db.storage, key)
+  } else {
+    ()
+  }
+}
+
+// getOr(db, key, default) — return the value for key, or default if not present.
+pub fn getOr(db: DB, key: any, default: any) -> any {
+  if mapHas(db.storage, key) {
+    mapGet(db.storage, key)
+  } else {
+    default
+  }
+}
+
+// delete(db, key) — remove the entry for key. Returns true if it existed.
+pub fn delete(db: DB, key: any) -> bool {
+  mapDelete(db.storage, key)
+}
+
+// has(db, key) — true if the key exists in the KV store.
+pub fn has(db: DB, key: any) -> bool {
+  mapHas(db.storage, key)
+}
+
+// scan(db, filter_fn) — return [key, val] pairs (each pair is a 2-element
+// [any]) where filter_fn(key, val) is true.
+pub fn scan(db: DB, filter_fn: fn(any, any) -> bool) -> [any] {
+  let mut out = [];
+  let ks = mapKeys(db.storage);
+  let mut i = 0;
+  while i < len(ks) {
+    let k = ks[i];
+    let v = mapGet(db.storage, k);
+    if filter_fn(k, v) {
+      push(out, [k, v]);
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// count(db) — number of entries in the KV store.
+pub fn count(db: DB) -> int {
+  mapSize(db.storage)
+}
+
+// keys(db) — array of all keys in the KV store (insertion order).
+pub fn keys(db: DB) -> [any] {
+  mapKeys(db.storage)
+}
+
+// values(db) — array of all values in the KV store (insertion order).
+pub fn values(db: DB) -> [any] {
+  mapValues(db.storage)
+}
+
+//----------------------------------------------------------------------------
+// Table (SQL-ish) operations
+//----------------------------------------------------------------------------
+
+// insert(db, row) — append a row (a Map<string, any>) to the table.
+// Auto-tags the row with an `id` field if it doesn't already have one.
+// Returns the row's id.
+pub fn insert(db: DB, row: any) -> int {
+  let used_explicit_id = mapHas(row, "id");
+  let id = if used_explicit_id {
+    mapGet(row, "id")
+  } else {
+    let auto = db.next_id;
+    mapSet(row, "id", auto);
+    auto
+  };
+  if used_explicit_id {
+    let rid = mapGet(row, "id");
+    if rid >= db.next_id {
+      db.next_id = rid + 1;
+    };
+  } else {
+    db.next_id = db.next_id + 1;
+  };
+  push(db.rows, row);
+  // Track any new columns.
+  let rks = mapKeys(row);
+  let mut i = 0;
+  while i < len(rks) {
+    let col = rks[i];
+    if !contains_str(db.columns, col) {
+      push(db.columns, col);
+    };
+    i = i + 1;
+  }
+  id
+}
+
+// Helper: linear search in a string array.
+fn contains_str(arr: [string], s: string) -> bool {
+  let mut i = 0;
+  let mut found = false;
+  while i < len(arr) && !found {
+    if arr[i] == s {
+      found = true;
+    };
+    i = i + 1;
+  }
+  found
+}
+
+// select(db, cols, where_fn) — return rows (as a list of Maps) where
+// `where_fn(row)` is true. If `cols` is empty, returns the whole row;
+// otherwise projects only the named columns.
+pub fn select(db: DB, cols: [string], where_fn: fn(any) -> bool) -> [any] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(db.rows) {
+    let row = db.rows[i];
+    if where_fn(row) {
+      if len(cols) == 0 {
+        push(out, row);
+      } else {
+        push(out, project(row, cols));
+      };
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// Helper: project a row down to the given columns (preserves column order
+// from the input list).
+fn project(row: any, cols: [string]) -> any {
+  let out = mapNew();
+  let mut i = 0;
+  while i < len(cols) {
+    let c = cols[i];
+    if mapHas(row, c) {
+      mapSet(out, c, mapGet(row, c));
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// update(db, where_fn, update_fn) — for every row where `where_fn(row)` is
+// true, call `update_fn(row)` (which mutates the row in place). Returns the
+// number of rows updated.
+pub fn update(db: DB, where_fn: fn(any) -> bool, update_fn: fn(any) -> unit) -> int {
+  let mut n = 0;
+  let mut i = 0;
+  while i < len(db.rows) {
+    let row = db.rows[i];
+    if where_fn(row) {
+      update_fn(row);
+      n = n + 1;
+    };
+    i = i + 1;
+  }
+  n
+}
+
+// deleteRows(db, where_fn) — remove every row where `where_fn(row)` is true.
+// Returns the number of rows deleted.
+pub fn deleteRows(db: DB, where_fn: fn(any) -> bool) -> int {
+  let mut kept = [];
+  let mut n = 0;
+  let mut i = 0;
+  while i < len(db.rows) {
+    let row = db.rows[i];
+    if where_fn(row) {
+      n = n + 1;
+    } else {
+      push(kept, row);
+    };
+    i = i + 1;
+  }
+  db.rows = kept;
+  n
+}
+
+// rowCount(db) — number of rows in the table.
+pub fn rowCount(db: DB) -> int {
+  len(db.rows)
+}
+
+//----------------------------------------------------------------------------
+// Display / formatting
+//----------------------------------------------------------------------------
+
+// to_table(rows) — render a list of row Maps as a tab-separated table.
+// The header is the union of every row's keys (preserving insertion order
+// of the first appearance).
+pub fn to_table(rows: [any]) -> string {
+  if len(rows) == 0 {
+    "(empty table)"
+  } else {
+    let cols = collect_columns(rows);
+    let header = join_str(cols, " | ");
+    let body = render_rows(rows, cols);
+    header + "\n" + body
+  }
+}
+
+// Helper: collect all column names across all rows, preserving first-seen order.
+fn collect_columns(rows: [any]) -> [string] {
+  let mut cols = [];
+  let mut i = 0;
+  while i < len(rows) {
+    let rks = mapKeys(rows[i]);
+    let mut j = 0;
+    while j < len(rks) {
+      let c = rks[j];
+      if !contains_str(cols, c) {
+        push(cols, c);
+      };
+      j = j + 1;
+    };
+    i = i + 1;
+  }
+  cols
+}
+
+// Helper: render rows as pipe-separated values, one row per line.
+fn render_rows(rows: [any], cols: [string]) -> string {
+  let mut lines = [];
+  let mut i = 0;
+  while i < len(rows) {
+    let row = rows[i];
+    let mut cells = [];
+    let mut j = 0;
+    while j < len(cols) {
+      let c = cols[j];
+      let cell = if mapHas(row, c) {
+        display_val(mapGet(row, c))
+      } else {
+        ""
+      };
+      push(cells, cell);
+      j = j + 1;
+    };
+    push(lines, join_str(cells, " | "));
+    i = i + 1;
+  }
+  join_str(lines, "\n")
+}
+
+// Helper: join an array of strings with a separator.
+fn join_str(arr: [string], sep: string) -> string {
+  if len(arr) == 0 {
+    ""
+  } else {
+    let mut out = arr[0];
+    let mut i = 1;
+    while i < len(arr) {
+      out = out + sep + arr[i];
+      i = i + 1;
+    }
+    out
+  }
+}
+
+// Helper: render a value as a string for table output.
+fn display_val(v: any) -> string {
+  if v == () {
+    "null"
+  } else {
+    if type_of(v) == "string" {
+      v
+    } else {
+      if type_of(v) == "bool" {
+        if v { "true" } else { "false" }
+      } else {
+        str(v)
+      }
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// SQL-ish parser
+//----------------------------------------------------------------------------
+
+// query(db, sql) — parse and execute a tiny SQL subset.
+//
+// Supported grammar:
+//   SELECT <cols> FROM <table> [WHERE <col> = <literal> [AND <col> = <literal>]...]
+//
+// <cols>    := * | <ident> [, <ident>]...
+// <table>  := <ident>          (currently ignored — the table is db.rows)
+// <literal> := <int> | true | false | "<string>"
+//
+// Returns the resulting rows as a list of Maps (projected if columns are
+// specified, full row if `*`).
+pub fn query(db: DB, sql: string) -> [any] {
+  let p = new_parser(sql);
+  let cols = parse_select(p);
+  let _tbl = parse_from(p);
+  let conds = parse_where(p);
+  // Build a where_fn that checks every (col, literal) condition.
+  let where_fn = fn(row: any) -> bool {
+    let mut i = 0;
+    let mut ok = true;
+    while i < len(conds) && ok {
+      let cond = conds[i];
+      let col = cond[0];
+      let lit = cond[1];
+      if !mapHas(row, col) {
+        ok = false;
+      } else {
+        let v = mapGet(row, col);
+        if !val_eq(v, lit) {
+          ok = false;
+        };
+      };
+      i = i + 1;
+    }
+    ok
+  };
+  select(db, cols, where_fn)
+}
+
+// Parser state: a mutable position counter + the source string.
+// We use a closure factory: each parser helper closes over `pos` and `src`.
+// Returning a struct of closures lets us share the mutable state.
+
+fn new_parser(src: string) -> Parser {
+  Parser { pos: 0, src: src }
+}
+
+struct Parser {
+  pos: int,
+  src: string,
+}
+
+fn peek(p: Parser) -> int {
+  if p.pos < len(p.src) {
+    charCode(p.src, p.pos)
+  } else {
+    -1
+  }
+}
+
+fn advance(p: Parser) -> int {
+  let c = peek(p);
+  p.pos = p.pos + 1;
+  c
+}
+
+fn skip_ws(p: Parser) {
+  while is_ws(peek(p)) {
+    let _ = advance(p);
+  }
+}
+
+fn is_ws(c: int) -> bool {
+  c == 32 || c == 9 || c == 10 || c == 13
+}
+
+fn is_digit(c: int) -> bool {
+  c >= 48 && c <= 57
+}
+
+fn is_alpha(c: int) -> bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+}
+
+fn is_alnum(c: int) -> bool {
+  is_alpha(c) || is_digit(c)
+}
+
+// Read an identifier (starts with letter/_, continues with alnum/_).
+fn read_word(p: Parser) -> string {
+  skip_ws(p);
+  let mut s = "";
+  while is_alnum(peek(p)) {
+    s = s + fromCharCode(advance(p));
+  }
+  s
+}
+
+// Parse the SELECT clause — returns the list of column names (empty list
+// for `SELECT *`).
+fn parse_select(p: Parser) -> [string] {
+  let kw = read_word(p);
+  if toUpper(kw) != "SELECT" {
+    panic("query: expected SELECT, got '" + kw + "'")
+  };
+  skip_ws(p);
+  // Either * or ident (, ident)*
+  if peek(p) == 42 {
+    let _ = advance(p);
+    []
+  } else {
+    let mut cols = [];
+    let c = read_word(p);
+    push(cols, c);
+    skip_ws(p);
+    while peek(p) == 44 {
+      let _ = advance(p);
+      skip_ws(p);
+      push(cols, read_word(p));
+      skip_ws(p);
+    }
+    cols
+  }
+}
+
+// Parse FROM <table> — returns the table name (currently ignored: query
+// always targets db.rows).
+fn parse_from(p: Parser) -> string {
+  let kw = read_word(p);
+  if toUpper(kw) != "FROM" {
+    panic("query: expected FROM, got '" + kw + "'")
+  };
+  read_word(p)
+}
+
+// Parse optional WHERE clause — returns a list of [col, literal] pairs.
+fn parse_where(p: Parser) -> [any] {
+  skip_ws(p);
+  if p.pos >= len(p.src) {
+    []
+  } else {
+    let kw = read_word(p);
+    if toUpper(kw) != "WHERE" {
+      panic("query: expected WHERE or end, got '" + kw + "'")
+    };
+    let mut conds = [];
+    push(conds, parse_condition(p));
+    skip_ws(p);
+    let mut done = false;
+    while !done {
+      // Lookahead for AND
+      let save = p.pos;
+      let next_kw = read_word(p);
+      if toUpper(next_kw) == "AND" {
+        push(conds, parse_condition(p));
+        skip_ws(p);
+      } else {
+        // Not an AND — restore and stop.
+        p.pos = save;
+        done = true;
+      };
+    }
+    conds
+  }
+}
+
+// Parse a single `<col> = <literal>` condition. Returns a 2-element [col, literal].
+fn parse_condition(p: Parser) -> [any] {
+  let col = read_word(p);
+  skip_ws(p);
+  if peek(p) != 61 {
+    panic("query: expected '=' in condition")
+  };
+  let _ = advance(p);
+  skip_ws(p);
+  let lit = parse_literal(p);
+  [col, lit]
+}
+
+// Parse a literal: int (with optional -), bool, or "..."-quoted string.
+fn parse_literal(p: Parser) -> any {
+  skip_ws(p);
+  let c = peek(p);
+  if c == 34 {
+    // Double-quoted string.
+    let _ = advance(p);
+    let mut s = "";
+    let mut done = false;
+    while !done && peek(p) != -1 {
+      let ch = peek(p);
+      if ch == 34 {
+        let _ = advance(p);
+        done = true;
+      } else {
+        s = s + fromCharCode(ch);
+        let _ = advance(p);
+      };
+    }
+    s
+  } else {
+    if c == 45 || is_digit(c) {
+      // Integer (optional leading -).
+      let mut s = "";
+      if c == 45 {
+        s = s + "-";
+        let _ = advance(p);
+      };
+      while is_digit(peek(p)) {
+        s = s + fromCharCode(advance(p));
+      }
+      int(s)
+    } else {
+      // true / false / null
+      let w = read_word(p);
+      if w == "true" {
+        true
+      } else {
+        if w == "false" {
+          false
+        } else {
+          if w == "null" {
+            ()
+          } else {
+            panic("query: unrecognized literal '" + w + "'")
+          }
+        }
+      }
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Equality helpers
+//----------------------------------------------------------------------------
+
+// val_eq(a, b) — deep equality between two any-typed values.
+fn val_eq(a: any, b: any) -> bool {
+  let ta = type_of(a);
+  let tb = type_of(b);
+  if ta != tb {
+    false
+  } else {
+    if ta == "int" || ta == "float" || ta == "string" || ta == "bool" {
+      a == b
+    } else {
+      if ta == "unit" {
+        true
+      } else {
+        // For maps, arrays: not supported in this minimal engine.
+        a == b
+      }
+    }
+  }
+}
+
+// toUpper(s) — ASCII uppercase.
+fn toUpper(s: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(s) {
+    let c = charCode(s, i);
+    if c >= 97 && c <= 122 {
+      out = out + fromCharCode(c - 32);
+    } else {
+      out = out + fromCharCode(c);
+    };
+    i = i + 1;
+  }
+  out
+}

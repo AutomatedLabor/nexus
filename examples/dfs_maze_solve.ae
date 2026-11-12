@@ -1,0 +1,126 @@
+// dfs_maze_solve.ae
+// ==================
+// Depth-first search maze solver. We start at the top-left corner of
+// a small maze and recursively explore neighbors (up/down/left/right)
+// until we reach the bottom-right. We track the path as a list of
+// (row, col) flat indices and print it once solved.
+//
+// DFS doesn't give the shortest path, but it does find *a* path if
+// one exists. The recursion uses an explicit visited set (a parallel
+// int array, 0/1) to avoid revisiting cells and infinite loops.
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+// Append a single int to a copy of an array (functional style).
+fn snoc(arr: [int], v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(arr) { push(out, arr[i]); i = i + 1; }
+  push(out, v);
+  out
+}
+
+// Recursive DFS. Returns a path (list of flat indices) from src to
+// dst, or [] if no path. `visited` is a mutable array that we mutate
+// in place to mark cells we've already pushed on the stack.
+fn dfs(maze: [[int]], rows: int, cols: int, cur: int, dst: int, visited: [int], path: [int]) -> [int] {
+  if cur == dst {
+    snoc(path, cur)
+  } else {
+    let r = int(cur / cols);
+    let c = cur % cols;
+    let offs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    let mut d = 0;
+    let mut out = [];
+    while (d < 4) && (len(out) == 0) {
+      let off = offs[d];
+      let nr = r + off[0];
+      let nc = c + off[1];
+      if (nr >= 0) && (nr < rows) && (nc >= 0) && (nc < cols) {
+        if maze[nr][nc] == 0 {
+          let ni = nr * cols + nc;
+          if visited[ni] == 0 {
+            visited[ni] = 1;
+            let sub = dfs(maze, rows, cols, ni, dst, visited, snoc(path, cur));
+            if len(sub) > 0 { out = sub };
+          }
+        }
+      };
+      d = d + 1;
+    }
+    out
+  }
+}
+
+// Solve a maze from src to dst. Returns the path as a list of flat
+// indices (or [] if no path).
+fn solve(maze: [[int]], rows: int, cols: int, src: int, dst: int) -> [int] {
+  let n = rows * cols;
+  let mut visited = repeat(n, 0);
+  visited[src] = 1;
+  dfs(maze, rows, cols, src, dst, visited, [])
+}
+
+// Render a flat path as "(r, c) -> (r, c) -> ..."
+fn show_path(path: [int], cols: int) -> string {
+  reduce(path, fn(acc: string, idx: int) -> string {
+    let r = int(idx / cols);
+    let c = idx % cols;
+    let cell = "(" + str(r) + ", " + str(c) + ")";
+    if acc == "" { cell } else { acc + " -> " + cell }
+  }, "")
+}
+
+print("== DFS maze solver ==");
+print("");
+
+// Maze layout (5x6). 0 = open, 1 = wall.
+let maze = [
+  [0, 1, 0, 0, 0, 0],
+  [0, 1, 0, 1, 1, 0],
+  [0, 0, 0, 1, 0, 0],
+  [1, 1, 0, 1, 0, 1],
+  [0, 0, 0, 0, 0, 0]
+];
+let rows = 5;
+let cols = 6;
+
+print("maze (# = wall, . = open):");
+let mut r = 0;
+while r < rows {
+  let mut row_str = "  ";
+  let mut c = 0;
+  while c < cols {
+    let ch = if maze[r][c] == 0 { "." } else { "#" };
+    row_str = row_str + ch + " ";
+    c = c + 1;
+  }
+  print(row_str);
+  r = r + 1;
+}
+print("");
+
+let path = solve(maze, rows, cols, 0, rows * cols - 1);
+print(f"path (len {len(path)}):");
+print(f"  {show_path(path, cols)}");
+print("");
+
+// An unsolvable maze: the destination is walled off on all sides.
+let maze2 = [
+  [0, 1, 0],
+  [1, 1, 0],
+  [0, 0, 1]
+];
+let path2 = solve(maze2, 3, 3, 0, 8);
+print(f"unsolvable maze path: {show_path(path2, 3)} (empty = no path)");
+print("");
+
+assert_eq(len(solve(maze, 5, 6, 0, 29)) > 0, true);
+assert_eq(solve(maze2, 3, 3, 0, 8), []);
+print("All assertions passed.");

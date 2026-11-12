@@ -1,0 +1,135 @@
+// bellman_ford.ae
+// ===============
+// Bellman-Ford single-source shortest path. Handles graphs with
+// negative weights and detects negative-weight cycles reachable from
+// the source. We use an edge-list representation: each edge is a
+// (u, v, w) triple. The algorithm relaxes every edge V-1 times, then
+// makes one more pass to detect further relaxations (a sign of a
+// negative cycle).
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+// Returns (dist, has_negative_cycle) as a tuple. `dist` is the
+// shortest-path estimate from `src` to every node, with `INF` (~10^9)
+// meaning "unreachable". If a negative cycle exists (and is reachable
+// from src), the second element of the tuple is true.
+fn bellman_ford(n: int, edges: [(int, int, int)], src: int) -> ([int], bool) {
+  let mut dist = repeat(n, 1000000000);
+  dist[src] = 0;
+  let mut i = 0;
+  while i < n - 1 {
+    let mut j = 0;
+    let mut changed = false;
+    while j < len(edges) {
+      let e = edges[j];
+      let u = e.0;
+      let v = e.1;
+      let w = e.2;
+      if (dist[u] != 1000000000) && (dist[u] + w < dist[v]) {
+        dist[v] = dist[u] + w;
+        changed = true;
+      };
+      j = j + 1;
+    }
+    if !changed { i = n };
+    i = i + 1;
+  }
+  // One more pass to detect negative cycle.
+  let mut neg = false;
+  let mut j = 0;
+  while j < len(edges) {
+    let e = edges[j];
+    let u = e.0;
+    let v = e.1;
+    let w = e.2;
+    if (dist[u] != 1000000000) && (dist[u] + w < dist[v]) {
+      neg = true;
+    };
+    j = j + 1;
+  }
+  (dist, neg)
+}
+
+// Format a distance vector for printing.
+fn show_dist(dist: [int]) -> string {
+  let mut out = "[";
+  let mut i = 0;
+  while i < len(dist) {
+    if i > 0 { out = out + ", " };
+    let d = dist[i];
+    if d == 1000000000 {
+      out = out + "INF"
+    } else {
+      out = out + str(d)
+    };
+    i = i + 1;
+  }
+  out + "]"
+}
+
+print("== Bellman-Ford shortest path ==");
+print("");
+
+// Graph (5 nodes A=0, B=1, C=2, D=3, E=4) with some negative weights.
+//   A -> B  :  6
+//   A -> C  :  7
+//   B -> D  :  5
+//   C -> D  : -3
+//   D -> E  :  2
+//   C -> B  : -2
+let edges = [
+  (0, 1, 6),
+  (0, 2, 7),
+  (1, 3, 5),
+  (2, 3, -3),
+  (3, 4, 2),
+  (2, 1, -2)
+];
+let n = 5;
+let src = 0;
+let result = bellman_ford(n, edges, src);
+let dist = result.0;
+let neg = result.1;
+print(f"node count: {n}, source: {src}");
+print(f"edges ({len(edges)}):");
+let mut i = 0;
+while i < len(edges) {
+  let e = edges[i];
+  print(f"  {e.0} -> {e.1}  w = {e.2}");
+  i = i + 1;
+}
+print("");
+print(f"dist from source: {show_dist(dist)}");
+print(f"negative cycle: {neg}");
+print("");
+
+// A second graph with a negative cycle:
+//   0 -> 1  w = 1
+//   1 -> 2  w = -3
+//   2 -> 1  w = 1     (this forms a negative cycle: 1 -> 2 -> 1 = -2)
+let edges2 = [
+  (0, 1, 1),
+  (1, 2, -3),
+  (2, 1, 1)
+];
+let r2 = bellman_ford(3, edges2, 0);
+print("graph with a negative cycle:");
+print(f"  dist: {show_dist(r2.0)}");
+print(f"  negative cycle: {r2.1}");
+print("");
+
+// Sanity assertions.
+assert_eq(r2.1, true);
+assert_eq(neg, false);
+assert_eq(dist[0], 0);
+assert_eq(dist[1], 5);   // 0 -> 2 -> 1 = 7 + (-2) = 5
+assert_eq(dist[2], 7);   // 0 -> 2 = 7
+assert_eq(dist[3], 4);   // 0 -> 2 -> 3 = 7 + (-3) = 4
+assert_eq(dist[4], 6);   // 0 -> 2 -> 3 -> 4 = 4 + 2 = 6
+print("All assertions passed.");

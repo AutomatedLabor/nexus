@@ -1,0 +1,133 @@
+// bloom_filter.ae
+// ===============
+// A simple Bloom filter using k independent hash functions and a bit
+// array of size m. The filter supports `add(item)` (mark k bits) and
+// `contains(item)` (check k bits; false positives possible, no false
+// negatives). We hash strings with `charCode` sums at different seed
+// offsets to get k cheap independent-ish hashes.
+//
+// We implement the "bit array" as a plain int array of 0/1 values,
+// because Aether has no native bitset.
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+// A combined FNV-1a + simple polynomial hash with a seed offset, so
+// that different `seed` values give different (cheap, independent-ish)
+// hash functions for the Bloom filter.
+fn hash_str(s: string, seed: int, m: int) -> int {
+  let mut h = seed;
+  let mut i = 0;
+  while i < len(s) {
+    let c = charCode(s, i);
+    h = ((h * 16777619) ^ c) & 0x7fffffff;
+    i = i + 1;
+  }
+  h % m
+}
+
+// Make an empty Bloom filter with `m` bits and `k` hashes.
+fn make_filter(m: int, k: int) -> ([int], int, int) {
+  (repeat(m, 0), m, k)
+}
+
+// Compute the i-th hash of `s` for i in [0, k).
+fn bit_indices(s: string, i: int, k: int, m: int) -> int {
+  // mix `i` into the seed so each hash differs
+  hash_str(s, 0x811c9dc5 + i * 2654435761, m)
+}
+
+// Add an item to the filter: set all k hashed bits.
+fn add(filter: ([int], int, int), s: string) -> int {
+  let bits = filter.0;
+  let m = filter.1;
+  let k = filter.2;
+  let mut i = 0;
+  while i < k {
+    let idx = bit_indices(s, i, k, m);
+    bits[idx] = 1;
+    i = i + 1;
+  }
+  0
+}
+
+// Test membership: every one of the k hashed bits must be 1.
+fn contains(filter: ([int], int, int), s: string) -> bool {
+  let bits = filter.0;
+  let m = filter.1;
+  let k = filter.2;
+  let mut i = 0;
+  let mut all_set = true;
+  while (i < k) && all_set {
+    let idx = bit_indices(s, i, k, m);
+    if bits[idx] == 0 { all_set = false };
+    i = i + 1;
+  }
+  all_set
+}
+
+print("== Bloom filter ==");
+print("");
+
+// A small filter: 64 bits, 3 hash functions.
+let f = make_filter(64, 3);
+let bits = f.0;
+let _ = add(f, "hello");
+let _ = add(f, "world");
+let _ = add(f, "aether");
+
+print("inserted: hello, world, aether");
+print("");
+
+let probe = ["hello", "world", "aether", "missing", "world!", "Hello"];
+print("probe results:");
+let mut i = 0;
+while i < len(probe) {
+  let p = probe[i];
+  let r = contains(f, p);
+  let tag = if r { "maybe in set" } else { "definitely NOT in set" };
+  let label = "  contains(\"" + p + "\") -> " + str(r) + "  (" + tag + ")";
+  print(label);
+  i = i + 1;
+}
+print("");
+
+// With a tiny 64-bit filter and 3 inserted items, false positives are
+// plausible. We assert the in-set items come back true (no false
+// negatives), but we don't make hard guarantees about the missing
+// ones.
+assert_eq(contains(f, "hello"), true);
+assert_eq(contains(f, "world"), true);
+assert_eq(contains(f, "aether"), true);
+// "missing" was never added; we can't assert false (a false positive
+// is allowed), but we can at least report it.
+let missing = contains(f, "missing");
+let miss_label = "contains(\"missing\") = " + str(missing) + "  (could be a false positive)";
+print(miss_label);
+print("");
+
+// Stress: add many items and verify no false negatives on the inserted
+// set. We use a bigger filter (1024 bits, 4 hashes) to keep the false
+// positive rate low.
+let g = make_filter(1024, 4);
+let words = ["apple", "banana", "cherry", "date", "elderberry",
+             "fig", "grape", "honeydew", "kiwi", "lemon"];
+let mut j = 0;
+while j < len(words) {
+  let _ = add(g, words[j]);
+  j = j + 1;
+}
+let mut all_present = true;
+let mut k = 0;
+while k < len(words) {
+  if !contains(g, words[k]) { all_present = false };
+  k = k + 1;
+}
+print(f"all {len(words)} inserted items present (no false negatives): {all_present}");
+assert_eq(all_present, true);
+print("All assertions passed.");

@@ -1,0 +1,111 @@
+// segment_tree.ae
+// ===============
+// A segment tree for range-sum queries. We build a complete binary
+// tree over an array of N integers, where each internal node stores
+// the sum of its two children. Then we answer queries of the form
+// "what's the sum from index l to index r (inclusive)?" in O(log N)
+// and update a single element in O(log N).
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+// Build a segment tree of size 4*N from the data array of length N.
+// Returns the tree array.
+fn build(data: [int], n: int) -> [int] {
+  let tree = repeat(4 * n + 8, 0);
+  build_rec(data, n, tree, 0, 0, n - 1);
+  tree
+}
+
+fn build_rec(data: [int], n: int, tree: [int], node: int, lo: int, hi: int) -> int {
+  if lo == hi {
+    tree[node] = data[lo];
+  } else {
+    let mid = int((lo + hi) / 2);
+    let l = build_rec(data, n, tree, 2 * node + 1, lo, mid);
+    let r = build_rec(data, n, tree, 2 * node + 2, mid + 1, hi);
+    tree[node] = l + r;
+  };
+  tree[node]
+}
+
+// Range sum query: sum of data[l..=r].
+fn query(tree: [int], node: int, lo: int, hi: int, l: int, r: int) -> int {
+  if (r < lo) || (hi < l) {
+    0
+  } else {
+    if (l <= lo) && (hi <= r) {
+      tree[node]
+    } else {
+      let mid = int((lo + hi) / 2);
+      let a = query(tree, 2 * node + 1, lo, mid, l, r);
+      let b = query(tree, 2 * node + 2, mid + 1, hi, l, r);
+      a + b
+    }
+  }
+}
+
+
+// Point update: set data[idx] = val, then refresh all ancestors.
+fn update(tree: [int], node: int, lo: int, hi: int, idx: int, val: int) -> int {
+  if lo == hi {
+    tree[node] = val;
+    val
+  } else {
+    let mid = int((lo + hi) / 2);
+    if idx <= mid {
+      let _ = update(tree, 2 * node + 1, lo, mid, idx, val);
+    } else {
+      let _ = update(tree, 2 * node + 2, mid + 1, hi, idx, val);
+    };
+    tree[node] = tree[2 * node + 1] + tree[2 * node + 2];
+    tree[node]
+  }
+}
+
+print("== Segment tree (range sum) ==");
+print("");
+
+// Render an int array as a comma-separated "[a, b, c]" string.
+fn show(arr: [int]) -> string {
+  let mut out = "[";
+  let mut i = 0;
+  while i < len(arr) {
+    if i > 0 { out = out + ", " };
+    out = out + str(arr[i]);
+    i = i + 1;
+  }
+  out + "]"
+}
+
+let data = [3, 1, 4, 1, 5, 9, 2, 6];
+let n = len(data);
+let tree = build(data, n);
+print(f"data: {show(data)}");
+print("");
+
+// A few range queries.
+print("range sum queries:");
+print(f"  sum[0..7] = {query(tree, 0, 0, n - 1, 0, n - 1)}  (total)");
+print(f"  sum[2..4] = {query(tree, 0, 0, n - 1, 2, 4)}");
+print(f"  sum[0..3] = {query(tree, 0, 0, n - 1, 0, 3)}");
+print(f"  sum[4..7] = {query(tree, 0, 0, n - 1, 4, 7)}");
+print("");
+
+// Point update: change data[3] from 1 to 100.
+print("update: data[3] = 1 -> 100");
+let _ = update(tree, 0, 0, n - 1, 3, 100);
+print(f"  sum[0..7] = {query(tree, 0, 0, n - 1, 0, n - 1)}  (new total)");
+print(f"  sum[2..4] = {query(tree, 0, 0, n - 1, 2, 4)}  (data[2] + data[3] + data[4])");
+print("");
+
+// Sanity assertions.
+assert_eq(query(tree, 0, 0, n - 1, 0, n - 1), 3 + 1 + 4 + 100 + 5 + 9 + 2 + 6);
+assert_eq(query(tree, 0, 0, n - 1, 2, 4), 4 + 100 + 5);
+assert_eq(query(tree, 0, 0, n - 1, 0, 3), 3 + 1 + 4 + 100);
+print("All assertions passed.");

@@ -1,0 +1,369 @@
+// aether-apps/database/tests/tests.ae
+// ===================================
+// 30+ assertions covering every public function of the database app.
+// Top-level asserts run when the file is loaded via `runModule` (or the
+// Aether CLI's `aether test`). The runner treats a panic as a test failure.
+
+import {
+  new, put, get, getOr, delete, has, scan, count, keys, values,
+  insert, select, update, deleteRows, rowCount, to_table, query,
+} from "../src/db.ae";
+
+//----------------------------------------------------------------------------
+// KV store
+//----------------------------------------------------------------------------
+
+// new returns an empty DB.
+assert_eq(count(new()), 0);
+assert_eq(rowCount(new()), 0);
+
+// put and get
+let mut db = new();
+db = put(db, "a", 1);
+db = put(db, "b", 2);
+assert_eq(count(db), 2);
+assert_eq(get(db, "a"), 1);
+assert_eq(get(db, "b"), 2);
+
+// put overwrites
+let mut db2 = new();
+db2 = put(db2, "x", 1);
+db2 = put(db2, "x", 99);
+assert_eq(count(db2), 1);
+assert_eq(get(db2, "x"), 99);
+
+// get missing returns unit ()
+assert_eq(get(new(), "missing"), ());
+
+// getOr with default
+let mut db3 = new();
+db3 = put(db3, "a", 1);
+assert_eq(getOr(db3, "a", 99), 1);
+assert_eq(getOr(db3, "z", 99), 99);
+
+// has
+let mut db4 = new();
+db4 = put(db4, "a", 1);
+assert_eq(has(db4, "a"), true);
+assert_eq(has(db4, "b"), false);
+
+// delete existing
+let mut db5 = new();
+db5 = put(db5, "a", 1);
+db5 = put(db5, "b", 2);
+assert_eq(delete(db5, "a"), true);
+assert_eq(count(db5), 1);
+assert_eq(has(db5, "a"), false);
+assert_eq(has(db5, "b"), true);
+
+// delete missing returns false
+assert_eq(delete(new(), "ghost"), false);
+
+// keys and values
+let mut db6 = new();
+db6 = put(db6, "a", 1);
+db6 = put(db6, "b", 2);
+db6 = put(db6, "c", 3);
+let ks = keys(db6);
+let vs = values(db6);
+assert_eq(len(ks), 3);
+assert_eq(len(vs), 3);
+assert_eq(ks[0], "a");
+assert_eq(ks[1], "b");
+assert_eq(ks[2], "c");
+assert_eq(vs[0], 1);
+assert_eq(vs[1], 2);
+assert_eq(vs[2], 3);
+
+// scan with filter
+let mut db7 = new();
+db7 = put(db7, "a", 1);
+db7 = put(db7, "b", 2);
+db7 = put(db7, "c", 3);
+db7 = put(db7, "d", 4);
+let even = scan(db7, fn(k: any, v: any) -> bool {
+  type_of(v) == "int" && (v == 2 || v == 4)
+});
+assert_eq(len(even), 2);
+let e0 = even[0];
+let e1 = even[1];
+assert_eq(e0[1], 2);
+assert_eq(e1[1], 4);
+
+// scan no matches
+let mut db7b = new();
+db7b = put(db7b, "a", 1);
+let none = scan(db7b, fn(k: any, v: any) -> bool { false });
+assert_eq(len(none), 0);
+
+//----------------------------------------------------------------------------
+// Table: insert / rowCount / select
+//----------------------------------------------------------------------------
+
+// insert assigns id
+let mut tdb = new();
+let r1 = mapNew();
+mapSet(r1, "name", "Ada");
+let id1 = insert(tdb, r1);
+assert_eq(id1, 1);
+assert_eq(rowCount(tdb), 1);
+
+// insert bumps next_id
+let mut tdb2 = new();
+let r2a = mapNew();
+mapSet(r2a, "name", "A");
+let r2b = mapNew();
+mapSet(r2b, "name", "B");
+let r2c = mapNew();
+mapSet(r2c, "name", "C");
+let tid1 = insert(tdb2, r2a);
+let tid2 = insert(tdb2, r2b);
+let tid3 = insert(tdb2, r2c);
+assert_eq(tid1, 1);
+assert_eq(tid2, 2);
+assert_eq(tid3, 3);
+assert_eq(rowCount(tdb2), 3);
+
+// insert with explicit id
+let mut tdb3 = new();
+let r3a = mapNew();
+mapSet(r3a, "id", 42);
+mapSet(r3a, "name", "X");
+let xid = insert(tdb3, r3a);
+assert_eq(xid, 42);
+let r3b = mapNew();
+mapSet(r3b, "name", "Y");
+let yid = insert(tdb3, r3b);
+assert_eq(yid, 43);
+
+// select all
+let mut tdb4 = new();
+let r4a = mapNew();
+mapSet(r4a, "name", "A");
+insert(tdb4, r4a);
+let r4b = mapNew();
+mapSet(r4b, "name", "B");
+insert(tdb4, r4b);
+let all = select(tdb4, [], fn(r: any) -> bool { true });
+assert_eq(len(all), 2);
+
+// select with filter
+let mut tdb5 = new();
+let r5a = mapNew();
+mapSet(r5a, "age", 30);
+insert(tdb5, r5a);
+let r5b = mapNew();
+mapSet(r5b, "age", 40);
+insert(tdb5, r5b);
+let r5c = mapNew();
+mapSet(r5c, "age", 50);
+insert(tdb5, r5c);
+let over40 = select(tdb5, [], fn(r: any) -> bool {
+  mapHas(r, "age") && mapGet(r, "age") > 35
+});
+assert_eq(len(over40), 2);
+
+// select project columns
+let mut tdb6 = new();
+let r6 = mapNew();
+mapSet(r6, "name", "Ada");
+mapSet(r6, "age", 36);
+mapSet(r6, "city", "London");
+insert(tdb6, r6);
+let projected = select(tdb6, ["name", "age"], fn(r: any) -> bool { true });
+assert_eq(len(projected), 1);
+let prow = projected[0];
+assert_eq(mapGet(prow, "name"), "Ada");
+assert_eq(mapGet(prow, "age"), 36);
+assert_eq(mapHas(prow, "city"), false);
+
+//----------------------------------------------------------------------------
+// update / deleteRows
+//----------------------------------------------------------------------------
+
+// update
+let mut tdb7 = new();
+let r7a = mapNew();
+mapSet(r7a, "name", "A");
+mapSet(r7a, "score", 10);
+insert(tdb7, r7a);
+let r7b = mapNew();
+mapSet(r7b, "name", "B");
+mapSet(r7b, "score", 20);
+insert(tdb7, r7b);
+let n7 = update(tdb7, fn(r: any) -> bool {
+  mapHas(r, "score") && mapGet(r, "score") < 15
+}, fn(r: any) -> () {
+  mapSet(r, "score", 999);
+});
+assert_eq(n7, 1);
+let after7 = select(tdb7, [], fn(r: any) -> bool {
+  mapHas(r, "name") && mapGet(r, "name") == "A"
+});
+assert_eq(mapGet(after7[0], "score"), 999);
+
+// update no matches
+let mut tdb8 = new();
+let r8 = mapNew();
+mapSet(r8, "name", "A");
+insert(tdb8, r8);
+let n8 = update(tdb8, fn(r: any) -> bool { false }, fn(r: any) -> () { mapSet(r, "x", 1); });
+assert_eq(n8, 0);
+
+// deleteRows
+let mut tdb9 = new();
+let r9a = mapNew();
+mapSet(r9a, "x", 1);
+insert(tdb9, r9a);
+let r9b = mapNew();
+mapSet(r9b, "x", 2);
+insert(tdb9, r9b);
+let r9c = mapNew();
+mapSet(r9c, "x", 3);
+insert(tdb9, r9c);
+let nd9 = deleteRows(tdb9, fn(r: any) -> bool {
+  mapHas(r, "x") && mapGet(r, "x") == 2
+});
+assert_eq(nd9, 1);
+assert_eq(rowCount(tdb9), 2);
+
+//----------------------------------------------------------------------------
+// to_table
+//----------------------------------------------------------------------------
+
+// empty table
+assert_eq(to_table([]), "(empty table)");
+
+// table renders header and rows
+let r10a = mapNew();
+mapSet(r10a, "a", 1);
+mapSet(r10a, "b", "x");
+let r10b = mapNew();
+mapSet(r10b, "a", 2);
+mapSet(r10b, "b", "y");
+let out10 = to_table([r10a, r10b]);
+assert_eq(strSlice(out10, 0, 5), "a | b");
+
+//----------------------------------------------------------------------------
+// query — SQL-ish
+//----------------------------------------------------------------------------
+
+// SELECT * FROM t
+let mut qdb = new();
+let q1 = mapNew();
+mapSet(q1, "name", "A");
+insert(qdb, q1);
+let q2 = mapNew();
+mapSet(q2, "name", "B");
+insert(qdb, q2);
+let qres = query(qdb, "SELECT * FROM t");
+assert_eq(len(qres), 2);
+
+// SELECT name, age FROM t
+let mut qdb2 = new();
+let q3 = mapNew();
+mapSet(q3, "name", "Ada");
+mapSet(q3, "age", 36);
+insert(qdb2, q3);
+let qres2 = query(qdb2, "SELECT name, age FROM t");
+assert_eq(len(qres2), 1);
+let qrow2 = qres2[0];
+assert_eq(mapGet(qrow2, "name"), "Ada");
+assert_eq(mapGet(qrow2, "age"), 36);
+assert_eq(mapHas(qrow2, "id"), false);
+
+// SELECT * FROM t WHERE age = 40
+let mut qdb3 = new();
+let q4a = mapNew();
+mapSet(q4a, "age", 30);
+insert(qdb3, q4a);
+let q4b = mapNew();
+mapSet(q4b, "age", 40);
+insert(qdb3, q4b);
+let qres3 = query(qdb3, "SELECT * FROM t WHERE age = 40");
+assert_eq(len(qres3), 1);
+assert_eq(mapGet(qres3[0], "age"), 40);
+
+// SELECT * FROM t WHERE city = "London"
+let mut qdb4 = new();
+let q5a = mapNew();
+mapSet(q5a, "city", "London");
+insert(qdb4, q5a);
+let q5b = mapNew();
+mapSet(q5b, "city", "Paris");
+insert(qdb4, q5b);
+let qres4 = query(qdb4, "SELECT * FROM t WHERE city = \"London\"");
+assert_eq(len(qres4), 1);
+assert_eq(mapGet(qres4[0], "city"), "London");
+
+// SELECT * FROM t WHERE active = true
+let mut qdb5 = new();
+let q6a = mapNew();
+mapSet(q6a, "active", true);
+insert(qdb5, q6a);
+let q6b = mapNew();
+mapSet(q6b, "active", false);
+insert(qdb5, q6b);
+let qres5 = query(qdb5, "SELECT * FROM t WHERE active = true");
+assert_eq(len(qres5), 1);
+assert_eq(mapGet(qres5[0], "active"), true);
+
+// SELECT * FROM t WHERE age = 30 AND city = "London"
+let mut qdb6 = new();
+let q7a = mapNew();
+mapSet(q7a, "age", 30);
+mapSet(q7a, "city", "London");
+insert(qdb6, q7a);
+let q7b = mapNew();
+mapSet(q7b, "age", 30);
+mapSet(q7b, "city", "Paris");
+insert(qdb6, q7b);
+let q7c = mapNew();
+mapSet(q7c, "age", 40);
+mapSet(q7c, "city", "London");
+insert(qdb6, q7c);
+let qres6 = query(qdb6, "SELECT * FROM t WHERE age = 30 AND city = \"London\"");
+assert_eq(len(qres6), 1);
+assert_eq(mapGet(qres6[0], "city"), "London");
+assert_eq(mapGet(qres6[0], "age"), 30);
+
+// SELECT * FROM t (no WHERE) returns all rows
+let mut qdb7 = new();
+let q8a = mapNew();
+mapSet(q8a, "x", 1);
+insert(qdb7, q8a);
+let q8b = mapNew();
+mapSet(q8b, "x", 2);
+insert(qdb7, q8b);
+let qres7 = query(qdb7, "SELECT * FROM t");
+assert_eq(len(qres7), 2);
+
+// SELECT with no match
+let mut qdb8 = new();
+let q9 = mapNew();
+mapSet(q9, "x", 1);
+insert(qdb8, q9);
+let qres8 = query(qdb8, "SELECT * FROM t WHERE x = 999");
+assert_eq(len(qres8), 0);
+
+// SELECT * FROM t WHERE bal = -5 (negative int)
+let mut qdb9 = new();
+let q10a = mapNew();
+mapSet(q10a, "bal", -5);
+insert(qdb9, q10a);
+let q10b = mapNew();
+mapSet(q10b, "bal", 5);
+insert(qdb9, q10b);
+let qres9 = query(qdb9, "SELECT * FROM t WHERE bal = -5");
+assert_eq(len(qres9), 1);
+assert_eq(mapGet(qres9[0], "bal"), -5);
+
+// Case-insensitive keywords
+let mut qdb10 = new();
+let q11 = mapNew();
+mapSet(q11, "x", 1);
+insert(qdb10, q11);
+let qres10 = query(qdb10, "select * from t where x = 1");
+assert_eq(len(qres10), 1);
+
+print("database tests: 30+ assertions passed");

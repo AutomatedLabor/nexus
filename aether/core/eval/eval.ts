@@ -97,8 +97,16 @@ export interface RunOptions {
   stdout?: (s: string) => void;
   /** Hard cap on evaluation steps. Default 1_000_000. */
   maxSteps?: number;
-  /** Host-supplied builtins, merged with the inline builtins. */
+  /** Host-supplied builtins, merged with the inline builtins.
+   *  Installed BEFORE the inline builtins; for shared names the inline
+   *  builtins SKIP the existing entry, so host-supplied builtins take
+   *  precedence (e.g. test-runner's `snapshot`). */
   builtins?: Record<string, (...args: Value[]) => Value>;
+  /** Stdlib builtins (typically `stdlibBuiltins()` from `aether/stdlib`).
+   *  Installed AFTER the inline builtins; for shared names the stdlib version
+   *  is SKIPPED, so inline builtins (e.g. mutating `push`) keep precedence.
+   *  Non-shared stdlib names (e.g. `mapNew`, `regex`) become available. */
+  stdlibBuiltins?: Record<string, (...args: Value[]) => Value>;
   /** Optional seed environment (used by tests). */
   env?: Env;
 }
@@ -301,6 +309,16 @@ class Evaluator {
       }
     }
     this.installInlineBuiltins();
+    if (opts.stdlibBuiltins) {
+      // Install AFTER inline builtins; for shared names the stdlib version
+      // is SKIPPED so inline builtins (e.g. mutating `push`) keep precedence.
+      // This lets module loader / CLI wire in `mapNew` etc. without breaking
+      // existing code that relies on mutating `push`/`map`/`filter`/`reduce`.
+      for (const [name, fn] of Object.entries(opts.stdlibBuiltins)) {
+        if (this.root.vars.has(name)) continue;
+        this.root.vars.set(name, { value: { __native: name, fn }, mut: false });
+      }
+    }
   }
 
   tick(): void {

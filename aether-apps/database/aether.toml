@@ -1,0 +1,13 @@
+[package]
+name = "database"
+version = "0.1.0"
+description = "A key-value store with a SQL-ish query language for Aether. 18 pub functions: new, put, get, getOr, delete, has, scan, count, keys, values, insert, select, update, deleteRows, rowCount, to_table, query. KV layer uses a real Map (via stdlib mapNew/mapSet/etc.); table layer is an array of row Maps. query() parses a tiny SQL subset: SELECT [cols|*] FROM t [WHERE col = lit [AND col = lit]...]."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — uses Aether's core + stdlib builtins
+# (mapNew, mapSet, mapGet, mapHas, mapDelete, mapKeys, mapValues, mapSize,
+#  push, len, type_of, panic, str, int, charCode, fromCharCode, strSlice).
+
+[exports]
+# Exposed via `pub fn` declarations in src/db.ae.

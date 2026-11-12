@@ -1,0 +1,111 @@
+// bfs_grid_shortest.ae
+// ====================
+// Breadth-first search on a 5x5 grid with hardcoded walls. Computes
+// the shortest path length (in steps) from (0,0) to (4,4) and prints
+// it. We flatten (r, c) -> r*5+c and use a simple FIFO queue with a
+// head pointer (no need for a deque).
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+// BFS over a 5x5 grid. Returns the path length (number of steps) or
+// -1 if unreachable. We use a parallel parent array to reconstruct
+// the path later (for inspection), but only the length is returned.
+fn bfs_shortest(grid: [[int]], rows: int, cols: int, src: int, dst: int) -> int {
+  let n = rows * cols;
+  let mut dist = repeat(n, -1);
+  let mut queue = [src];
+  dist[src] = 0;
+  let mut head = 0;
+  let mut found = false;
+  while (head < len(queue)) && (!found) {
+    let cur = queue[head];
+    head = head + 1;
+    if cur == dst {
+      found = true;
+    } else {
+      let r = int(cur / cols);
+      let c = cur % cols;
+      let offs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+      let mut d = 0;
+      while d < 4 {
+        let off = offs[d];
+        let nr = r + off[0];
+        let nc = c + off[1];
+        if (nr >= 0) && (nr < rows) && (nc >= 0) && (nc < cols) {
+          if grid[nr][nc] == 0 {
+            let ni = nr * cols + nc;
+            if dist[ni] == -1 {
+              dist[ni] = dist[cur] + 1;
+              push(queue, ni);
+            }
+          }
+        };
+        d = d + 1;
+      }
+    }
+  }
+  if !found { -1 } else { dist[dst] }
+}
+
+print("== BFS grid shortest path ==");
+print("");
+
+// Grid layout. 0 = open, 1 = wall.
+//   0 1 2 3 4
+// 0 S . . # .
+// 1 # # . # .
+// 2 . . . . .
+// 3 . # # # #
+// 4 . . . . E
+let grid = [
+  [0, 0, 0, 1, 0],
+  [1, 1, 0, 1, 0],
+  [0, 0, 0, 0, 0],
+  [0, 1, 1, 1, 1],
+  [0, 0, 0, 0, 0]
+];
+let rows = 5;
+let cols = 5;
+let src = 0;
+let dst = 4 * 5 + 4;
+
+// Render the grid for visual inspection.
+print("grid (# = wall, . = open):");
+let mut r = 0;
+while r < rows {
+  let mut row_str = "  ";
+  let mut c = 0;
+  while c < cols {
+    let ch = if grid[r][c] == 0 { "." } else { "#" };
+    row_str = row_str + ch + " ";
+    c = c + 1;
+  }
+  print(row_str);
+  r = r + 1;
+}
+print("");
+
+let steps = bfs_shortest(grid, rows, cols, src, dst);
+print(f"shortest path length from (0,0) to (4,4): {steps} steps");
+
+// A second grid where the destination is walled off.
+let grid2 = [
+  [0, 0, 1],
+  [1, 0, 1],
+  [0, 1, 0]
+];
+let steps2 = bfs_shortest(grid2, 3, 3, 0, 8);
+print(f"unreachable case path length: {steps2} (-1 = no path)");
+print("");
+
+// Sanity assertions.
+assert_eq(bfs_shortest(grid, 5, 5, 0, 24), 12);
+assert_eq(bfs_shortest(grid2, 3, 3, 0, 8), -1);
+assert_eq(bfs_shortest([[0, 0], [0, 0]], 2, 2, 0, 3), 2);
+print("All assertions passed.");

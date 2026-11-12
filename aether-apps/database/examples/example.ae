@@ -1,0 +1,127 @@
+// aether-apps/database/examples/example.ae
+// =========================================
+// A demo of the database app: creates a KV store, inserts 5 rows, queries,
+// and prints the results. Demonstrates every public function.
+
+import {
+  new, put, get, getOr, delete, has, scan, count, keys, values,
+  insert, select, update, deleteRows, rowCount, to_table, query,
+} from "../src/db.ae";
+
+// Pretty-print a list of rows by calling to_table.
+fn show_rows(label: string, rows: [any]) {
+  print("--- " + label + " (" + str(len(rows)) + " rows) ---");
+  print(to_table(rows));
+  print("");
+}
+
+// Quote a string for safe embedding in display text.
+fn q(s: string) -> string {
+  "\"" + s + "\""
+}
+
+print("== Aether database app ==");
+print("");
+
+// ----- KV store demo -----
+print("--- KV store ---");
+let mut db = new();
+db = put(db, "alpha", 1);
+db = put(db, "beta", 2);
+db = put(db, "gamma", 3);
+db = put(db, "delta", 4);
+db = put(db, "epsilon", 5);
+print("put 5 entries; count = " + str(count(db)));
+print("get(beta) = " + str(get(db, "beta")));
+print("getOr(zeta, 99) = " + str(getOr(db, "zeta", 99)));
+print("has(alpha) = " + str(has(db, "alpha")));
+print("has(zeta)  = " + str(has(db, "zeta")));
+print("delete(gamma) = " + str(delete(db, "gamma")));
+print("after delete, count = " + str(count(db)));
+print("keys: " + str(keys(db)));
+print("values: " + str(values(db)));
+print("");
+
+// ----- Table demo -----
+print("--- Table demo (SQL-ish) ---");
+let mut db2 = new();
+let r1 = mapNew();
+mapSet(r1, "name", "Ada");
+mapSet(r1, "age", 36);
+mapSet(r1, "city", "London");
+let id1 = insert(db2, r1);
+print("inserted Ada as id=" + str(id1));
+
+let r2 = mapNew();
+mapSet(r2, "name", "Linus");
+mapSet(r2, "age", 54);
+mapSet(r2, "city", "Helsinki");
+let id2 = insert(db2, r2);
+print("inserted Linus as id=" + str(id2));
+
+let r3 = mapNew();
+mapSet(r3, "name", "Grace");
+mapSet(r3, "age", 85);
+mapSet(r3, "city", "New York");
+insert(db2, r3);
+
+let r4 = mapNew();
+mapSet(r4, "name", "Alan");
+mapSet(r4, "age", 41);
+mapSet(r4, "city", "London");
+insert(db2, r4);
+
+let r5 = mapNew();
+mapSet(r5, "name", "Margaret");
+mapSet(r5, "age", 85);
+mapSet(r5, "city", "New York");
+insert(db2, r5);
+
+print("row count after 5 inserts: " + str(rowCount(db2)));
+print("");
+show_rows("all rows", select(db2, [], fn(r: any) -> bool { true }));
+
+// ----- SELECT name, age WHERE city = "London" -----
+show_rows("SELECT name, age WHERE city = London",
+  query(db2, "SELECT name, age FROM t WHERE city = \"London\""));
+
+// ----- SELECT * WHERE age = 85 -----
+show_rows("SELECT * WHERE age = 85",
+  query(db2, "SELECT * FROM t WHERE age = 85"));
+
+// ----- SELECT * WHERE age = 85 AND city = "New York" -----
+show_rows("SELECT * WHERE age = 85 AND city = New York",
+  query(db2, "SELECT * FROM t WHERE age = 85 AND city = \"New York\""));
+
+// ----- scan KV for entries whose value is even -----
+let even_entries = scan(db, fn(k: any, v: any) -> bool {
+  type_of(v) == "int" && (v == 2 || v == 4)
+});
+print("--- scan(db, value is even) ---");
+let mut i = 0;
+while i < len(even_entries) {
+  let e = even_entries[i];
+  print("  " + str(e[0]) + " = " + str(e[1]));
+  i = i + 1;
+}
+print("");
+
+// ----- update rows where city = "London" -> set city = "LON" -----
+let n = update(db2, fn(r: any) -> bool {
+  mapHas(r, "city") && mapGet(r, "city") == "London"
+}, fn(r: any) -> () {
+  mapSet(r, "city", "LON");
+});
+print("updated " + str(n) + " rows where city was London");
+print("");
+
+// ----- delete rows where age = 85 -----
+let nd = deleteRows(db2, fn(r: any) -> bool {
+  mapHas(r, "age") && mapGet(r, "age") == 85
+});
+print("deleted " + str(nd) + " rows where age = 85");
+print("");
+
+show_rows("after updates + deletes", select(db2, [], fn(r: any) -> bool { true }));
+
+print("== database demo done ==");

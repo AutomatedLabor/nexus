@@ -1,0 +1,144 @@
+// astar.ae
+// ========
+// A* search on a small grid using the Manhattan-distance heuristic.
+// We find a path from (0,0) to (rows-1, cols-1) that minimizes the
+// number of steps, breaking ties deterministically. The frontier is
+// kept as an unordered list (a "lazy" priority queue): we scan it to
+// pick the lowest f = g + h each iteration. For small grids this is
+// fine and keeps the code small.
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+// Manhattan distance between two flat indices on a grid of width `cols`.
+fn manhattan(a: int, b: int, cols: int) -> int {
+  let ar = int(a / cols);
+  let ac = a % cols;
+  let br = int(b / cols);
+  let bc = b % cols;
+  abs(ar - br) + abs(ac - bc)
+}
+
+// A* on a grid. Returns the path length (steps), or -1 if no path.
+fn astar(grid: [[int]], rows: int, cols: int, src: int, dst: int) -> int {
+  let n = rows * cols;
+  let mut g = repeat(n, 99999);
+  let mut parent = repeat(n, -1);
+  let mut closed = repeat(n, 0);
+  let mut open = [src];
+  g[src] = 0;
+  let mut done = false;
+  let mut guard = 0;
+  let mut steps = -1;
+  while (len(open) > 0) && (!done) && (guard < n * 8) {
+    guard = guard + 1;
+    // Pick node with lowest f = g + h. Linear scan.
+    let mut best_i = 0;
+    let mut best_f = 99999999;
+    let mut i = 0;
+    while i < len(open) {
+      let node = open[i];
+      if closed[node] == 0 {
+        let f = g[node] + manhattan(node, dst, cols);
+        if f < best_f { best_f = f; best_i = i };
+      };
+      i = i + 1;
+    }
+    let cur = open[best_i];
+    // Remove `cur` from open (swap-pop): move last into best_i.
+    let last = open[len(open) - 1];
+    open[best_i] = last;
+    pop(open);
+    if cur == dst {
+      done = true;
+      steps = g[dst];
+    } else {
+      closed[cur] = 1;
+      let r = int(cur / cols);
+      let c = cur % cols;
+      let offs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+      let mut d = 0;
+      while d < 4 {
+        let off = offs[d];
+        let nr = r + off[0];
+        let nc = c + off[1];
+        if (nr >= 0) && (nr < rows) && (nc >= 0) && (nc < cols) {
+          if grid[nr][nc] == 0 {
+            let ni = nr * cols + nc;
+            if closed[ni] == 0 {
+              let tentative = g[cur] + 1;
+              if tentative < g[ni] {
+                g[ni] = tentative;
+                parent[ni] = cur;
+                push(open, ni);
+              }
+            }
+          }
+        };
+        d = d + 1;
+      }
+    }
+  }
+  steps
+}
+
+print("== A* on a grid ==");
+print("");
+
+// 6x6 grid with a few walls.
+//   0 1 2 3 4 5
+// 0 S . . # . .
+// 1 # # . # . .
+// 2 . . . . . .
+// 3 . # # # . #
+// 4 . . . # . .
+// 5 . # . . . E
+let grid = [
+  [0, 0, 0, 1, 0, 0],
+  [1, 1, 0, 1, 0, 0],
+  [0, 0, 0, 0, 0, 0],
+  [0, 1, 1, 1, 0, 1],
+  [0, 0, 0, 1, 0, 0],
+  [0, 1, 0, 0, 0, 0]
+];
+let rows = 6;
+let cols = 6;
+
+print("grid (# = wall, . = open):");
+let mut r = 0;
+while r < rows {
+  let mut row_str = "  ";
+  let mut c = 0;
+  while c < cols {
+    let ch = if grid[r][c] == 0 { "." } else { "#" };
+    row_str = row_str + ch + " ";
+    c = c + 1;
+  }
+  print(row_str);
+  r = r + 1;
+}
+print("");
+
+let steps = astar(grid, rows, cols, 0, rows * cols - 1);
+print(f"A* path length from (0,0) to (5,5): {steps} steps");
+
+// Unreachable case (destination walled off).
+let grid2 = [
+  [0, 1, 0],
+  [1, 1, 0],
+  [0, 1, 0]
+];
+let steps2 = astar(grid2, 3, 3, 0, 8);
+print(f"unreachable case path: {steps2} (-1 = no path)");
+print("");
+
+// Sanity checks. A* should match BFS on a uniform-cost grid.
+assert_eq(astar(grid, 6, 6, 0, 35), 10);
+assert_eq(astar(grid2, 3, 3, 0, 8), -1);
+assert_eq(astar([[0, 0], [0, 0]], 2, 2, 0, 3), 2);
+print("All assertions passed.");

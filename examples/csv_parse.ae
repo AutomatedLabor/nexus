@@ -1,0 +1,141 @@
+// csv_parse.ae
+// ============
+// A small CSV parser. Given a string of CSV text with optional header
+// row, parse each line into a row of fields. We support quoted fields
+// (containing commas, newlines via escape, or escaped quotes via
+// `""`). The parser is single-pass: we walk through the input,
+// accumulating the current field, the current row, and the list of
+// rows.
+//
+// We use a simple state machine:
+//   START_FIELD  -> inside an unquoted field
+//   IN_QUOTES    -> inside a quoted field
+//   QUOTE_IN_QUOTES -> just saw a `"` inside a quoted field
+
+// State ids.
+let S_FIELD = 0;
+let S_QUOTED = 1;
+let S_QUOTE_SEEN = 2;
+
+// Parse CSV `text` into a list of rows, where each row is a [string]
+// of fields.
+fn parse_csv(text: string) -> [[string]] {
+  let mut rows = [];
+  let mut row = [];
+  let mut field = "";
+  let mut state = S_FIELD;
+  let mut i = 0;
+  let n = len(text);
+  // Helper to push the current field and reset it.
+  fn flush() -> int {
+    push(row, field);
+    field = "";
+    0
+  }
+  while i < n {
+    let c = str(text[i]);
+    if state == S_FIELD {
+      if c == "," {
+        let _ = flush();
+      } else {
+        if c == "\n" {
+          let _ = flush();
+          push(rows, row);
+          row = [];
+        } else {
+          if c == "\"" {
+            state = S_QUOTED;
+          } else {
+            if c == "\r" {
+              // skip CR — only \n ends the row
+            } else {
+              field = field + c
+            }
+          }
+        }
+      }
+    } else {
+      if state == S_QUOTED {
+        if c == "\"" {
+          state = S_QUOTE_SEEN;
+        } else {
+          field = field + c
+        }
+      } else {
+        // S_QUOTE_SEEN: previous char was a quote inside a quoted field
+        if c == "\"" {
+          // escaped quote
+          field = field + "\"";
+          state = S_QUOTED;
+        } else {
+          if c == "," {
+            let _ = flush();
+            state = S_FIELD;
+          } else {
+            if c == "\n" {
+              let _ = flush();
+              push(rows, row);
+              row = [];
+              state = S_FIELD;
+            } else {
+              if c == "\r" {
+                // skip
+              } else {
+                // quote closed; treat this char as a literal in the field
+                field = field + c;
+                state = S_FIELD;
+              }
+            }
+          }
+        }
+      }
+    };
+    i = i + 1;
+  }
+  // Flush any remaining field/row at EOF.
+  if (field != "") || (len(row) > 0) {
+    let _ = flush();
+  };
+  if len(row) > 0 {
+    push(rows, row);
+  };
+  rows
+}
+
+// Render a row as `field1 | field2 | field3`.
+fn show_row(row: [string]) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(row) {
+    if i > 0 { out = out + " | " };
+    out = out + row[i];
+    i = i + 1;
+  }
+  out
+}
+
+print("== CSV parser ==");
+print("");
+
+let csv = "name,age,city\nAlice,30,NYC\nBob,25,LA\n\"Carol, Jr.\",40,SF\n\"D, E\",50,\"Boston, MA\"\n";
+print("input:");
+print(csv);
+print("");
+
+let rows = parse_csv(csv);
+print(f"parsed {len(rows)} rows:");
+let mut i = 0;
+while i < len(rows) {
+  print(f"  row {i}: {show_row(rows[i])}");
+  i = i + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(len(rows), 5);
+assert_eq(rows[0], ["name", "age", "city"]);
+assert_eq(rows[1], ["Alice", "30", "NYC"]);
+assert_eq(rows[2], ["Bob", "25", "LA"]);
+assert_eq(rows[3], ["Carol, Jr.", "40", "SF"]);
+assert_eq(rows[4], ["D, E", "50", "Boston, MA"]);
+print("All assertions passed.");

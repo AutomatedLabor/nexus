@@ -1,0 +1,79 @@
+// fizzbuzz_functional.ae
+// =======================
+// FizzBuzz in functional style: we build a list of [1..N] using a
+// helper, then `map` each number to its FizzBuzz label, then print
+// the labels one per line (joined with a comma for compactness).
+//
+// Working around the Aether evaluator quirk where `return X;` after
+// a block can fail, we use bare-expression returns and the ternary-
+// like `if cond { ... } else { ... }` form throughout.
+
+// Build an array [1, 2, ..., n]. We don't use `range()` directly with
+// `map` because `range` returns a `__range` object, not an array.
+fn iota(n: int) -> [int] {
+  let mut out = [];
+  let mut i = 1;
+  while i <= n { push(out, i); i = i + 1; }
+  out
+}
+
+// Classify a single number: "FizzBuzz", "Fizz", "Buzz", or the number
+// as a string.
+fn fizzbuzz(n: int) -> string {
+  let by3 = (n % 3) == 0;
+  let by5 = (n % 5) == 0;
+  if by3 && by5 {
+    "FizzBuzz"
+  } else {
+    if by3 {
+      "Fizz"
+    } else {
+      if by5 { "Buzz" } else { str(n) }
+    }
+  }
+}
+
+print("== FizzBuzz (functional) ==");
+print("");
+
+let n = 20;
+let nums = iota(n);
+let labels = map(nums, fn(x: int) -> string { fizzbuzz(x) });
+
+// Render the labels as a single comma-separated line.
+let rendered = reduce(labels, fn(acc: string, lbl: string) -> string {
+  if acc == "" { lbl } else { acc + ", " + lbl }
+}, "");
+print(f"1..{n}:");
+print("  " + rendered);
+print("");
+
+// Functional filter: which numbers in 1..30 are FizzBuzz (both 3 and 5)?
+let big = iota(30);
+let fizzbuzz_only = filter(big, fn(x: int) -> bool { (x % 3 == 0) && (x % 5 == 0) });
+let rendered2 = reduce(fizzbuzz_only, fn(acc: string, x: int) -> string {
+  if acc == "" { str(x) } else { acc + ", " + str(x) }
+}, "");
+print(f" multiples of 15 in 1..30 (FizzBuzz entries): {rendered2}");
+print("");
+
+// Functional count: how many Fizz, Buzz, and plain numbers in 1..N?
+let all = iota(n);
+let fizz_count = len(filter(all, fn(x: int) -> bool { (x % 3 == 0) && (x % 5 != 0) }));
+let buzz_count = len(filter(all, fn(x: int) -> bool { (x % 3 != 0) && (x % 5 == 0) }));
+let fb_count = len(filter(all, fn(x: int) -> bool { (x % 3 == 0) && (x % 5 == 0) }));
+let plain = n - fizz_count - buzz_count - fb_count;
+print(f"  in 1..{n}: Fizz={fizz_count}, Buzz={buzz_count}, FizzBuzz={fb_count}, plain={plain}");
+print("");
+
+// Sanity assertions.
+assert_eq(fizzbuzz(1), "1");
+assert_eq(fizzbuzz(3), "Fizz");
+assert_eq(fizzbuzz(5), "Buzz");
+assert_eq(fizzbuzz(15), "FizzBuzz");
+assert_eq(fizzbuzz(30), "FizzBuzz");
+assert_eq(fizz_count, 5);  // 3, 6, 9, 12, 18
+assert_eq(buzz_count, 3);  // 5, 10, 20
+assert_eq(fb_count, 1);   // 15
+assert_eq(plain, 11);
+print("All assertions passed.");
