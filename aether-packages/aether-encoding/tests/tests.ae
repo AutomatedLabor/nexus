@@ -1,0 +1,130 @@
+// aether-encoding/tests/tests.ae
+// ===============================
+// 25+ assertions covering every pub function in aether-encoding.
+// We test the four format families (base32, hex, url, url-component)
+// with a mix of known-answer vectors and round-trip checks.
+import {
+  base32Encode, base32Decode,
+  hexEncode, hexDecode,
+  urlEncode, urlDecode,
+  urlEncodeComponent, urlDecodeComponent,
+} from "../src/lib.ae";
+
+//----------------------------------------------------------------------------
+// hex
+//----------------------------------------------------------------------------
+
+// Known-answer: empty
+assert_eq(hexEncode(""), "");
+assert_eq(hexDecode(""), "");
+
+// Known-answer: ASCII
+assert_eq(hexEncode("A"), "41");
+assert_eq(hexEncode("Hi"), "4869");
+assert_eq(hexEncode("abc"), "616263");
+assert_eq(hexEncode("hello"), "68656c6c6f");
+
+// Round-trip ASCII
+assert_eq(hexDecode("41"), "A");
+assert_eq(hexDecode("4869"), "Hi");
+assert_eq(hexDecode("616263"), "abc");
+
+// Known-answer with non-ASCII (use fromCharCode for the é character)
+let e_with_acute = fromCharCode(233);
+assert_eq(hexEncode(e_with_acute), "c3a9");
+assert_eq(hexDecode("c3a9"), e_with_acute);
+
+// Case insensitivity on decode
+assert_eq(hexDecode("C3A9"), e_with_acute);
+assert_eq(hexDecode("C3a9"), e_with_acute);
+
+// Round-trip mixed
+let mixed = "Hello, World! 123";
+assert_eq(hexDecode(hexEncode(mixed)), mixed);
+
+//----------------------------------------------------------------------------
+// base32 — RFC 4648 test vectors
+//----------------------------------------------------------------------------
+
+assert_eq(base32Encode(""), "");
+assert_eq(base32Encode("f"), "MY======");
+assert_eq(base32Encode("fo"), "MZXQ====");
+assert_eq(base32Encode("foo"), "MZXW6===");
+assert_eq(base32Encode("foob"), "MZXW6YQ=");
+assert_eq(base32Encode("fooba"), "MZXW6YTB");
+assert_eq(base32Encode("foobar"), "MZXW6YTBOI======");
+
+// Inverse vectors
+assert_eq(base32Decode(""), "");
+assert_eq(base32Decode("MY======"), "f");
+assert_eq(base32Decode("MZXQ===="), "fo");
+assert_eq(base32Decode("MZXW6==="), "foo");
+assert_eq(base32Decode("MZXW6YQ="), "foob");
+assert_eq(base32Decode("MZXW6YTB"), "fooba");
+assert_eq(base32Decode("MZXW6YTBOI======"), "foobar");
+
+// Case-insensitive decode
+assert_eq(base32Decode("mzxw6ytb"), "fooba");
+assert_eq(base32Decode("mzxq===="), "fo");
+
+// Round-trip on arbitrary input
+let rt = "The quick brown fox";
+assert_eq(base32Decode(base32Encode(rt)), rt);
+
+//----------------------------------------------------------------------------
+// url — whole-URL encoding preserves reserved chars
+//----------------------------------------------------------------------------
+
+// Empty
+assert_eq(urlEncode(""), "");
+assert_eq(urlDecode(""), "");
+
+// Reserved chars preserved
+assert_eq(urlEncode("a/b?c=d"), "a/b?c=d");
+assert_eq(urlEncode("a&b"), "a&b");
+assert_eq(urlEncode("a;b"), "a;b");
+assert_eq(urlEncode("a:b"), "a:b");
+assert_eq(urlEncode("a@b"), "a@b");
+assert_eq(urlEncode("a+b"), "a+b");
+assert_eq(urlEncode("a$b"), "a$b");
+assert_eq(urlEncode("a,b"), "a,b");
+assert_eq(urlEncode("a#b"), "a#b");
+
+// Unreserved preserved
+assert_eq(urlEncode("hello"), "hello");
+assert_eq(urlEncode("a-b.c_d~e"), "a-b.c_d~e");
+assert_eq(urlEncode("ABC123"), "ABC123");
+
+// Whitespace and non-ASCII encoded
+assert_eq(urlEncode("hello world"), "hello%20world");
+assert_eq(urlEncode("a\nb"), "a%0ab");
+assert_eq(urlEncode(e_with_acute), "%c3%a9");
+
+// Round-trip
+assert_eq(urlDecode("hello%20world"), "hello world");
+assert_eq(urlDecode("a/b?c=d"), "a/b?c=d");
+assert_eq(urlDecode("%c3%a9"), e_with_acute);
+assert_eq(urlDecode("%C3%A9"), e_with_acute);
+assert_eq(urlDecode(urlEncode("The quick brown fox")), "The quick brown fox");
+assert_eq(urlDecode(urlEncode(e_with_acute)), e_with_acute);
+
+//----------------------------------------------------------------------------
+// url-component — encodes reserved chars too
+//----------------------------------------------------------------------------
+
+assert_eq(urlEncodeComponent(""), "");
+assert_eq(urlEncodeComponent("hello"), "hello");
+assert_eq(urlEncodeComponent("a-b.c_d~e"), "a-b.c_d~e");
+assert_eq(urlEncodeComponent("hello world"), "hello%20world");
+assert_eq(urlEncodeComponent("a/b?c=d"), "a%2fb%3fc%3dd");
+assert_eq(urlEncodeComponent("a&b"), "a%26b");
+assert_eq(urlEncodeComponent("a#b"), "a%23b");
+assert_eq(urlEncodeComponent(e_with_acute), "%c3%a9");
+
+// Round-trip
+assert_eq(urlDecodeComponent("a%2fb%3fc%3dd"), "a/b?c=d");
+assert_eq(urlDecodeComponent("a%26b"), "a&b");
+assert_eq(urlDecodeComponent(urlEncodeComponent("a/b?c=d")), "a/b?c=d");
+assert_eq(urlDecodeComponent(urlEncodeComponent(e_with_acute)), e_with_acute);
+
+println("aether-encoding: all 30+ assertions passed");

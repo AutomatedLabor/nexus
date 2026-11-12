@@ -1,0 +1,51 @@
+// aether-encoding/examples/example.ae
+// =====================================
+// A demo of the aether-encoding package: shows each of the 8 pub
+// functions with a small input/output snapshot.
+import {
+  base32Encode, base32Decode,
+  hexEncode, hexDecode,
+  urlEncode, urlDecode,
+  urlEncodeComponent, urlDecodeComponent,
+} from "../src/lib.ae";
+
+print("== aether-encoding example ==");
+print("");
+
+let msg = "Hello, World!";
+print("input          = " + msg);
+print("hexEncode      = " + hexEncode(msg));
+print("hexDecode      = " + hexDecode(hexEncode(msg)));
+print("");
+
+let b32 = base32Encode(msg);
+print("base32Encode   = " + b32);
+print("base32Decode   = " + base32Decode(b32));
+print("RFC 4648 vectors:");
+print("  base32Encode(\"f\")      = " + base32Encode("f"));
+print("  base32Encode(\"fo\")     = " + base32Encode("fo"));
+print("  base32Encode(\"foo\")    = " + base32Encode("foo"));
+print("  base32Encode(\"foob\")   = " + base32Encode("foob"));
+print("  base32Encode(\"fooba\")  = " + base32Encode("fooba"));
+print("  base32Encode(\"foobar\") = " + base32Encode("foobar"));
+print("");
+
+let url = "https://example.com/search?q=hello world&lang=en";
+print("url            = " + url);
+print("urlEncode      = " + urlEncode(url));
+print("urlDecode      = " + urlDecode(urlEncode(url)));
+print("");
+
+let comp = "name=Alice & Bob/Special?";
+print("component      = " + comp);
+print("urlEncodeComp  = " + urlEncodeComponent(comp));
+print("urlDecodeComp  = " + urlDecodeComponent(urlEncodeComponent(comp)));
+print("");
+
+let e_acute = fromCharCode(233);
+print("e-acute (U+00E9) hex = " + hexEncode(e_acute));
+print("e-acute b32         = " + base32Encode(e_acute));
+print("e-acute urlEnc      = " + urlEncode(e_acute));
+print("");
+
+print("All demos ran successfully.");

@@ -57,6 +57,10 @@ import * as LruCache from "./lru-cache";
 import * as Trie from "./trie";
 import * as StateMachine from "./state-machine";
 import * as SkipList from "./skip-list";
+// New modules (V3-W6-PKGS2):
+import * as Interval from "./interval";
+import * as DisjointSet from "./disjoint-set";
+import * as Bimap from "./bimap";
 
 export interface StdlibFn {
   name: string;
@@ -112,6 +116,10 @@ export function registerAll(register: (name: string, fn: any) => void): void {
   Trie.register(register);
   StateMachine.register(register);
   SkipList.register(register);
+  // New modules (V3-W6-PKGS2):
+  Interval.register(register);
+  DisjointSet.register(register);
+  Bimap.register(register);
 }
 
 /** Build a {name -> fn} map (used by the evaluator's `opts.builtins`). */
@@ -158,6 +166,10 @@ export const STDLIB_MANIFEST: StdlibModuleManifest[] = [
   Trie.MANIFEST as StdlibModuleManifest,
   StateMachine.MANIFEST as StdlibModuleManifest,
   SkipList.MANIFEST as StdlibModuleManifest,
+  // New modules (V3-W6-PKGS2):
+  Interval.MANIFEST as StdlibModuleManifest,
+  DisjointSet.MANIFEST as StdlibModuleManifest,
+  Bimap.MANIFEST as StdlibModuleManifest,
 ];
 
 /** Total function count across all modules (excluding async — not callable). */

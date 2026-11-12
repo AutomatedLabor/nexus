@@ -1,0 +1,12 @@
+[package]
+name = "aether-encoding"
+version = "0.1.0"
+description = "Encoding utilities for Aether — 8 pure functions for base32 (RFC 4648), lowercase hex, and percent encoding for whole URLs and URL components. Pure Aether (no host calls); UTF-8 substrate."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — this package only uses Aether's core
+# builtins (charCode, fromCharCode, strSlice, len, push, int, panic).
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.
