@@ -1,0 +1,84 @@
+// aether-result/examples/example.ae
+// =================================
+// A demo of the aether-result package.
+import {
+  ok, err, some, none,
+  isOk, isErr, isSome, isNone,
+  unwrap, unwrapOr, unwrapErr, unwrapOption,
+  map, mapErr, andThen, orElse, mapOption, andThenOption,
+  okToOption, errToOption, optionToResult, fromOption,
+  collect, traverse,
+} from "../src/lib.ae";
+
+// Tiny helper: render a Result as text.
+fn show_r(r: Result) -> string {
+  match r {
+    Result::Ok(v) => "Ok(" + str(v) + ")",
+    Result::Err(e) => "Err(" + str(e) + ")",
+  }
+}
+fn show_o(o: Option) -> string {
+  match o {
+    Option::Some(v) => "Some(" + str(v) + ")",
+    Option::None => "None",
+  }
+}
+
+print("== aether-result example ==");
+print("");
+
+print("ok(42)                = " + show_r(ok(42)));
+print("err(\"oops\")           = " + show_r(err("oops")));
+print("some(42)              = " + show_o(some(42)));
+print("none()                = " + show_o(none()));
+print("");
+
+print("isOk(ok(42))          = " + str(isOk(ok(42))));
+print("isErr(err(\"oops\"))    = " + str(isErr(err("oops"))));
+print("isSome(some(42))      = " + str(isSome(some(42))));
+print("isNone(none())        = " + str(isNone(none())));
+print("");
+
+print("unwrap(ok(42))        = " + str(unwrap(ok(42))));
+print("unwrapOr(err(\"x\"), 0) = " + str(unwrapOr(err("x"), 0)));
+print("unwrapErr(err(\"x\"))   = " + unwrapErr(err("x")));
+print("");
+
+print("map(ok(5), x*2)       = " + show_r(map(ok(5), fn(x: int) -> int { x * 2 })));
+print("mapErr(err(\"x\"), +!) = " + show_r(mapErr(err("x"), fn(e: string) -> string { e + "!" })));
+print("");
+
+fn safe_div(a: int) -> Result {
+  if a == 0 { err("div by zero") } else { ok(int(100 / a)) }
+}
+print("safe_div(5)           = " + show_r(safe_div(5)));
+print("safe_div(0)           = " + show_r(safe_div(0)));
+print("andThen(ok(5), div)   = " + show_r(andThen(ok(5), safe_div)));
+print("andThen(ok(0), div)   = " + show_r(andThen(ok(0), safe_div)));
+print("");
+
+fn safe_sqrt(x: int) -> Option {
+  if x < 0 { none() } else { some(x * x) }
+}
+print("safe_sqrt(3)          = " + show_o(safe_sqrt(3)));
+print("safe_sqrt(-1)         = " + show_o(safe_sqrt(-1)));
+print("andThenOption(some(3))= " + show_o(andThenOption(some(3), safe_sqrt)));
+print("");
+
+print("okToOption(ok(42))    = " + show_o(okToOption(ok(42))));
+print("optionToResult(s(7))  = " + show_r(optionToResult(some(7), "missing")));
+print("");
+
+let all_ok = [ok(1), ok(2), ok(3)];
+print("collect([Ok(1),Ok(2),Ok(3)]) = " + show_r(collect(all_ok)));
+let mixed = [ok(1), err("oops"), ok(3)];
+print("collect([Ok,Err,Ok])        = " + show_r(collect(mixed)));
+print("");
+
+let trav = traverse([1, 2, 3], fn(x: int) -> Result {
+  if x > 0 { ok(x * x) } else { err("neg") }
+});
+print("traverse([1,2,3], sq)        = " + show_r(trav));
+
+print("");
+print("All demos ran successfully.");

@@ -1,0 +1,121 @@
+// aether-math/tests/tests.ae
+// =========================
+// 30+ assertions covering every pub function in aether-math.
+import {
+  PI, E_CONST,
+  gcd, lcm, factorial, isPrime, primesUpTo, fib,
+  pow, modPow, exp, ln, log,
+  sqrt_, cbrt,
+  sin, cos, tan, atan, atan2,
+  floor, ceil, round, trunc,
+  clamp, lerp, sign, abs_, min_, max_, sum_, mean, deg, rad,
+} from "../src/lib.ae";
+
+// --- Number theory ---
+assert_eq(gcd(12, 18), 6);
+assert_eq(gcd(15, 0), 15);
+assert_eq(gcd(0, 7), 7);
+assert_eq(gcd(-12, 8), 4);
+assert_eq(lcm(4, 6), 12);
+assert_eq(lcm(0, 5), 0);
+assert_eq(lcm(3, 4), 12);
+assert_eq(factorial(0), 1);
+assert_eq(factorial(1), 1);
+assert_eq(factorial(5), 120);
+assert_eq(factorial(10), 3628800);
+assert_eq(isPrime(2), true);
+assert_eq(isPrime(17), true);
+assert_eq(isPrime(1), false);
+assert_eq(isPrime(15), false);
+assert_eq(isPrime(4), false);
+assert_eq(primesUpTo(20), [2, 3, 5, 7, 11, 13, 17, 19]);
+assert_eq(primesUpTo(1), []);
+assert_eq(primesUpTo(2), [2]);
+assert_eq(fib(0), 0);
+assert_eq(fib(1), 1);
+assert_eq(fib(10), 55);
+assert_eq(fib(15), 610);
+
+// --- Exponentiation ---
+assert_eq(pow(2, 10), 1024);
+assert_eq(pow(3, 4), 81);
+assert_eq(pow(5, 0), 1);
+assert_eq(pow(7, 1), 7);
+assert_eq(modPow(2, 10, 1000), 24);
+assert_eq(modPow(3, 5, 7), 5);
+assert_eq(modPow(2, 0, 100), 1);
+
+// --- exp / ln / log ---
+// exp(0) = 1; exp(1) = e ≈ 2.71828
+assert_eq(exp(0), 1.0);
+// Check within tolerance: e ≈ 2.71828
+let e_val = exp(1);
+assert(e_val > 2.71828 && e_val < 2.71829);
+// ln(1) = 0
+assert_eq(ln(1), 0.0);
+// ln(e) ≈ 1
+let ln_e = ln(e_val);
+assert(ln_e > 0.999 && ln_e < 1.001);
+// log(10, 100) = 2
+let log_10_100 = log(10, 100);
+assert(log_10_100 > 1.999 && log_10_100 < 2.001);
+// log(2, 8) = 3
+let log_2_8 = log(2, 8);
+assert(log_2_8 > 2.999 && log_2_8 < 3.001);
+
+// --- Roots ---
+assert_eq(sqrt_(0), 0.0);
+assert_eq(sqrt_(4), 2.0);
+assert_eq(sqrt_(9), 3.0);
+assert(sqrt_(2) > 1.41421 && sqrt_(2) < 1.41422);
+let cbrt_27 = cbrt(27);
+assert(cbrt_27 > 2.999 && cbrt_27 < 3.001);
+let cbrt_neg = cbrt(-8);
+assert(cbrt_neg > -2.001 && cbrt_neg < -1.999);
+
+// --- Trig ---
+assert(sin(0) > -0.0001 && sin(0) < 0.0001);
+let sin_pi_half = sin(PI / 2);
+assert(sin_pi_half > 0.9999 && sin_pi_half < 1.0001);
+assert(cos(0) > 0.9999 && cos(0) < 1.0001);
+let cos_pi = cos(PI);
+assert(cos_pi > -1.0001 && cos_pi < -0.9999);
+let tan_pi_quarter = tan(PI / 4);
+assert(tan_pi_quarter > 0.9999 && tan_pi_quarter < 1.0001);
+let atan_1 = atan(1);
+assert(atan_1 > 0.7853 && atan_1 < 0.7854);  // pi/4 ≈ 0.7854
+let atan2_1_1 = atan2(1, 1);
+assert(atan2_1_1 > 0.7853 && atan2_1_1 < 0.7854);
+
+// --- Rounding ---
+assert_eq(floor(2.5), 2);
+assert_eq(floor(-2.5), -3);
+assert_eq(floor(3), 3);
+assert_eq(ceil(2.5), 3);
+assert_eq(ceil(-2.5), -2);
+assert_eq(round(2.5), 3);
+assert_eq(round(2.4), 2);
+assert_eq(round(-2.5), -3);
+assert_eq(trunc(2.5), 2);
+assert_eq(trunc(-2.5), -2);
+
+// --- Miscellaneous ---
+assert_eq(clamp(5, 0, 10), 5);
+assert_eq(clamp(-1, 0, 10), 0);
+assert_eq(clamp(15, 0, 10), 10);
+assert_eq(lerp(0, 10, 0.5), 5);
+assert_eq(lerp(0, 10, 0), 0);
+assert_eq(lerp(0, 10, 1), 10);
+assert_eq(sign(5), 1);
+assert_eq(sign(-5), -1);
+assert_eq(sign(0), 0);
+assert_eq(abs_(-5), 5);
+assert_eq(abs_(5), 5);
+assert_eq(min_([3, 1, 2]), 1);
+assert_eq(max_([3, 1, 2]), 3);
+assert_eq(sum_([1, 2, 3, 4]), 10);
+assert_eq(mean([1, 2, 3, 4]), 2.5);
+assert(deg(PI) > 179.999 && deg(PI) < 180.001);
+assert(rad(180) > 3.1415 && rad(180) < 3.1416);
+
+print("aether-math: all 30+ assertions passed");

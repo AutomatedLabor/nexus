@@ -1,0 +1,283 @@
+// aether-dict/src/lib.ae
+// ======================
+// Dictionary / map utilities for Aether. 20 pub functions implementing a
+// pure-functional dictionary API on top of association lists (arrays of
+// [key, value] pairs).
+//
+// Why association lists and not native Maps?
+//   - Aether's Map type doesn't have a clean way to create an empty map
+//     (`{}` is parsed as the unit value, not an empty map). Building a
+//     map requires starting with a placeholder and then trimming it,
+//     which is awkward and slow.
+//   - Association lists are simple, pure, and use only array operations
+//     (`push`, `len`, indexing, `map`, `filter`, `reduce`).
+//   - O(n) lookup is acceptable for the typical dict sizes in app code;
+//     a future `aether-dict-fast` package could provide Map-backed O(1)
+//     variants.
+//
+// Type conventions:
+//   - A "dict" is `[[int, int]]` — an array of [key, value] pairs, both int.
+//     At runtime, keys and values can be any type (Aether's type system is
+//     erased at runtime), so `dict<string, int>` works the same way.
+//   - Keys are compared with `==` (deep equality for arrays/maps).
+
+//----------------------------------------------------------------------------
+// Constructors
+//----------------------------------------------------------------------------
+
+// new() — return an empty dict.
+pub fn new() -> [[int, int]] {
+  []
+}
+
+// fromPairs(pairs) — build a dict from an array of [key, value] pairs.
+// Later pairs override earlier ones with the same key.
+pub fn fromPairs(pairs: [[int, int]]) -> [[int, int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(pairs) {
+    let p = pairs[i];
+    out = set(out, p[0], p[1]);
+    i = i + 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// Basic operations
+//----------------------------------------------------------------------------
+
+// set(d, k, v) — return a new dict with k -> v (replacing existing k if any).
+pub fn set(d: [[int, int]], k: int, v: int) -> [[int, int]] {
+  let mut out = [];
+  let mut found = false;
+  let mut i = 0;
+  while i < len(d) {
+    if d[i][0] == k {
+      push(out, [k, v]);
+      found = true;
+    } else {
+      push(out, d[i]);
+    };
+    i = i + 1;
+  }
+  if !found {
+    push(out, [k, v]);
+  }
+  out
+}
+
+// get(d, k) — return the value for k, or 0 if not found.
+// (Use `getOr` for a different default.)
+pub fn get(d: [[int, int]], k: int) -> int {
+  let mut i = 0;
+  let mut result = 0;
+  let mut found = false;
+  while i < len(d) && !found {
+    if d[i][0] == k {
+      result = d[i][1];
+      found = true;
+    };
+    i = i + 1;
+  }
+  result
+}
+
+// getOr(d, k, default) — return the value for k, or default if not found.
+pub fn getOr(d: [[int, int]], k: int, default: int) -> int {
+  let mut i = 0;
+  let mut result = default;
+  let mut found = false;
+  while i < len(d) && !found {
+    if d[i][0] == k {
+      result = d[i][1];
+      found = true;
+    };
+    i = i + 1;
+  }
+  result
+}
+
+// has(d, k) — true if k is a key in d.
+pub fn has(d: [[int, int]], k: int) -> bool {
+  let mut i = 0;
+  let mut found = false;
+  while i < len(d) && !found {
+    if d[i][0] == k {
+      found = true;
+    };
+    i = i + 1;
+  }
+  found
+}
+
+// delete(d, k) — return a new dict with the entry for k removed (if any).
+pub fn delete(d: [[int, int]], k: int) -> [[int, int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(d) {
+    if d[i][0] != k {
+      push(out, d[i]);
+    };
+    i = i + 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// Introspection
+//----------------------------------------------------------------------------
+
+// keys(d) — array of keys (in insertion order).
+pub fn keys(d: [[int, int]]) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(d) {
+    push(out, d[i][0]);
+    i = i + 1;
+  }
+  out
+}
+
+// values(d) — array of values (in insertion order).
+pub fn values(d: [[int, int]]) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(d) {
+    push(out, d[i][1]);
+    i = i + 1;
+  }
+  out
+}
+
+// entries(d) — array of [k, v] pairs (same as the dict itself).
+pub fn entries(d: [[int, int]]) -> [[int, int]] {
+  d
+}
+
+// toPairs(d) — alias of entries for symmetry with fromPairs.
+pub fn toPairs(d: [[int, int]]) -> [[int, int]] {
+  d
+}
+
+// size(d) — number of entries.
+pub fn size(d: [[int, int]]) -> int {
+  len(d)
+}
+
+// isEmpty(d) — true if the dict has no entries.
+pub fn isEmpty(d: [[int, int]]) -> bool {
+  len(d) == 0
+}
+
+//----------------------------------------------------------------------------
+// Transformation
+//----------------------------------------------------------------------------
+
+// mapValues(d, f) — return a new dict with f applied to each value.
+pub fn mapValues(d: [[int, int]], f: fn(int) -> int) -> [[int, int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(d) {
+    push(out, [d[i][0], f(d[i][1])]);
+    i = i + 1;
+  }
+  out
+}
+
+// mapKeys(d, f) — return a new dict with f applied to each key.
+// If f maps two keys to the same value, the later one wins.
+pub fn mapKeys(d: [[int, int]], f: fn(int) -> int) -> [[int, int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(d) {
+    let newKey = f(d[i][0]);
+    out = set(out, newKey, d[i][1]);
+    i = i + 1;
+  }
+  out
+}
+
+// filter(d, pred) — return a new dict with only entries where pred(k, v) is true.
+pub fn filter(d: [[int, int]], pred: fn(int, int) -> bool) -> [[int, int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(d) {
+    if pred(d[i][0], d[i][1]) {
+      push(out, d[i]);
+    };
+    i = i + 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// Combination
+//----------------------------------------------------------------------------
+
+// merge(a, b) — return a new dict with b's entries overriding a's.
+pub fn merge(a: [[int, int]], b: [[int, int]]) -> [[int, int]] {
+  let mut out = a;
+  let mut i = 0;
+  while i < len(b) {
+    out = set(out, b[i][0], b[i][1]);
+    i = i + 1;
+  }
+  out
+}
+
+// invert(d) — return a new dict with keys and values swapped.
+// If two keys map to the same value, the later key wins.
+pub fn invert(d: [[int, int]]) -> [[int, int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(d) {
+    out = set(out, d[i][1], d[i][0]);
+    i = i + 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// Grouping
+//----------------------------------------------------------------------------
+
+// groupBy(arr, keyFn) — group elements by keyFn. Returns a dict where
+// each key maps to an array of elements with that key.
+//   groupBy([1, 2, 3, 4, 5], fn(x) { x % 2 }) -> [[1, [1, 3, 5]], [0, [2, 4]]]
+pub fn groupBy(arr: [int], keyFn: fn(int) -> int) -> [[int, [int]]] {
+  let mut out: [[int, [int]]] = [];
+  let mut i = 0;
+  while i < len(arr) {
+    let k = keyFn(arr[i]);
+    let idx = find_key(out, k);
+    if idx < 0 {
+      push(out, [k, [arr[i]]]);
+    } else {
+      let existing = out[idx][1];
+      let mut newArr = [];
+      let mut j = 0;
+      while j < len(existing) {
+        push(newArr, existing[j]);
+        j = j + 1;
+      }
+      push(newArr, arr[i]);
+      out[idx][1] = newArr;
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// Helper: find the index of key k in dict d, or -1 if not found.
+fn find_key(d: [[int, [int]]], k: int) -> int {
+  let mut i = 0;
+  let mut result = -1;
+  while i < len(d) && result < 0 {
+    if d[i][0] == k {
+      result = i;
+    };
+    i = i + 1;
+  }
+  result
+}

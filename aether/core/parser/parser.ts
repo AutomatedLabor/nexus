@@ -53,6 +53,11 @@ import {
   type MatchArm,
   type MapEntry,
   type StructExprField,
+  type TraitMethodDecl,
+  type TraitAssocTypeDecl,
+  type ImplMethodDecl,
+  type ImplAssocTypeDecl,
+  type Block,
 } from "../ast/ast";
 import {
   lex,
@@ -108,6 +113,8 @@ class Parser {
   pos = 0;
   errors: ParseError[] = [];
   file: string;
+  /** Pending `#[derive(...)]` attribute names to attach to the next struct/enum decl. */
+  pendingDerive: string[] | null = null;
 
   constructor(tokens: Token[], file: string) {
     this.tokens = tokens;
@@ -195,12 +202,20 @@ class Parser {
   parseStmt(): Stmt | null {
     const start = this.peek().loc;
     try {
+      // `#[derive(...)]` attribute — parse and stash for the next struct/enum.
+      if (this.isPunct("#")) {
+        this.parseDeriveAttribute();
+        // The attribute applies to the NEXT statement (struct or enum).
+        return this.parseStmt();
+      }
       if (this.isKeyword("let")) return this.parseLet();
       if (this.isKeyword("const")) return this.parseConst();
       if (this.isKeyword("fn")) return this.parseFnOrLambda();
       if (this.isKeyword("enum")) return this.parseEnum();
       if (this.isKeyword("struct")) return this.parseStruct();
       if (this.isKeyword("type")) return this.parseTypeAlias();
+      if (this.isKeyword("trait")) return this.parseTrait();
+      if (this.isKeyword("impl")) return this.parseImpl();
       if (this.isKeyword("return")) return this.parseReturn();
       if (this.isKeyword("break")) { this.advance(); this.expectPunct(";"); return { kind: "Break", loc: this.locFrom(start) }; }
       if (this.isKeyword("continue")) { this.advance(); this.expectPunct(";"); return { kind: "Continue", loc: this.locFrom(start) }; }
@@ -219,6 +234,175 @@ class Parser {
       }
       throw e;
     }
+  }
+
+  /** Parse `#[derive(Show, Eq, ...)]` and store the names in `pendingDerive`. */
+  parseDeriveAttribute(): void {
+    this.expectPunct("#");
+    this.expectPunct("[");
+    const nameTok = this.advance();
+    if (nameTok.value !== "derive") {
+      this.err(`expected 'derive' attribute, found '${nameTok.value}'`, nameTok.loc);
+      // Skip to closing `]`.
+      while (!this.isPunct("]") && !this.atEnd()) this.advance();
+      this.eatPunct("]");
+      return;
+    }
+    this.expectPunct("(");
+    const names: string[] = [];
+    if (!this.isPunct(")")) {
+      do {
+        if (this.isPunct(")")) break;
+        const t = this.advance();
+        if (t.kind === "Ident") names.push(t.value);
+        else this.err(`expected trait name in derive, found '${t.value}'`, t.loc);
+      } while (this.eatPunct(","));
+    }
+    this.expectPunct(")");
+    this.expectPunct("]");
+    this.pendingDerive = names;
+  }
+
+  /** Pop and return the pending `#[derive(...)]` names, if any. */
+  consumePendingDerive(): string[] | undefined {
+    const d = this.pendingDerive;
+    this.pendingDerive = null;
+    return d ?? undefined;
+  }
+
+  /** Parse a trait declaration: `trait Name<...>: Sup1 + Sup2 { ... }`. */
+  parseTrait(): Stmt {
+    const start = this.peek().loc;
+    this.advance(); // trait
+    const name = this.expectIdent();
+    const typeParams = this.parseTypeParams();
+    const superTraits: string[] = [];
+    if (this.eatPunct(":")) {
+      do {
+        if (this.isPunct("{")) break;
+        const t = this.advance();
+        if (t.kind === "Ident") superTraits.push(t.value);
+        else this.err(`expected super-trait name, found '${t.value}'`, t.loc);
+      } while (this.eatPunct("+"));
+    }
+    this.expectPunct("{");
+    const methods: TraitMethodDecl[] = [];
+    const assocTypes: TraitAssocTypeDecl[] = [];
+    while (!this.isPunct("}") && !this.atEnd()) {
+      if (this.isKeyword("type")) {
+        // associated type: `type Item;` or `type Item: Bound;`
+        const tStart = this.peek().loc;
+        this.advance();
+        const tName = this.expectIdent();
+        let bound: string | undefined;
+        if (this.eatPunct(":")) bound = this.advance().value;
+        this.expectPunct(";");
+        assocTypes.push({ name: tName ?? "_", bound, loc: this.locFrom(tStart) });
+        continue;
+      }
+      if (this.isKeyword("fn")) {
+        const mStart = this.peek().loc;
+        this.advance();
+        const mName = this.expectIdent();
+        const params = this.parseParams();
+        let ret: TypeNode | undefined;
+        if (this.eatPunct("->")) ret = this.parseType();
+        let hasDefault = false;
+        let body: Block | undefined;
+        if (this.isPunct("{")) {
+          body = this.parseBlock();
+          hasDefault = true;
+        } else {
+          this.expectPunct(";");
+        }
+        methods.push({ kind: "TraitMethodDecl", loc: this.locFrom(mStart), name: mName ?? "_", params, ret, hasDefault, body });
+        continue;
+      }
+      this.err(`expected 'fn' or 'type' inside trait body, found '${this.peek().value}'`, this.peek().loc);
+      this.recover();
+    }
+    this.expectPunct("}");
+    return {
+      kind: "TraitDecl",
+      loc: this.locFrom(start),
+      name: name ?? "_",
+      typeParams,
+      superTraits,
+      methods,
+      assocTypes,
+    };
+  }
+
+  /** Parse an impl block: `impl<...> Trait for Type { ... }`. */
+  parseImpl(): Stmt {
+    const start = this.peek().loc;
+    this.advance(); // impl
+    const typeParams = this.parseTypeParams();
+    // Trait name (an Ident). Then optional `<typeArgs>` (we accept but ignore
+    // for v1 since the trait's args are inferred from the impl type).
+    const traitNameTok = this.advance();
+    let traitTypeArgs: TypeNode[] | undefined;
+    if (traitNameTok.kind !== "Ident") {
+      this.err(`expected trait name after 'impl', found '${traitNameTok.value}'`, traitNameTok.loc);
+    }
+    if (this.isPunct("<")) {
+      // Trait type args — parse them.
+      this.advance();
+      const args: TypeNode[] = [];
+      if (!this.isPunct(">")) {
+        do {
+          if (this.isPunct(">")) break;
+          args.push(this.parseType());
+        } while (this.eatPunct(","));
+      }
+      this.expectPunct(">");
+      traitTypeArgs = args;
+    }
+    // `for` keyword
+    if (!this.eatKeyword("for")) {
+      this.err(`expected 'for' in impl block, found '${this.peek().value}'`, this.peek().loc);
+    }
+    const implType = this.parseType();
+    this.expectPunct("{");
+    const methods: ImplMethodDecl[] = [];
+    const assocTypes: ImplAssocTypeDecl[] = [];
+    while (!this.isPunct("}") && !this.atEnd()) {
+      if (this.isKeyword("type")) {
+        // associated type binding: `type Item = T;`
+        const tStart = this.peek().loc;
+        this.advance();
+        const tName = this.expectIdent();
+        this.expectPunct("=");
+        const tType = this.parseType();
+        this.expectPunct(";");
+        assocTypes.push({ name: tName ?? "_", type: tType, loc: this.locFrom(tStart) });
+        continue;
+      }
+      if (this.isKeyword("fn")) {
+        const mStart = this.peek().loc;
+        this.advance();
+        const mName = this.expectIdent();
+        const params = this.parseParams();
+        let ret: TypeNode | undefined;
+        if (this.eatPunct("->")) ret = this.parseType();
+        const body = this.parseBlock();
+        methods.push({ kind: "ImplMethodDecl", loc: this.locFrom(mStart), name: mName ?? "_", params, ret, body });
+        continue;
+      }
+      this.err(`expected 'fn' or 'type' inside impl body, found '${this.peek().value}'`, this.peek().loc);
+      this.recover();
+    }
+    this.expectPunct("}");
+    return {
+      kind: "ImplBlock",
+      loc: this.locFrom(start),
+      traitName: traitNameTok.value ?? "_",
+      traitTypeArgs,
+      implType,
+      typeParams,
+      methods,
+      assocTypes,
+    };
   }
 
   parseLet(): Stmt {
@@ -312,7 +496,7 @@ class Parser {
       this.eatPunct(",");
     }
     this.expectPunct("}");
-    return { kind: "EnumDecl", loc: this.locFrom(start), name: name ?? "_", generics, variants };
+    return { kind: "EnumDecl", loc: this.locFrom(start), name: name ?? "_", generics, variants, derive: this.consumePendingDerive() };
   }
 
   parseStruct(): Stmt {
@@ -332,7 +516,7 @@ class Parser {
       } while (this.eatPunct(","));
     }
     this.expectPunct("}");
-    return { kind: "StructDecl", loc: this.locFrom(start), name: name ?? "_", generics, fields };
+    return { kind: "StructDecl", loc: this.locFrom(start), name: name ?? "_", generics, fields, derive: this.consumePendingDerive() };
   }
 
   parseTypeAlias(): Stmt {
@@ -582,6 +766,15 @@ class Parser {
       const err = this.parseType();
       this.expectPunct(">");
       return { kind: "ResultType", loc: this.locFrom(start), ok, err };
+    }
+    if (this.isKeyword("dyn")) {
+      // `dyn TraitName` — a trait-object type.
+      this.advance();
+      const traitNameTok = this.advance();
+      if (traitNameTok.kind !== "Ident") {
+        this.err(`expected trait name after 'dyn', found '${traitNameTok.value}'`, traitNameTok.loc);
+      }
+      return { kind: "DynType", loc: this.locFrom(start), traitName: traitNameTok.value ?? "_" };
     }
     if (t.kind === "Ident" || t.kind === "Keyword") {
       // Primitive names: int, float, bool, string, char, unit
@@ -954,6 +1147,42 @@ class Parser {
       }
       if (t.value === "if") return this.parseIf();
       if (t.value === "match") return this.parseMatch();
+      if (t.value === "dyn") {
+        // `dyn TraitName(expr)` — construct a trait object (fat pointer).
+        // Parse as a Call with a synthetic Ident callee `__dyn_<TraitName>`.
+        this.advance();
+        const traitTok = this.advance();
+        if (traitTok.kind !== "Ident") {
+          this.err(`expected trait name after 'dyn', found '${traitTok.value}'`, traitTok.loc);
+        }
+        const traitName = traitTok.value ?? "_";
+        // Optional generic args `<...>` — ignored in v1 (we infer from
+        // the wrapped value's runtime type).
+        if (this.isPunct("<")) {
+          this.advance();
+          while (!this.isPunct(">")) this.advance();
+          this.expectPunct(">");
+        }
+        if (this.isPunct("(")) {
+          this.advance();
+          const args: Expr[] = [];
+          if (!this.isPunct(")")) {
+            do {
+              if (this.isPunct(")")) break;
+              args.push(this.parseExpr());
+            } while (this.eatPunct(","));
+          }
+          this.expectPunct(")");
+          return {
+            kind: "Call",
+            loc: this.locFrom(start),
+            callee: { kind: "Ident", loc: this.locFrom(start), name: `__dyn_${traitName}` },
+            args,
+          };
+        }
+        // Bare `dyn TraitName` — return as Ident for back-compat.
+        return { kind: "Ident", loc: this.locFrom(start), name: `__dyn_${traitName}` };
+      }
       if (t.value === "range") {
         // could be a function call: range(a, b)
         this.advance();
@@ -1145,6 +1374,10 @@ class Parser {
       if (this.isStmtStart()) {
         const s = this.parseStmt();
         if (s) stmts.push(s);
+        // v3: allow an optional `;` after a statement-level block (e.g.
+        // `while ... { ... };`) so users who like explicit semicolons
+        // don't get parse errors.
+        this.eatPunct(";");
         continue;
       }
       const e = this.parseExpr();
@@ -1226,6 +1459,7 @@ class Parser {
         if (this.isStmtStart()) {
           const s = this.parseStmt();
           if (s) stmts.push(s);
+          this.eatPunct(";");
           continue;
         }
         const e = this.parseExpr();
@@ -1254,6 +1488,9 @@ class Parser {
       if (this.isStmtStart()) {
         const s = this.parseStmt();
         if (s) stmts.push(s);
+        // Allow an optional `;` after a statement-level block (e.g.
+        // `while ... { ... };`) for users who like explicit semicolons.
+        this.eatPunct(";");
         continue;
       }
       const e = this.parseExpr();
@@ -1286,6 +1523,7 @@ class Parser {
     return [
       "let", "const", "enum", "struct", "type", "return", "break",
       "continue", "while", "for", "import", "pub", "print",
+      "trait", "impl",
     ].includes(t.value);
   }
 }

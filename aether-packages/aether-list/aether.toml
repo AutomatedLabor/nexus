@@ -1,0 +1,12 @@
+[package]
+name = "aether-list"
+version = "0.1.0"
+description = "Functional list utilities for Aether — 25 pure functions covering the Haskell-style Data.List API: head/tail/init/last, cons/append/reverse, intersperse/intercalate/transpose, subsequences/permutations, nub, sortWith/sortBy/groupBy, span/break_/takeWhile/dropWhile, partition, chunk, window, zipWith."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — this package only uses Aether's core builtins
+# (push, len, min, range, panic, reduce).
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

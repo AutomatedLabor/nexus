@@ -1,0 +1,116 @@
+// aether-list/tests/tests.ae
+// ===========================
+// 30+ assertions covering every pub function in aether-list.
+import {
+  head, tail, init, last, cons, append_arr, reverse,
+  intersperse, intercalate, transpose,
+  subsequences, permutations,
+  nub, sortWith, sortBy, groupBy,
+  span, break_, takeWhile, dropWhile, partition,
+  chunk, window, zipWith,
+} from "../src/lib.ae";
+
+// --- Basic accessors ---
+assert_eq(head([1, 2, 3]), 1);
+assert_eq(tail([1, 2, 3]), [2, 3]);
+assert_eq(tail([1]), []);
+assert_eq(init([1, 2, 3]), [1, 2]);
+assert_eq(init([1]), []);
+assert_eq(last([1, 2, 3]), 3);
+
+// --- cons / append / reverse ---
+assert_eq(cons(0, [1, 2, 3]), [0, 1, 2, 3]);
+assert_eq(cons(0, []), [0]);
+assert_eq(append_arr([1, 2], [3, 4]), [1, 2, 3, 4]);
+assert_eq(append_arr([], [1]), [1]);
+assert_eq(reverse([1, 2, 3]), [3, 2, 1]);
+assert_eq(reverse([]), []);
+assert_eq(reverse([42]), [42]);
+
+// --- intersperse / intercalate ---
+assert_eq(intersperse([1, 2, 3], 0), [1, 0, 2, 0, 3]);
+assert_eq(intersperse([], 0), []);
+assert_eq(intersperse([42], 0), [42]);
+assert_eq(intercalate(0, [[1, 2], [3, 4], [5]]), [1, 2, 0, 3, 4, 0, 5]);
+assert_eq(intercalate(0, []), []);
+assert_eq(intercalate(0, [[1, 2]]), [1, 2]);
+
+// --- transpose ---
+assert_eq(transpose([[1, 2, 3], [4, 5, 6]]), [[1, 4], [2, 5], [3, 6]]);
+assert_eq(transpose([]), []);
+assert_eq(transpose([[1], [2], [3]]), [[1, 2, 3]]);
+assert_eq(transpose([[1, 2, 3]]), [[1], [2], [3]]);
+
+// --- subsequences ---
+let subs = subsequences([1, 2, 3]);
+assert_eq(len(subs), 8);
+assert_eq(subs[0], []);
+assert_eq(subs[1], [1]);
+assert_eq(subs[len(subs) - 1], [1, 2, 3]);
+assert_eq(len(subsequences([])), 1);
+
+// --- permutations ---
+let perms = permutations([1, 2, 3]);
+assert_eq(len(perms), 6);
+assert_eq(perms[0], [1, 2, 3]);
+assert_eq(perms[len(perms) - 1], [3, 2, 1]);
+assert_eq(len(permutations([])), 1);
+assert_eq(len(permutations([1])), 1);
+
+// --- nub (unique) ---
+assert_eq(nub([1, 1, 2, 3, 3, 2, 1, 4]), [1, 2, 3, 4]);
+assert_eq(nub([]), []);
+assert_eq(nub([42]), [42]);
+assert_eq(nub([1, 1, 1, 1]), [1]);
+
+// --- sortWith / sortBy ---
+fn cmp_int(a: int, b: int) -> int { a - b }
+assert_eq(sortWith([3, 1, 2], cmp_int), [1, 2, 3]);
+assert_eq(sortWith([], cmp_int), []);
+assert_eq(sortWith([1], cmp_int), [1]);
+assert_eq(sortWith([5, 4, 3, 2, 1], cmp_int), [1, 2, 3, 4, 5]);
+fn neg_key(x: int) -> int { -x }
+assert_eq(sortBy([1, 2, 3, 4], neg_key), [4, 3, 2, 1]);
+assert_eq(sortBy([3, 1, 2], fn(x: int) -> int { x }), [1, 2, 3]);
+
+// --- groupBy ---
+fn eq_int(a: int, b: int) -> bool { a == b }
+assert_eq(groupBy([1, 1, 2, 3, 3, 3], eq_int), [[1, 1], [2], [3, 3, 3]]);
+assert_eq(groupBy([], eq_int), []);
+assert_eq(groupBy([1, 2, 3], eq_int), [[1], [2], [3]]);
+
+// --- span / break_ ---
+fn is_lt3(x: int) -> bool { x < 3 }
+assert_eq(span([1, 2, 3, 4], is_lt3), [[1, 2], [3, 4]]);
+assert_eq(span([3, 4, 5], is_lt3), [[], [3, 4, 5]]);
+fn is_gt2(x: int) -> bool { x > 2 }
+assert_eq(break_([1, 2, 3, 4], is_gt2), [[1, 2], [3, 4]]);
+
+// --- takeWhile / dropWhile ---
+fn is_even(x: int) -> bool { x % 2 == 0 }
+assert_eq(takeWhile([2, 4, 5, 6], is_even), [2, 4]);
+assert_eq(takeWhile([1, 2, 3], is_even), []);
+assert_eq(dropWhile([2, 4, 5, 6], is_even), [5, 6]);
+assert_eq(dropWhile([1, 2, 3], is_even), [1, 2, 3]);
+
+// --- partition ---
+assert_eq(partition([1, 2, 3, 4, 5], is_even), [[2, 4], [1, 3, 5]]);
+assert_eq(partition([], is_even), [[], []]);
+assert_eq(partition([2, 4], is_even), [[2, 4], []]);
+
+// --- chunk / window ---
+assert_eq(chunk([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]]);
+assert_eq(chunk([], 3), []);
+assert_eq(chunk([1, 2, 3, 4], 2), [[1, 2], [3, 4]]);
+assert_eq(window([1, 2, 3, 4], 2), [[1, 2], [2, 3], [3, 4]]);
+assert_eq(window([1, 2, 3], 4), []);
+assert_eq(window([1, 2, 3], 1), [[1], [2], [3]]);
+
+// --- zipWith ---
+fn add_int(a: int, b: int) -> int { a + b }
+assert_eq(zipWith([1, 2, 3], [4, 5, 6], add_int), [5, 7, 9]);
+assert_eq(zipWith([1, 2], [3, 4, 5], add_int), [4, 6]);
+assert_eq(zipWith([], [1, 2], add_int), []);
+assert_eq(zipWith([1, 2, 3], [10, 20, 30], fn(x: int, y: int) -> int { x * y }), [10, 40, 90]);
+
+print("aether-list: all 30+ assertions passed");

@@ -1,0 +1,108 @@
+// aether-string/tests/tests.ae
+// ============================
+// 30+ assertions covering every pub function in aether-string.
+import {
+  split, join, trim, replace, replaceAll,
+  startsWith, endsWith, contains, indexOf, slice,
+  padLeft, padRight, center, repeat, reverse,
+  toUpper, toLower, capitalize, camelCase, snake_case, kebabCase, titleCase,
+  words, lines, unlines, unwords,
+  levenshtein, hamming,
+} from "../src/lib.ae";
+
+// --- split / join ---
+assert_eq(split("a,b,c", ","), ["a", "b", "c"]);
+assert_eq(split("hello", ""), ["h", "e", "l", "l", "o"]);
+assert_eq(split("abc", "xyz"), ["abc"]);
+assert_eq(split("", ","), [""]);
+assert_eq(join(["a", "b", "c"], ","), "a,b,c");
+assert_eq(join([], ","), "");
+assert_eq(join(["only"], ","), "only");
+
+// --- trim ---
+assert_eq(trim("  hello  "), "hello");
+assert_eq(trim("no_whitespace"), "no_whitespace");
+assert_eq(trim("  "), "");
+assert_eq(trim("\t\ntab\n"), "tab");
+
+// --- replace / replaceAll ---
+assert_eq(replace("a-b-c", "-", "_"), "a_b-c");
+assert_eq(replace("a-b-c", "x", "_"), "a-b-c");
+assert_eq(replaceAll("a-b-c", "-", "_"), "a_b_c");
+assert_eq(replaceAll("aaa", "a", "bb"), "bbbbbb");
+assert_eq(replaceAll("hello", "", "x"), "hello");
+
+// --- startsWith / endsWith / contains / indexOf / slice ---
+assert_eq(startsWith("hello world", "hello"), true);
+assert_eq(startsWith("hello", "world"), false);
+assert_eq(startsWith("hi", "hello"), false);
+assert_eq(endsWith("hello world", "world"), true);
+assert_eq(endsWith("hello", "lo"), true);
+assert_eq(endsWith("hello", "he"), false);
+assert_eq(contains("hello world", "o w"), true);
+assert_eq(contains("hello", "xyz"), false);
+assert_eq(contains("hello", ""), true);
+assert_eq(indexOf("hello world", "o"), 4);
+assert_eq(indexOf("hello", "z"), -1);
+assert_eq(indexOf("hello", ""), 0);
+assert_eq(slice("hello world", 0, 5), "hello");
+assert_eq(slice("hello", 1, 4), "ell");
+assert_eq(slice("hello", 0, 100), "hello");
+
+// --- padding ---
+assert_eq(padLeft("42", 5, "0"), "00042");
+assert_eq(padLeft("hello", 3, " "), "hello");
+assert_eq(padRight("42", 5, "0"), "42000");
+assert_eq(center("hi", 6, "_"), "__hi__");
+assert_eq(center("hi", 4, "_"), "_hi_");
+assert_eq(center("hello", 3, " "), "hello");
+
+// --- repeat ---
+assert_eq(repeat("ab", 3), "ababab");
+assert_eq(repeat("x", 0), "");
+assert_eq(repeat("hello", 1), "hello");
+
+// --- reverse ---
+assert_eq(reverse("hello"), "olleh");
+assert_eq(reverse(""), "");
+assert_eq(reverse("a"), "a");
+
+// --- case conversion ---
+assert_eq(toUpper("hello World"), "HELLO WORLD");
+assert_eq(toUpper("HELLO"), "HELLO");
+assert_eq(toLower("HELLO World"), "hello world");
+assert_eq(capitalize("hello world"), "Hello world");
+assert_eq(capitalize("HELLO"), "Hello");
+assert_eq(capitalize(""), "");
+assert_eq(camelCase("hello world"), "helloWorld");
+assert_eq(camelCase("foo_bar_baz"), "fooBarBaz");
+assert_eq(camelCase("foo-bar-baz"), "fooBarBaz");
+assert_eq(snake_case("helloWorld"), "hello_world");
+assert_eq(snake_case("foo bar baz"), "foo_bar_baz");
+assert_eq(snake_case("foo-bar"), "foo_bar");
+assert_eq(kebabCase("helloWorld"), "hello-world");
+assert_eq(kebabCase("foo bar baz"), "foo-bar-baz");
+assert_eq(titleCase("hello world"), "Hello World");
+assert_eq(titleCase("the quick brown fox"), "The Quick Brown Fox");
+
+// --- words / lines / unlines / unwords ---
+assert_eq(words("hello   world"), ["hello", "world"]);
+assert_eq(words("  one  two  three  "), ["one", "two", "three"]);
+assert_eq(words(""), []);
+assert_eq(lines("a\nb\nc"), ["a", "b", "c"]);
+assert_eq(lines("a\nb\n"), ["a", "b"]);
+assert_eq(lines("only"), ["only"]);
+assert_eq(unlines(["a", "b", "c"]), "a\nb\nc");
+assert_eq(unwords(["hello", "world"]), "hello world");
+
+// --- edit distances ---
+assert_eq(levenshtein("kitten", "sitting"), 3);
+assert_eq(levenshtein("", "abc"), 3);
+assert_eq(levenshtein("abc", ""), 3);
+assert_eq(levenshtein("abc", "abc"), 0);
+assert_eq(levenshtein("flaw", "lawn"), 2);
+assert_eq(hamming("karolin", "kathrin"), 3);
+assert_eq(hamming("abc", "abc"), 0);
+assert_eq(hamming("abc", "abd"), 1);
+
+print("aether-string: all 30+ assertions passed");

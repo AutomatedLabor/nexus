@@ -23,7 +23,9 @@
  * - `Import` is parsed but never resolved. Single-file programs only.
  * - `Spread` is parsed into AST nodes but the evaluator desugars it only for
  *   array/struct construction. Deep spread (`...x.y.z`) is supported syntactically.
- * - Trait / lifetime / async constructs are not modelled in this AST.
+ * - Trait / impl / dyn are modelled as first-class Stmt and TypeNode kinds
+ *   (added in v3 by `aether/core/traits/traits.ts`). `#[derive(...)]`
+ *   attributes attach to struct/enum decls via the optional `derive` field.
  */
 //----------------------------------------------------------------------------
 // Source locations
@@ -77,6 +79,45 @@ export interface TypeParam {
 }
 
 export interface StructField {
+  name: string;
+  type: TypeNode;
+  loc: SourceLocation;
+}
+
+/**
+ * A method signature inside a `trait` declaration.
+ *  - `hasDefault: false` → required method (no body).
+ *  - `hasDefault: true`  → default method (body is in `body`).
+ */
+export interface TraitMethodDecl {
+  kind: "TraitMethodDecl";
+  loc: SourceLocation;
+  name: string;
+  params: Param[];
+  ret?: TypeNode;
+  hasDefault: boolean;
+  body?: Block;
+}
+
+/** An associated type declared inside a trait (`type Item;`). */
+export interface TraitAssocTypeDecl {
+  name: string;
+  bound?: string;
+  loc: SourceLocation;
+}
+
+/** A method definition inside an `impl` block. */
+export interface ImplMethodDecl {
+  kind: "ImplMethodDecl";
+  loc: SourceLocation;
+  name: string;
+  params: Param[];
+  ret?: TypeNode;
+  body: Block;
+}
+
+/** An associated-type binding inside an `impl` block (`type Item = int;`). */
+export interface ImplAssocTypeDecl {
   name: string;
   type: TypeNode;
   loc: SourceLocation;
@@ -173,7 +214,17 @@ export interface CompoundAssign { kind: "CompoundAssign"; loc: SourceLocation; o
 export interface Call { kind: "Call"; loc: SourceLocation; callee: Expr; args: Expr[]; typeArgs?: TypeNode[]; }
 export interface Index { kind: "Index"; loc: SourceLocation; object: Expr; index: Expr; }
 export interface Field { kind: "Field"; loc: SourceLocation; object: Expr; name: string; }
-export interface MethodCall { kind: "MethodCall"; loc: SourceLocation; object: Expr; name: string; args: Expr[]; }
+export interface MethodCall { kind: "MethodCall"; loc: SourceLocation; object: Expr; name: string; args: Expr[];
+  /**
+   * Filled in by the type-checker when the receiver's type has a trait
+   * method named `name`. Carries the resolved (traitName, implTypeName,
+   * methodName) triple the evaluator uses to dispatch the call. When unset,
+   * the evaluator falls back to the legacy free-function dispatch path.
+   */
+  __traitImpl?: { traitName: string; implTypeName: string; methodName: string };
+  /** True iff the receiver is a `dyn Trait` value (vtable dispatch). */
+  __dynDispatch?: boolean;
+}
 export interface TupleExpr { kind: "TupleExpr"; loc: SourceLocation; elements: Expr[]; }
 export interface ArrayExpr { kind: "ArrayExpr"; loc: SourceLocation; elements: Expr[]; }
 export interface MapExpr { kind: "MapExpr"; loc: SourceLocation; entries: MapEntry[]; }
@@ -212,7 +263,9 @@ export type Stmt =
   | Import
   | Print
   | AssignStmt
-  | BlockStmt;
+  | BlockStmt
+  | TraitDecl
+  | ImplBlock;
 
 export interface Let { kind: "Let"; loc: SourceLocation; name: string; type?: TypeNode; init: Expr; }
 export interface MutLet { kind: "MutLet"; loc: SourceLocation; name: string; type?: TypeNode; init: Expr; }
@@ -234,6 +287,8 @@ export interface EnumDecl {
   name: string;
   generics: TypeParam[];
   variants: EnumVariantDecl[];
+  /** Optional `#[derive(Show, Eq, ...)]` attribute. */
+  derive?: string[];
 }
 export interface StructDecl {
   kind: "StructDecl";
@@ -241,6 +296,8 @@ export interface StructDecl {
   name: string;
   generics: TypeParam[];
   fields: StructField[];
+  /** Optional `#[derive(Show, Eq, ...)]` attribute. */
+  derive?: string[];
 }
 export interface TypeAlias {
   kind: "TypeAlias";
@@ -258,6 +315,40 @@ export interface Import { kind: "Import"; loc: SourceLocation; path: string; nam
 export interface Print { kind: "Print"; loc: SourceLocation; expr: Expr; }
 export interface AssignStmt { kind: "AssignStmt"; loc: SourceLocation; target: Expr; value: Expr; }
 export interface BlockStmt { kind: "BlockStmt"; loc: SourceLocation; body: Stmt[]; }
+
+/**
+ * `trait Name<T>: Sup1 + Sup2 { fn method(...); type Item; fn default_method(...) {...} }`
+ */
+export interface TraitDecl {
+  kind: "TraitDecl";
+  loc: SourceLocation;
+  name: string;
+  typeParams: TypeParam[];
+  superTraits: string[];
+  methods: TraitMethodDecl[];
+  assocTypes: TraitAssocTypeDecl[];
+}
+
+/**
+ * `impl<...> TraitName for Type { fn method(...) {...} type Item = T; }`
+ *
+ * Also supports `impl<...> TraitName<TArgs> for Type { ... }` — but for v1
+ * we infer the trait's type args from the impl's `for Type` when omitted
+ * (most common case).
+ */
+export interface ImplBlock {
+  kind: "ImplBlock";
+  loc: SourceLocation;
+  traitName: string;
+  /** Optional trait generic args (rarely used in v1 — usually inferred). */
+  traitTypeArgs?: TypeNode[];
+  implType: TypeNode;
+  typeParams: TypeParam[];
+  methods: ImplMethodDecl[];
+  assocTypes: ImplAssocTypeDecl[];
+  /** True iff this impl was synthesized by `#[derive(...)]` (sema fills in). */
+  synthesized?: boolean;
+}
 
 //-----------------------------------------------------------------------------
 // PATTERNS
@@ -308,7 +399,8 @@ export type TypeNode =
   | OptionType
   | ResultType
   | PrimitiveType
-  | UnitType;
+  | UnitType
+  | DynType;
 
 export interface NamedType { kind: "NamedType"; loc: SourceLocation; name: string; }
 export interface GenericType { kind: "GenericType"; loc: SourceLocation; name: string; args: TypeNode[]; }
@@ -320,6 +412,8 @@ export interface OptionType { kind: "OptionType"; loc: SourceLocation; inner: Ty
 export interface ResultType { kind: "ResultType"; loc: SourceLocation; ok: TypeNode; err: TypeNode; }
 export interface PrimitiveType { kind: "PrimitiveType"; loc: SourceLocation; name: string; }
 export interface UnitType { kind: "UnitType"; loc: SourceLocation; }
+/** `dyn TraitName` — a trait-object type. Object-safety is checked by sema. */
+export interface DynType { kind: "DynType"; loc: SourceLocation; traitName: string; }
 
 //-----------------------------------------------------------------------------
 // Program root
@@ -333,7 +427,7 @@ export interface Program {
 //-----------------------------------------------------------------------------
 // Master union
 //-----------------------------------------------------------------------------
-export type Node = Program | Expr | Stmt | Pattern | TypeNode | MatchArm | MapEntry | StructExprField | Param | TypeParam | StructField | EnumVariantDecl | StringSegment;
+export type Node = Program | Expr | Stmt | Pattern | TypeNode | MatchArm | MapEntry | StructExprField | Param | TypeParam | StructField | EnumVariantDecl | StringSegment | TraitMethodDecl | ImplMethodDecl | TraitAssocTypeDecl | ImplAssocTypeDecl;
 
 //-----------------------------------------------------------------------------
 // Helper constructor and type guards
@@ -370,7 +464,7 @@ const EXPR_KINDS = new Set<string>([
 const STMT_KINDS = new Set<string>([
   "Let", "MutLet", "Const", "ExprStmt", "FnDecl", "EnumDecl", "StructDecl",
   "TypeAlias", "Return", "Break", "Continue", "While", "ForIn", "Import",
-  "Print", "AssignStmt", "BlockStmt",
+  "Print", "AssignStmt", "BlockStmt", "TraitDecl", "ImplBlock",
 ]);
 
 const PATTERN_KINDS = new Set<string>([
@@ -380,7 +474,7 @@ const PATTERN_KINDS = new Set<string>([
 
 const TYPE_KINDS = new Set<string>([
   "NamedType", "GenericType", "FuncType", "TupleType", "ArrayType", "MapType",
-  "OptionType", "ResultType", "PrimitiveType", "UnitType",
+  "OptionType", "ResultType", "PrimitiveType", "UnitType", "DynType",
 ]);
 
 export function isExpr(node: Node): node is Expr {

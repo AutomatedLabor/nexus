@@ -229,7 +229,9 @@ describe("lexer: errors", () => {
     expect(r.errors[0].message).toContain("invalid");
   });
   it("errors on unexpected char", () => {
-    const r = lexWithErrors("#");
+    // v3: '#' is now a valid Punct token (used for #[derive(...)] attributes).
+    // Use a control character (0x07 BEL) as the genuinely-unexpected char.
+    const r = lexWithErrors("\x07");
     expect(r.errors.length).toBeGreaterThan(0);
     expect(r.errors[0].message).toContain("unexpected");
   });

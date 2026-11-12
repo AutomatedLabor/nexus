@@ -1,0 +1,251 @@
+// aether-result/src/lib.ae
+// ========================
+// Result and Option types for Aether, modeled as enums. 20 pub functions
+// covering the Haskell `Either`/`Maybe` and Rust `Result`/`Option` APIs.
+//
+// Result<T, E> is modeled as an enum:
+//   enum Result { Ok(int), Err(string) }
+// where the payload types are nominally `int` and `string` but at runtime
+// accept any value (Aether's type system is erased at runtime; the type
+// annotations are documentation, not enforcement).
+//
+// Option<T> is modeled as:
+//   enum Option { Some(int), None }
+//
+// All functions are pure: they return new enum values and never mutate.
+// Pattern matching is used to inspect the variants (no unsafe casts).
+//
+// Type conventions:
+//   - ok(v) wraps v in Result::Ok(v). v may be any value at runtime.
+//   - err(e) wraps e in Result::Err(e). e may be any value at runtime.
+//   - some(v) wraps v in Option::Some(v). none() returns Option::None.
+//   - unwrap/unwrapOr/unwrapErr extract the payload.
+//   - map/mapErr/andThen/orElse transform via functions.
+
+enum Result { Ok(int), Err(string) }
+enum Option { Some(int), None }
+
+//----------------------------------------------------------------------------
+// Constructors
+//----------------------------------------------------------------------------
+
+// ok(v) — wrap v in Result::Ok.
+pub fn ok(v: int) -> Result {
+  Result::Ok(v)
+}
+
+// err(e) — wrap e in Result::Err.
+pub fn err(e: string) -> Result {
+  Result::Err(e)
+}
+
+// some(v) — wrap v in Option::Some.
+pub fn some(v: int) -> Option {
+  Option::Some(v)
+}
+
+// none() — return Option::None.
+pub fn none() -> Option {
+  Option::None
+}
+
+//----------------------------------------------------------------------------
+// Predicates
+//----------------------------------------------------------------------------
+
+// isOk(r) — true if r is Result::Ok.
+pub fn isOk(r: Result) -> bool {
+  match r {
+    Result::Ok(_) => true,
+    Result::Err(_) => false,
+  }
+}
+
+// isErr(r) — true if r is Result::Err.
+pub fn isErr(r: Result) -> bool {
+  match r {
+    Result::Ok(_) => false,
+    Result::Err(_) => true,
+  }
+}
+
+// isSome(o) — true if o is Option::Some.
+pub fn isSome(o: Option) -> bool {
+  match o {
+    Option::Some(_) => true,
+    Option::None => false,
+  }
+}
+
+// isNone(o) — true if o is Option::None.
+pub fn isNone(o: Option) -> bool {
+  match o {
+    Option::Some(_) => false,
+    Option::None => true,
+  }
+}
+
+//----------------------------------------------------------------------------
+// Extraction
+//----------------------------------------------------------------------------
+
+// unwrap(r) — extract the Ok value, or panic on Err.
+pub fn unwrap(r: Result) -> int {
+  match r {
+    Result::Ok(v) => v,
+    Result::Err(e) => panic("unwrap: called on Err(" + e + ")"),
+  }
+}
+
+// unwrapOr(r, default) — extract the Ok value, or return default.
+pub fn unwrapOr(r: Result, default: int) -> int {
+  match r {
+    Result::Ok(v) => v,
+    Result::Err(_) => default,
+  }
+}
+
+// unwrapErr(r) — extract the Err value, or panic on Ok.
+pub fn unwrapErr(r: Result) -> string {
+  match r {
+    Result::Ok(v) => panic("unwrapErr: called on Ok(" + str(v) + ")"),
+    Result::Err(e) => e,
+  }
+}
+
+// unwrapOption(o, default) — extract the Some value, or return default.
+pub fn unwrapOption(o: Option, default: int) -> int {
+  match o {
+    Option::Some(v) => v,
+    Option::None => default,
+  }
+}
+
+//----------------------------------------------------------------------------
+// Transformation
+//----------------------------------------------------------------------------
+
+// map(r, fn) — apply fn to the Ok value (if present); pass Err through.
+pub fn map(r: Result, f: fn(int) -> int) -> Result {
+  match r {
+    Result::Ok(v) => Result::Ok(f(v)),
+    Result::Err(e) => Result::Err(e),
+  }
+}
+
+// mapErr(r, fn) — apply fn to the Err value (if present); pass Ok through.
+pub fn mapErr(r: Result, f: fn(string) -> string) -> Result {
+  match r {
+    Result::Ok(v) => Result::Ok(v),
+    Result::Err(e) => Result::Err(f(e)),
+  }
+}
+
+// andThen(r, fn) — flatMap: if Ok, apply fn to get a new Result; if Err, pass.
+pub fn andThen(r: Result, f: fn(int) -> Result) -> Result {
+  match r {
+    Result::Ok(v) => f(v),
+    Result::Err(e) => Result::Err(e),
+  }
+}
+
+// orElse(r, fn) — if Err, apply fn to get a new Result; if Ok, pass.
+pub fn orElse(r: Result, f: fn(string) -> Result) -> Result {
+  match r {
+    Result::Ok(v) => Result::Ok(v),
+    Result::Err(e) => f(e),
+  }
+}
+
+// mapOption(o, fn) — apply fn to the Some value (if present); pass None through.
+pub fn mapOption(o: Option, f: fn(int) -> int) -> Option {
+  match o {
+    Option::Some(v) => Option::Some(f(v)),
+    Option::None => Option::None,
+  }
+}
+
+// andThenOption(o, fn) — flatMap: if Some, apply fn to get a new Option.
+pub fn andThenOption(o: Option, f: fn(int) -> Option) -> Option {
+  match o {
+    Option::Some(v) => f(v),
+    Option::None => Option::None,
+  }
+}
+
+//----------------------------------------------------------------------------
+// Conversions
+//----------------------------------------------------------------------------
+
+// okToOption(r) — Ok(v) -> Some(v); Err(_) -> None.
+pub fn okToOption(r: Result) -> Option {
+  match r {
+    Result::Ok(v) => Option::Some(v),
+    Result::Err(_) => Option::None,
+  }
+}
+
+// errToOption(r) — Err(e) -> Some(e); Ok(_) -> None.
+pub fn errToOption(r: Result) -> Option {
+  match r {
+    Result::Ok(_) => Option::None,
+    Result::Err(e) => Option::Some(e),
+  }
+}
+
+// optionToResult(o, err) — Some(v) -> Ok(v); None -> Err(err).
+pub fn optionToResult(o: Option, err: string) -> Result {
+  match o {
+    Option::Some(v) => Result::Ok(v),
+    Option::None => Result::Err(err),
+  }
+}
+
+// fromOption(o, err) — alias of optionToResult for symmetry.
+pub fn fromOption(o: Option, err: string) -> Result {
+  optionToResult(o, err)
+}
+
+//----------------------------------------------------------------------------
+// Collection / traversal
+//----------------------------------------------------------------------------
+
+// collect(arr) — turn [Result] into Result<[int]>. First Err short-circuits.
+//   collect([Ok(1), Ok(2), Ok(3)]) -> Ok([1,2,3])
+//   collect([Ok(1), Err("oops"), Ok(3)]) -> Err("oops")
+pub fn collect(arr: [Result]) -> Result {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(arr) {
+    match arr[i] {
+      Result::Ok(v) => {
+        push(out, v);
+      },
+      Result::Err(e) => {
+        // short-circuit on first error
+        return Result::Err(e);
+      },
+    };
+    i = i + 1;
+  }
+  Result::Ok(out)
+}
+
+// traverse(arr, fn) — apply fn to each, then collect. Short-circuits on Err.
+//   traverse([1,2,3], fn(x) { if x > 0 { Ok(x*2) } else { Err("neg") } }) -> Ok([2,4,6])
+pub fn traverse(arr: [int], f: fn(int) -> Result) -> Result {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(arr) {
+    match f(arr[i]) {
+      Result::Ok(v) => {
+        push(out, v);
+      },
+      Result::Err(e) => {
+        return Result::Err(e);
+      },
+    };
+    i = i + 1;
+  }
+  Result::Ok(out)
+}

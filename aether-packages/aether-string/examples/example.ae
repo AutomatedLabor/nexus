@@ -1,0 +1,72 @@
+// aether-string/examples/example.ae
+// =================================
+// A demo of the aether-string package.
+import {
+  split, join, trim, replace, replaceAll,
+  startsWith, endsWith, contains, indexOf, slice,
+  padLeft, padRight, center, repeat, reverse,
+  toUpper, toLower, capitalize, camelCase, snake_case, kebabCase, titleCase,
+  words, lines, unlines, unwords,
+  levenshtein, hamming,
+} from "../src/lib.ae";
+
+// Tiny helper: wrap a string in quotes so we can see whitespace clearly.
+fn q(s: string) -> string { "\"" + s + "\"" }
+
+print("== aether-string example ==");
+print("");
+
+let s = "  Hello, World!  ";
+print("trim(\"  Hello, World!  \")        = " + q(trim(s)));
+print("toUpper(trim(s))                 = " + toUpper(trim(s)));
+print("toLower(trim(s))                 = " + toLower(trim(s)));
+print("reverse(trim(s))                 = " + reverse(trim(s)));
+print("");
+
+let csv = "apple,banana,cherry";
+let parts = split(csv, ",");
+print("split(\"apple,banana,cherry\", \",\") = " + parts);
+print("join(parts, \" | \")              = " + join(parts, " | "));
+print("");
+
+let sentence = "the quick brown fox jumps over the lazy dog";
+print("sentence                          = " + q(sentence));
+print("words(sentence)                   = " + words(sentence));
+print("titleCase(sentence)               = " + titleCase(sentence));
+print("camelCase(sentence)               = " + camelCase(sentence));
+print("snake_case(sentence)              = " + snake_case(sentence));
+print("kebabCase(sentence)               = " + kebabCase(sentence));
+print("");
+
+let padded = padLeft("42", 8, "0");
+print("padLeft(\"42\", 8, \"0\")            = " + q(padded));
+print("padRight(\"42\", 8, \".\")           = " + q(padRight("42", 8, ".")));
+print("center(\"hi\", 10, \"_\")           = " + q(center("hi", 10, "_")));
+print("repeat(\"ab\", 4)                  = " + q(repeat("ab", 4)));
+print("");
+
+print("startsWith(\"hello world\", \"hello\") = " + str(startsWith("hello world", "hello")));
+print("endsWith(\"hello world\", \"world\")  = " + str(endsWith("hello world", "world")));
+print("contains(\"hello world\", \"o w\")    = " + str(contains("hello world", "o w")));
+print("indexOf(\"hello world\", \"o\")       = " + str(indexOf("hello world", "o")));
+print("slice(\"hello world\", 0, 5)         = " + q(slice("hello world", 0, 5)));
+print("");
+
+print("replace(\"a-b-c\", \"-\", \"_\")       = " + replace("a-b-c", "-", "_"));
+print("replaceAll(\"a-b-c\", \"-\", \"_\")     = " + replaceAll("a-b-c", "-", "_"));
+print("");
+
+let a = "kitten";
+let b = "sitting";
+print("levenshtein(\"kitten\", \"sitting\")  = " + str(levenshtein(a, b)));
+print("hamming(\"karolin\", \"kathrin\")     = " + str(hamming("karolin", "kathrin")));
+print("");
+
+let para = "line one\nline two\nline three";
+print("paragraph = " + q(para));
+let lns = lines(para);
+print("lines(para) = " + lns);
+print("unlines(lns) = " + q(unlines(lns)));
+
+print("");
+print("All demos ran successfully.");

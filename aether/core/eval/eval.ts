@@ -46,7 +46,23 @@ import type {
   Block,
   MatchArm,
   StringSegment,
+  ImplBlock as ImplBlockAst,
+  ImplMethodDecl,
 } from "../ast/ast";
+import {
+  TraitRegistry,
+  type ImplBlock as ImplBlockSema,
+  type ImplMethod,
+  mangledImplFn,
+  typeKey,
+  typeMentionsSelf,
+  isDynValue,
+  type DynValue,
+} from "../traits/traits";
+import {
+  type Type,
+  T_INT, T_FLOAT, T_BOOL, T_STRING, T_CHAR, T_UNIT,
+} from "../types/types";
 
 //----------------------------------------------------------------------------
 // Public types
@@ -72,7 +88,8 @@ export type Value =
   | { __variant: string; variant: string; data: Value[] }
   | { __closure: string; fn: FnDecl; env: Env }
   | { __native: string; fn: (...args: Value[]) => Value }
-  | { __range: string; start: number; end: number; step: number };
+  | { __range: string; start: number; end: number; step: number }
+  | DynValue;
 
 export interface RunOptions {
   /** Sink for `print`/`println` output. Default: push to `output` array. */
@@ -198,6 +215,7 @@ export function display(v: Value): string {
   if (isClosure(v)) return `<closure ${v.fn.name}>`;
   if (isNative(v)) return `<native ${v.__native}>`;
   if (isRange(v)) return `range(${v.start}, ${v.end}${v.step !== 1 ? ", " + v.step : ""})`;
+  if (isDynValue(v)) return `<dyn ${v.__dyn} of ${v.dataTypeName}>`;
   return String(v);
 }
 
@@ -207,6 +225,9 @@ export function valueEq(a: Value, b: Value): boolean {
   if (a === null || b === null) return a === b;
   if (typeof a !== typeof b) return false;
   if (typeof a === "number" || typeof a === "string" || typeof a === "boolean") return a === b;
+  if (isDynValue(a) && isDynValue(b)) {
+    return a.__dyn === b.__dyn && a.dataTypeName === b.dataTypeName && valueEq(a.data as Value, b.data as Value);
+  }
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) if (!valueEq(a[i], b[i])) return false;
@@ -261,6 +282,13 @@ class Evaluator {
   output: string[] = [];
   stdout: (s: string) => void;
   root: Env;
+  /** v3: trait registry — populated by `run()` from the program's TraitDecl/
+   * ImplBlock nodes + the synthesized impls attached by the sema. */
+  traits: TraitRegistry = new TraitRegistry();
+  /** v3: impl method closures — registered under their mangled names. */
+  private implClosures: Map<string, { __closure: string; fn: FnDecl; env: Env }> = new Map();
+  /** v3: program AST — kept so we can re-walk impl blocks to build the registry. */
+  private program: Program | null = null;
 
   constructor(opts: RunOptions) {
     this.maxSteps = opts.maxSteps ?? 1_000_000;
@@ -283,6 +311,16 @@ class Evaluator {
 
   run(program: Program): RunResult {
     try {
+      this.program = program;
+      // v3: build the trait registry from the program's TraitDecl/ImplBlock
+      // nodes plus any synthesized impls attached by the sema to the program
+      // as `(program as any).__synthImpls`.
+      this.buildTraitRegistry(program);
+      // v3: register impl method closures under their mangled names in the
+      // root env (so `__impl_<Trait>_<Type>_<method>` resolves at call time).
+      this.registerImplClosures();
+      // v3: install `__dyn_<TraitName>` native constructors for each trait.
+      this.installDynConstructors();
       // Hoist all declarations (fn/enum/struct) so order doesn't matter.
       for (const s of program.body) this.hoist(s, this.root);
       let last: Value = null;
@@ -308,6 +346,263 @@ class Evaluator {
         error: { message: msg, stack: e instanceof Error ? e.stack : undefined },
       };
     }
+  }
+
+  /**
+   * v3: walk the program's TraitDecl and ImplBlock nodes (plus any
+   * synthesized impls) and populate the trait registry. Mirrors the sema
+   * layer's registration, but using runtime Type representations (which
+   * are looser — we don't need full type-checking, just enough to match
+   * impl-by-type at call sites).
+   */
+  private buildTraitRegistry(program: Program): void {
+    const allStmts: Stmt[] = [...program.body];
+    const synth = (program as any).__synthImpls as Stmt[] | undefined;
+    if (synth) allStmts.push(...synth);
+    for (const s of allStmts) {
+      if (s.kind === "TraitDecl") {
+        this.traits.declareTrait({
+          name: s.name,
+          typeParams: s.typeParams.map(tp => tp.name),
+          superTraits: s.superTraits,
+          methods: s.methods.map((m: any) => ({
+            name: m.name,
+            params: m.params.map((p: any) => ({
+              name: p.name,
+              type: this.runtimeTypeOf(p.type),
+            })),
+            retType: this.runtimeTypeOf(m.ret),
+            hasDefault: m.hasDefault,
+            selfInArgs: m.params.some((p: any) => p.type && p.type.kind === "NamedType" && p.type.name === "Self"),
+            selfInRet: m.ret && m.ret.kind === "NamedType" && m.ret.name === "Self",
+          })),
+          assocTypes: s.assocTypes.map((at: any) => ({ name: at.name, bound: at.bound })),
+          ast: s,
+        });
+      }
+    }
+    for (const s of allStmts) {
+      if (s.kind === "ImplBlock") {
+        const implBlock: ImplBlockSema = {
+          traitName: s.traitName,
+          implType: this.runtimeTypeOf(s.implType),
+          typeParams: s.typeParams.map(tp => tp.name),
+          typeParamBounds: s.typeParams.map(tp => tp.constraint),
+          methods: s.methods.map((m: ImplMethodDecl) => ({
+            name: m.name,
+            params: m.params.map(p => ({
+              name: p.name,
+              type: this.runtimeTypeOf(p.type),
+            })),
+            retType: this.runtimeTypeOf(m.ret),
+            body: m.body,
+            paramAST: m.params,
+            retAST: m.ret,
+          })),
+          assocTypes: s.assocTypes.map(at => ({ name: at.name, type: this.runtimeTypeOf(at.type) })),
+          implTypeName: "",
+          ast: s,
+          synthesized: s.synthesized,
+        };
+        implBlock.implTypeName = typeKey(implBlock.implType);
+        this.traits.declareImpl(implBlock);
+      }
+    }
+  }
+
+  /**
+   * v3: convert an AST type node into a *runtime* Type. The runtime needs
+   * just enough structure to match impl-by-type via `typeEq`/`matchImplType`.
+   * We use a flat Named type for struct/enum names, the primitives for int
+   * etc., and structural types for arrays/tuples/options/results. Generic
+   * type parameters become `Generic` types.
+   */
+  private runtimeTypeOf(t: any): Type {
+    if (!t) return T_UNIT;
+    switch (t.kind) {
+      case "PrimitiveType":
+        switch (t.name) {
+          case "int": return T_INT;
+          case "float": return T_FLOAT;
+          case "bool": return T_BOOL;
+          case "string": return T_STRING;
+          case "char": return T_CHAR;
+          default: return T_UNIT;
+        }
+      case "UnitType": return T_UNIT;
+      case "NamedType":
+        if (t.name === "Self") return { kind: "Named", name: "Self", args: [] };
+        return { kind: "Named", name: t.name, args: [] };
+      case "GenericType":
+        return { kind: "Named", name: t.name, args: t.args.map((a: any) => this.runtimeTypeOf(a)) };
+      case "FuncType":
+        return { kind: "Func", params: t.params.map((p: any) => this.runtimeTypeOf(p)), ret: this.runtimeTypeOf(t.ret) };
+      case "TupleType":
+        return { kind: "Tuple", items: t.types.map((p: any) => this.runtimeTypeOf(p)) };
+      case "ArrayType":
+        return { kind: "Array", elem: this.runtimeTypeOf(t.elem) };
+      case "MapType":
+        return { kind: "Map", key: this.runtimeTypeOf(t.key), value: this.runtimeTypeOf(t.value) };
+      case "OptionType":
+        return { kind: "Option", inner: this.runtimeTypeOf(t.inner) };
+      case "ResultType":
+        return { kind: "Result", ok: this.runtimeTypeOf(t.ok), err: this.runtimeTypeOf(t.err) };
+      case "DynType":
+        return { kind: "Named", name: `dyn ${t.traitName}`, args: [] };
+      default:
+        return T_UNIT;
+    }
+  }
+
+  /**
+   * v3: register impl method closures under their mangled names in the root
+   * env. Each method becomes a closure whose `self` param is the first arg.
+   *
+   * For default methods: if an impl doesn't override a method that the trait
+   * declares with a default body, we synthesize a closure from the trait's
+   * default body (with the impl type substituted for `Self`).
+   */
+  private registerImplClosures(): void {
+    for (const impl of this.traits.getAllTraitImpls()) {
+      const trait = this.traits.getTrait(impl.traitName);
+      // Build the set of all method names this impl should provide:
+      // union of impl.methods and trait.methods (including defaults).
+      const seenMethodNames = new Set<string>();
+      // First register the impl's own methods.
+      for (const m of impl.methods) {
+        const mangled = mangledImplFn(impl.traitName, impl.implType, m.name);
+        const paramAST = m.paramAST as any[];
+        const fnDecl: FnDecl = {
+          kind: "FnDecl",
+          loc: { file: "<impl>", start: { line: 1, col: 1, offset: 0 }, end: { line: 1, col: 1, offset: 0 } },
+          name: mangled,
+          generics: [],
+          params: paramAST ?? [],
+          ret: m.retAST as any,
+          body: m.body as Block,
+        };
+        const closure = { __closure: mangled, fn: fnDecl, env: this.root };
+        this.implClosures.set(mangled, closure);
+        this.root.vars.set(mangled, { value: closure, mut: false });
+        seenMethodNames.add(m.name);
+      }
+      // Then register default methods from the trait that the impl doesn't override.
+      if (trait) {
+        for (const tm of trait.methods) {
+          if (seenMethodNames.has(tm.name)) continue;
+          if (!tm.hasDefault) continue;
+          // Find the trait method's AST body. We stored the TraitDecl AST
+          // on `trait.ast` — look up the matching TraitMethodDecl there.
+          const traitAST = trait.ast as any;
+          const mDecl = traitAST?.methods?.find((m: any) => m.name === tm.name);
+          if (!mDecl || !mDecl.body) continue;
+          const mangled = mangledImplFn(impl.traitName, impl.implType, tm.name);
+          const fnDecl: FnDecl = {
+            kind: "FnDecl",
+            loc: mDecl.loc ?? { file: "<trait>", start: { line: 1, col: 1, offset: 0 }, end: { line: 1, col: 1, offset: 0 } },
+            name: mangled,
+            generics: [],
+            params: mDecl.params ?? [],
+            ret: mDecl.ret,
+            body: mDecl.body as Block,
+          };
+          const closure = { __closure: mangled, fn: fnDecl, env: this.root };
+          this.implClosures.set(mangled, closure);
+          this.root.vars.set(mangled, { value: closure, mut: false });
+          seenMethodNames.add(tm.name);
+        }
+      }
+    }
+  }
+
+  /**
+   * v3: install a native `__dyn_<TraitName>(value)` constructor for each
+   * declared trait. The constructor wraps the value into a fat pointer
+   * `{ __dyn, vtable, data, dataTypeName }` where the vtable is built by
+   * looking up which impl of the trait matches the value's runtime type.
+   */
+  private installDynConstructors(): void {
+    for (const trait of this.traits.getAllTraits()) {
+      const traitName = trait.name;
+      const self = this;
+      const fn = (...args: Value[]): Value => {
+        const value = args[0];
+        const dataTypeName = self.valueTypeName(value);
+        // Find the impl of `traitName` that matches the value's runtime type.
+        // We try by name first (struct/enum), then by JS type primitive.
+        const candidates = self.traits.getAllTraitImpls().filter(i => i.traitName === traitName);
+        let chosen: ImplBlockSema | null = null;
+        for (const i of candidates) {
+          if (self.implMatchesValue(i, value, dataTypeName)) {
+            chosen = i;
+            break;
+          }
+        }
+        if (!chosen) {
+          throw new PanicSignal(
+            `no impl of '${traitName}' for value of type '${dataTypeName}' ` +
+            `(cannot form dyn ${traitName})`,
+          );
+        }
+        // Build the vtable: methodName → closure (mangled name lookup).
+        const vtable = new Map<string, Value>();
+        for (const m of chosen.methods) {
+          const mangled = mangledImplFn(chosen.traitName, chosen.implType, m.name);
+          const closure = self.implClosures.get(mangled);
+          if (closure) vtable.set(m.name, closure);
+        }
+        // Also inherit default methods from the trait declaration.
+        for (const tm of trait.methods) {
+          if (tm.hasDefault && !vtable.has(tm.name)) {
+            // Default methods are not registered as top-level closures in
+            // v1 — we synthesise them on demand. For now we skip.
+          }
+        }
+        const dyn: DynValue = {
+          __dyn: traitName,
+          vtable,
+          data: value,
+          dataTypeName,
+        };
+        return dyn;
+      };
+      this.root.vars.set(`__dyn_${traitName}`, {
+        value: { __native: `__dyn_${traitName}`, fn },
+        mut: false,
+      });
+    }
+  }
+
+  /** Determine a runtime type name string for a value (used by dyn). */
+  private valueTypeName(v: Value): string {
+    if (v === null || v === undefined) return "unit";
+    if (typeof v === "number") return Number.isInteger(v) ? "int" : "float";
+    if (typeof v === "string") return "string";
+    if (typeof v === "boolean") return "bool";
+    if (Array.isArray(v)) return "[]";
+    if (v instanceof Map) return "map";
+    if (isStruct(v)) return v.__struct;
+    if (isVariant(v)) return v.__variant;
+    if (isClosure(v)) return "fn";
+    if (isNative(v)) return "fn";
+    if (isRange(v)) return "range";
+    if (isDynValue(v)) return v.__dyn;
+    return typeof v;
+  }
+
+  /** Quick impl-matches-value check for dyn construction. */
+  private implMatchesValue(impl: ImplBlockSema, value: Value, dataTypeName: string): boolean {
+    const t = impl.implType;
+    if (t.kind === "Named" && t.name === dataTypeName) return true;
+    if (t.kind === "Int" && dataTypeName === "int") return true;
+    if (t.kind === "Float" && dataTypeName === "float") return true;
+    if (t.kind === "String" && dataTypeName === "string") return true;
+    if (t.kind === "Bool" && dataTypeName === "bool") return true;
+    if (t.kind === "Char" && dataTypeName === "char") return true;
+    if (t.kind === "Array" && dataTypeName === "[]") return true;
+    if (t.kind === "Struct" && t.name === dataTypeName) return true;
+    if (t.kind === "Enum" && t.name === dataTypeName) return true;
+    return false;
   }
 
   // --------------------------------------------------------------------------
@@ -499,8 +794,14 @@ class Evaluator {
         return this.evalErrorProp(e, env);
       case "TupleField":
         return this.evalTupleField(e, env);
-      case "SelfExpr":
-        throw new PanicSignal("`self` is not supported outside of a method");
+      case "SelfExpr": {
+        // v3: `self` inside a method body resolves to the bound `self`
+        // parameter of the enclosing closure. The closure-call code binds
+        // the first argument as `self` in the env, so we just look it up.
+        const v = envGet(env, "self");
+        if (v === undefined) throw new PanicSignal("`self` is not supported outside of a method");
+        return v.value;
+      }
       case "Spread":
         throw new PanicSignal("spread `...x` is not a standalone expression");
       case "Return": {
@@ -713,17 +1014,131 @@ class Evaluator {
   }
 
   evalMethodCall(e: Extract<Expr, { kind: "MethodCall" }>, env: Env): Value {
+    // v3: trait dispatch — if the AST node has `__traitImpl` set by sema,
+    // look up the mangled closure and call it with [recv, ...args].
+    const traitImpl = (e as any).__traitImpl as
+      | { traitName: string; implTypeName: string; methodName: string }
+      | undefined;
+    const recv = this.eval(e.object, env);
+    if (traitImpl) {
+      const mangled = mangledImplFn(
+        traitImpl.traitName,
+        // The sema wrote `implTypeName` as a typeKey string — we need to
+        // map it back to the actual impl's `implType` to mangle correctly.
+        // Easiest: look up the impl via the registry.
+        this.lookUpImplTypeByName(traitImpl.traitName, traitImpl.implTypeName),
+        traitImpl.methodName,
+      );
+      const closure = this.implClosures.get(mangled);
+      if (closure) {
+        const args = [recv, ...e.args.map((a) => this.eval(a, env))];
+        return this.callValue(closure, args);
+      }
+      throw new PanicSignal(
+        `no trait impl method '${mangled}' registered for method call '${e.name}'`,
+      );
+    }
+    // v3: dyn dispatch — if the receiver is a dyn value, look up the
+    // method in the vtable and call it with [data, ...args].
+    if ((e as any).__dynDispatch || isDynValue(recv)) {
+      if (isDynValue(recv)) {
+        const v = recv as DynValue;
+        const closure = v.vtable.get(e.name);
+        if (!closure) {
+          throw new PanicSignal(
+            `dyn ${v.__dyn} has no method '${e.name}' in its vtable`,
+          );
+        }
+        const args = [v.data as Value, ...e.args.map((a) => this.eval(a, env))];
+        return this.callValue(closure as Value, args);
+      }
+      throw new PanicSignal(`expected a dyn value for method call '${e.name}'`);
+    }
+    // v3: runtime trait dispatch fallback. When the AST node doesn't have
+    // `__traitImpl` set (e.g. inside a generic impl body where the receiver
+    // is a generic T), we look up the impl dynamically based on the value's
+    // runtime type. This handles `self[i].cmp(other[i])` inside
+    // `impl<T: Ord> Ord for [T]::cmp` where T's actual type is only known
+    // at runtime.
+    const dynDispatch = this.runtimeTraitDispatch(recv, e.name);
+    if (dynDispatch) {
+      const args = [recv, ...e.args.map((a) => this.eval(a, env))];
+      return this.callValue(dynDispatch, args);
+    }
     // v1: method calls are syntactic sugar for free-function calls on the
     // receiver, e.g. `arr.push(v)` → `push(arr, v)`. We try the builtin scope
     // first; if found, call it with [receiver, ...args]. If not found, fall
     // back to throwing a "no method" error.
-    const recv = this.eval(e.object, env);
     const args = [recv, ...e.args.map((a) => this.eval(a, env))];
     const fn = envGet(env, e.name);
     if (fn && (isNative(fn.value) || isClosure(fn.value))) {
       return this.callValue(fn.value, args);
     }
     throw new PanicSignal(`no method '${e.name}' on ${typeof recv}`);
+  }
+
+  /**
+   * v3: runtime trait dispatch — find a closure for `methodName` on the
+   * receiver value by inspecting its runtime type and looking up the
+   * matching impl in the registry. Returns the closure (or null if no
+   * matching impl was found).
+   */
+  private runtimeTraitDispatch(recv: Value, methodName: string): Value | null {
+    const dataTypeName = this.valueTypeName(recv);
+    // Map the runtime type name back to a Type that the registry's
+    // matchImplType can use.
+    let recvType: any = null;
+    if (dataTypeName === "int") recvType = T_INT;
+    else if (dataTypeName === "float") recvType = T_FLOAT;
+    else if (dataTypeName === "bool") recvType = T_BOOL;
+    else if (dataTypeName === "string") recvType = T_STRING;
+    else if (dataTypeName === "char") recvType = T_CHAR;
+    else if (dataTypeName === "[]") {
+      // For arrays, infer the element type from the first element (or
+      // fallback to int — the registry's generic impls require a concrete
+      // element type to match, so we try the element's type).
+      if (Array.isArray(recv) && recv.length > 0) {
+        const elemTypeName = this.valueTypeName(recv[0]);
+        let elemType: any = null;
+        if (elemTypeName === "int") elemType = T_INT;
+        else if (elemTypeName === "float") elemType = T_FLOAT;
+        else if (elemTypeName === "bool") elemType = T_BOOL;
+        else if (elemTypeName === "string") elemType = T_STRING;
+        else elemType = { kind: "Named", name: elemTypeName, args: [] };
+        recvType = { kind: "Array", elem: elemType };
+      } else {
+        recvType = { kind: "Array", elem: T_INT };
+      }
+    } else {
+      recvType = { kind: "Named", name: dataTypeName, args: [] };
+    }
+    const found = this.traits.findTraitMethodForType(recvType, methodName);
+    if (!found) return null;
+    const mangled = mangledImplFn(found.impl.traitName, found.impl.implType, methodName);
+    const closure = this.implClosures.get(mangled);
+    return closure ? closure : null;
+  }
+
+  /**
+   * v3: look up the impl of a trait whose `implType`'s typeKey matches the
+   * given name string. Used to recover the impl type from the triple the
+   * sema wrote onto the AST node. Returns the implType (or any type if not
+   * found — for tests using non-generic impls this is exact).
+   */
+  private lookUpImplTypeByName(traitName: string, implTypeName: string): any {
+    for (const impl of this.traits.getAllTraitImpls()) {
+      if (impl.traitName === traitName && impl.implTypeName === implTypeName) {
+        return impl.implType;
+      }
+    }
+    // Fallback: build a Named type from the name string. Works for simple
+    // primitive / struct / enum impls.
+    if (implTypeName === "int") return T_INT;
+    if (implTypeName === "float") return T_FLOAT;
+    if (implTypeName === "bool") return T_BOOL;
+    if (implTypeName === "string") return T_STRING;
+    if (implTypeName === "char") return T_CHAR;
+    return { kind: "Named", name: implTypeName, args: [] };
   }
 
   evalStructExpr(e: Extract<Expr, { kind: "StructExpr" }>, env: Env): Value {
@@ -915,6 +1330,11 @@ class Evaluator {
   // --------------------------------------------------------------------------
   installInlineBuiltins(): void {
     const set = (name: string, fn: (...args: Value[]) => Value) => {
+      // Don't clobber pre-existing bindings — module imports and user-supplied
+      // builtins (via RunOptions.builtins) take precedence over the inline
+      // builtins. This lets packages expose `map`/`filter`/`reduce`-named
+      // functions that the import can resolve.
+      if (this.root.vars.has(name)) return;
       this.root.vars.set(name, { value: { __native: name, fn }, mut: false });
     };
 

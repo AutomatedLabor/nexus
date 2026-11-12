@@ -1,0 +1,75 @@
+// aether-list/examples/example.ae
+// ===============================
+// A demo of the aether-list package: shows each function category with
+// a small input/output snapshot.
+import {
+  head, tail, init, last, cons, append_arr, reverse,
+  intersperse, intercalate, transpose,
+  subsequences, permutations,
+  nub, sortWith, sortBy, groupBy,
+  span, break_, takeWhile, dropWhile, partition,
+  chunk, window, zipWith,
+} from "../src/lib.ae";
+
+fn show_int(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+fn show_arr2(arr: [[int]]) -> string {
+  let body = reduce(arr, fn(acc: string, x: [int]) -> string {
+    if acc == "" { show_int(x) } else { acc + ", " + show_int(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== aether-list example ==");
+print("");
+
+let xs = [3, 1, 2, 4, 1, 5, 2, 3, 6];
+print(f"xs = {show_int(xs)}");
+print(f"head(xs)        = {head(xs)}");
+print(f"tail(xs)        = {show_int(tail(xs))}");
+print(f"init(xs)        = {show_int(init(xs))}");
+print(f"last(xs)        = {last(xs)}");
+print(f"reverse(xs)     = {show_int(reverse(xs))}");
+print(f"nub(xs)         = {show_int(nub(xs))}");
+
+fn cmp_int(a: int, b: int) -> int { a - b }
+print(f"sortWith(xs)    = {show_int(sortWith(xs, cmp_int))}");
+print(f"sortBy(neg)     = {show_int(sortBy(xs, fn(x: int) -> int { -x }))}");
+
+let parts = partition(xs, fn(x: int) -> bool { x % 2 == 0 });
+print(f"partition even  = {show_arr2(parts)}");
+
+let chunks = chunk([1, 2, 3, 4, 5, 6, 7], 3);
+print(f"chunk([1..7],3) = {show_arr2(chunks)}");
+
+let wins = window([1, 2, 3, 4], 2);
+print(f"window([1..4],2) = {show_arr2(wins)}");
+
+let trans = transpose([[1, 2, 3], [4, 5, 6], [7, 8, 9]]);
+print(f"transpose 3x3    = {show_arr2(trans)}");
+
+let interspersed = intersperse([1, 2, 3], 0);
+print(f"intersperse 0   = {show_int(interspersed)}");
+
+let intercalated = intercalate(0, [[1, 2], [3, 4], [5]]);
+print(f"intercalate 0   = {show_int(intercalated)}");
+
+let subs = subsequences([1, 2, 3]);
+print(f"subsequences([1,2,3]) = {show_arr2(subs)} (count = {len(subs)})");
+
+let perms = permutations([1, 2, 3]);
+print(f"permutations([1,2,3]) = {show_arr2(perms)} (count = {len(perms)})");
+
+let spanned = span([1, 2, 3, 4, 5], fn(x: int) -> bool { x < 3 });
+print(f"span(<3)        = {show_arr2(spanned)}");
+
+let zipped = zipWith([1, 2, 3], [10, 20, 30], fn(a: int, b: int) -> int { a + b });
+print(f"zipWith add     = {show_int(zipped)}");
+
+print("");
+print("All demos ran successfully.");

@@ -39,6 +39,8 @@ import {
   type MatchArm,
   type StringSegment,
   type SourceLocation,
+  type TraitDecl as TraitDeclAst,
+  type ImplBlock as ImplBlockAst,
   SOURCE_LOCATION_ZERO,
 } from "../ast/ast";
 import {
@@ -50,6 +52,17 @@ import {
   optionOf, resultOf, arrayOf, funcType, tupleOf, resetTypeVarCounter,
   type Subst, UnifyError,
 } from "../types/types";
+import {
+  TraitRegistry,
+  type TraitDecl as TraitDeclSema,
+  type ImplBlock as ImplBlockSema,
+  type TraitMethod,
+  type ImplMethod,
+  typeKey,
+  typeMentionsSelf,
+  mangledImplFn,
+  matchImplType,
+} from "../traits/traits";
 
 export interface TypeError {
   message: string;
@@ -106,17 +119,49 @@ export class Checker {
   currentRetType: Type | null = null;
   // Currently in a loop?
   inLoop = false;
+  // v3: trait registry — populated during predeclare/check from TraitDecl/
+  // ImplBlock AST nodes. Used to resolve trait method calls, check
+  // coherence, verify trait bounds, and validate `dyn Trait` object safety.
+  traits: TraitRegistry = new TraitRegistry();
+  // v3: synthesized impl blocks from `#[derive(...)]` — appended to the
+  // program body after predeclare so they're processed like user-written
+  // impls. The eval/VM reads them too (via the same registry-driven
+  // mechanism for trait method dispatch).
+  synthesizedImpls: ImplBlockAst[] = [];
 
   check(program: Program): CheckResult {
     resetTypeVarCounter();
     // First pass: collect type declarations and function signatures
     this.predeclare(program.body);
+    // v3: register traits + impls before type-checking bodies so method
+    // calls can resolve.
+    this.registerTraits(program.body);
+    this.registerImpls(program.body);
+    // Append synthesized impl blocks (from #[derive(...)]) and register them.
+    for (const syn of this.synthesizedImpls) {
+      this.registerOneImpl(syn);
+    }
+    // v3: now that the trait registry is fully populated, register the
+    // mangled method names as global fns so direct calls resolve.
+    this.registerMangledImplFns();
+    // Surface coherence errors as type errors.
+    for (const e of this.traits.coherenceErrors) {
+      this.err(e.message, SOURCE_LOCATION_ZERO);
+    }
     // Second pass: check function bodies and statements
     this.pushScope();
     for (const s of program.body) {
       this.checkStmt(s);
     }
+    // Check synthesized impl method bodies too.
+    for (const syn of this.synthesizedImpls) {
+      this.checkImplBlock(syn);
+    }
     this.popScope();
+    // v3: attach synthesized impls to the program AST so the eval/VM can
+    // pick them up when they run (they read trait/impl blocks from the
+    // program body + `(program as any).__synthImpls`).
+    (program as any).__synthImpls = this.synthesizedImpls;
     return { errors: this.errors, warnings: this.warnings, types: this.nodeTypes };
   }
 
@@ -136,12 +181,300 @@ export class Checker {
       else if (s.kind === "EnumDecl") this.registerEnum(s);
       else if (s.kind === "TypeAlias") this.registerAlias(s);
     }
+    // v3: synthesize `#[derive(...)]` impls now — after types are registered
+    // (so the synthesized bodies can refer to them) but before trait/impl
+    // registration.
+    for (const s of body) {
+      if (s.kind === "StructDecl" || s.kind === "EnumDecl") {
+        const d: any = s;
+        if (d.derive && d.derive.length > 0) {
+          this.synthesizeDerive(d);
+        }
+      }
+    }
     for (const s of body) {
       if (s.kind === "FnDecl") {
         const fnType = this.makeFnType(s);
         this.addGlobalVar(s.name, fnType, false, s.loc);
         (s as any).__fnType = fnType;
+        // v3: side table mapping fn name → FnDecl AST node, used by
+        // `inferCall` to look up generic trait-bounds (`<T: Ord>`).
+        if (!(this as any).__fnDecls) (this as any).__fnDecls = new Map<string, FnDecl>();
+        (this as any).__fnDecls.set(s.name, s);
       }
+    }
+  }
+
+  /**
+   * v3: For every impl block (user-written + synthesized), register the
+   * mangled method name (`__impl_<Trait>_<Type>_<method>`) as a global
+   * function with the appropriate method signature. The signature uses
+   * `Self` as the receiver type for non-generic impls, which the type-
+   * checker treats as the concrete impl type.
+   */
+  private registerMangledImplFns(): void {
+    for (const impl of this.traits.getAllTraitImpls()) {
+      for (const m of impl.methods) {
+        const mangled = mangledImplFn(impl.traitName, impl.implType, m.name);
+        const fnType: TFunc = {
+          kind: "Func",
+          params: m.params.map(p => p.type),
+          ret: m.retType,
+        };
+        this.addGlobalVar(mangled, fnType, false, SOURCE_LOCATION_ZERO);
+      }
+    }
+  }
+
+  /**
+   * v3: synthesize impl blocks for `#[derive(Show, Eq, Default)]` on the
+   * given struct/enum. The synthesized impls delegate to `display`/`valueEq`
+   * at runtime via small Aether source snippets compiled by the eval.
+   *
+   * The synthesized impls are stored in `synthesizedImpls` and registered
+   * into the trait registry like user-written ones. The eval reads them
+   * from the AST (via `program.body` augmented with these) — actually,
+   * to keep the eval simple, the eval looks up trait method closures by
+   * walking `program.body` and any `synthesizedImpls` attached to the
+   * Checker. We attach them to the program via `(program as any).__synthImpls`.
+   */
+  private synthesizeDerive(decl: StructDecl | EnumDecl): void {
+    for (const traitName of decl.derive ?? []) {
+      const implType: TypeNode = { kind: "NamedType", loc: decl.loc, name: decl.name };
+      let methods: any[] = [];
+      let assocTypes: any[] = [];
+      if (traitName === "Show") {
+        // `fn show(self) -> string { str(self) }`
+        methods = [{
+          kind: "ImplMethodDecl",
+          loc: decl.loc,
+          name: "show",
+          params: [{ name: "self", loc: decl.loc }],
+          ret: { kind: "PrimitiveType", loc: decl.loc, name: "string" },
+          body: {
+            kind: "Block",
+            loc: decl.loc,
+            stmts: [],
+            expr: { kind: "Call", loc: decl.loc, callee: { kind: "Ident", loc: decl.loc, name: "str" }, args: [{ kind: "SelfExpr", loc: decl.loc }] },
+          },
+        }];
+      } else if (traitName === "Eq") {
+        // `fn eq(self, other: Self) -> bool { self == other }`
+        methods = [{
+          kind: "ImplMethodDecl",
+          loc: decl.loc,
+          name: "eq",
+          params: [
+            { name: "self", loc: decl.loc },
+            { name: "other", type: { kind: "NamedType", loc: decl.loc, name: decl.name }, loc: decl.loc },
+          ],
+          ret: { kind: "PrimitiveType", loc: decl.loc, name: "bool" },
+          body: {
+            kind: "Block",
+            loc: decl.loc,
+            stmts: [],
+            expr: {
+              kind: "Binary",
+              loc: decl.loc,
+              op: "==",
+              left: { kind: "SelfExpr", loc: decl.loc },
+              right: { kind: "Ident", loc: decl.loc, name: "other" },
+            },
+          },
+        }];
+      } else if (traitName === "Default") {
+        // `fn default() -> Self { <Name> {} }` — for structs, all fields default to 0/""/[]; for enums, first unit variant.
+        const body: any = decl.kind === "StructDecl"
+          ? { kind: "StructExpr", loc: decl.loc, name: decl.name, fields: [], spread: null }
+          : { kind: "EnumVariant", loc: decl.loc, enumName: decl.name, variant: (decl as EnumDecl).variants[0]?.name ?? "_", args: [] };
+        methods = [{
+          kind: "ImplMethodDecl",
+          loc: decl.loc,
+          name: "default",
+          params: [],
+          ret: { kind: "NamedType", loc: decl.loc, name: decl.name },
+          body: { kind: "Block", loc: decl.loc, stmts: [], expr: body },
+        }];
+      } else {
+        // Unsupported derive — record a warning, don't synthesize.
+        this.warn(`#[derive(${traitName})] is not supported in v1 (skipped)`, decl.loc);
+        continue;
+      }
+      const impl: ImplBlockAst = {
+        kind: "ImplBlock",
+        loc: decl.loc,
+        traitName,
+        implType,
+        typeParams: [],
+        methods,
+        assocTypes,
+        synthesized: true,
+      };
+      this.synthesizedImpls.push(impl);
+    }
+  }
+
+  /**
+   * v3: register all `trait` declarations in the trait registry.
+   */
+  private registerTraits(body: Stmt[]): void {
+    for (const s of body) {
+      if (s.kind === "TraitDecl") this.registerOneTrait(s);
+    }
+  }
+
+  private registerOneTrait(s: TraitDeclAst): void {
+    const traitDecl: TraitDeclSema = {
+      name: s.name,
+      typeParams: s.typeParams.map(tp => tp.name),
+      superTraits: s.superTraits,
+      methods: s.methods.map(m => this.canonicalizeTraitMethod(m)),
+      assocTypes: s.assocTypes.map(at => ({ name: at.name, bound: at.bound })),
+      ast: s,
+    };
+    this.traits.declareTrait(traitDecl);
+  }
+
+  /**
+   * Convert a `TraitMethodDecl` AST node into a `TraitMethod` sema record.
+   * Computes `selfInArgs`/`selfInRet` for the object-safety check.
+   */
+  private canonicalizeTraitMethod(m: any): TraitMethod {
+    const generics: Record<string, Type> = {};
+    for (const g of m.params) {
+      if (g.type && g.type.kind === "NamedType" && g.type.name === "Self") {
+        // Self type — keep as Named "Self".
+      }
+    }
+    const params = m.params.map((p: Param) => ({
+      name: p.name,
+      type: p.type ? this.resolveTypeWith(p.type, generics) : T_UNIT,
+    }));
+    const retType = m.ret ? this.resolveTypeWith(m.ret, generics) : T_UNIT;
+    return {
+      name: m.name,
+      params,
+      retType,
+      hasDefault: m.hasDefault,
+      defaultBody: m.hasDefault && m.body ? "[default]" : undefined,
+      selfInArgs: params.some(p => typeMentionsSelf(p.type)),
+      selfInRet: typeMentionsSelf(retType),
+    };
+  }
+
+  /**
+   * v3: register all `impl` blocks (user-written) into the trait registry.
+   */
+  private registerImpls(body: Stmt[]): void {
+    for (const s of body) {
+      if (s.kind === "ImplBlock") this.registerOneImpl(s);
+    }
+  }
+
+  private registerOneImpl(s: ImplBlockAst): void {
+    const generics: Record<string, Type> = {};
+    for (const g of s.typeParams) generics[g.name] = { kind: "Generic", name: g.name, constraint: g.constraint };
+    const implType = this.resolveTypeWith(s.implType, generics);
+    const methods: ImplMethod[] = s.methods.map(m => ({
+      name: m.name,
+      params: m.params.map(p => ({
+        name: p.name,
+        type: this.resolveImplParamType(p, implType, generics),
+      })),
+      retType: m.ret ? this.resolveTypeWith(m.ret, generics) : T_UNIT,
+      body: m.body,
+      paramAST: m.params,
+      retAST: m.ret,
+    }));
+    // v3: synthesize impl methods for default trait methods the impl doesn't
+    // override. The synthesized method uses the trait's default body, with
+    // Self substituted to the impl type (so inner trait method calls get
+    // resolved against this impl). The AST node is appended to `s.methods`
+    // so the eval sees it when registering impl closures.
+    const trait = this.traits.getTrait(s.traitName);
+    if (trait && trait.ast) {
+      const traitAST = trait.ast as any;
+      const traitMethodsAST: any[] = traitAST.methods ?? [];
+      for (const tm of trait.methods) {
+        if (!tm.hasDefault) continue;
+        if (methods.find(m => m.name === tm.name)) continue;
+        const mDecl = traitMethodsAST.find((m: any) => m.name === tm.name);
+        if (!mDecl || !mDecl.body) continue;
+        // Synthesize an ImplMethodDecl AST node using the default body.
+        const synMethod: any = {
+          kind: "ImplMethodDecl",
+          loc: mDecl.loc ?? s.loc,
+          name: mDecl.name,
+          params: mDecl.params ?? [],
+          ret: mDecl.ret,
+          body: mDecl.body,
+          __synthesizedFromDefault: true,
+        };
+        s.methods.push(synMethod);
+        methods.push({
+          name: mDecl.name,
+          params: (mDecl.params ?? []).map((p: any) => ({
+            name: p.name,
+            type: this.resolveImplParamType(p, implType, generics),
+          })),
+          retType: mDecl.ret ? this.resolveTypeWith(mDecl.ret, generics) : T_UNIT,
+          body: mDecl.body,
+          paramAST: mDecl.params ?? [],
+          retAST: mDecl.ret,
+        });
+      }
+    }
+    const implBlock: ImplBlockSema = {
+      traitName: s.traitName,
+      implType,
+      typeParams: s.typeParams.map(tp => tp.name),
+      typeParamBounds: s.typeParams.map(tp => tp.constraint),
+      methods,
+      assocTypes: s.assocTypes.map(at => ({ name: at.name, type: this.resolveTypeWith(at.type, generics) })),
+      implTypeName: typeKey(implType),
+      ast: s,
+      synthesized: s.synthesized,
+    };
+    this.traits.declareImpl(implBlock);
+  }
+
+  /**
+   * v3: resolve an impl method's parameter type. If the parameter is
+   * `self` and has no annotation, default its type to the impl's `implType`.
+   * If the annotation uses `Self`, substitute the impl type.
+   */
+  private resolveImplParamType(p: Param, implType: Type, generics: Record<string, Type>): Type {
+    if (!p.type) {
+      // `self` with no annotation → impl type.
+      if (p.name === "self") return implType;
+      return T_UNIT;
+    }
+    if (p.type.kind === "NamedType" && p.type.name === "Self") {
+      return implType;
+    }
+    const resolved = this.resolveTypeWith(p.type, generics);
+    // Replace any `Self` inside the resolved type with `implType`.
+    return substituteSelf(resolved, implType);
+  }
+
+  /** v3: type-check an impl block's method bodies. */
+  private checkImplBlock(s: ImplBlockAst): void {
+    const generics: Record<string, Type> = {};
+    for (const g of s.typeParams) generics[g.name] = { kind: "Generic", name: g.name, constraint: g.constraint };
+    const implType = this.resolveTypeWith(s.implType, generics);
+    for (const m of s.methods) {
+      const paramTypes = m.params.map(p => this.resolveImplParamType(p, implType, generics));
+      const retType = m.ret ? this.resolveTypeWith(m.ret, generics) : T_UNIT;
+      this.pushScope();
+      const prevRet = this.currentRetType;
+      this.currentRetType = retType;
+      for (let i = 0; i < m.params.length; i++) {
+        const p = m.params[i];
+        this.addVar(p.name, paramTypes[i], false, p.loc, "param");
+      }
+      this.checkBlockExprType(m.body, retType);
+      this.currentRetType = prevRet;
+      this.popScope();
     }
   }
 
@@ -341,6 +674,15 @@ export class Checker {
         return { kind: "Option", inner: this.resolveTypeWith(t.inner, generics) };
       case "ResultType":
         return { kind: "Result", ok: this.resolveTypeWith(t.ok, generics), err: this.resolveTypeWith(t.err, generics) };
+      case "DynType": {
+        // `dyn TraitName` — modelled as a Named type carrying the trait
+        // name in `args`. The eval reads the `__dyn` marker from the value.
+        // Object-safety is verified in `checkLet` / annotation contexts.
+        if (!this.traits.isTraitObjectSafe(t.traitName)) {
+          this.err(`trait '${t.traitName}' is not object-safe (cannot form dyn ${t.traitName})`, t.loc);
+        }
+        return { kind: "Named", name: `dyn ${t.traitName}`, args: [] };
+      }
     }
   }
 
@@ -356,7 +698,9 @@ export class Checker {
       case "EnumDecl":
       case "StructDecl":
       case "TypeAlias":
-      case "Import": return; // already predeclared / ignored in v1
+      case "Import":
+      case "TraitDecl": return; // already predeclared / registered
+      case "ImplBlock": this.checkImplBlock(s as ImplBlockAst); return; // check method bodies
       case "Return": this.checkReturn(s); return;
       case "Break":
       case "Continue":
@@ -749,6 +1093,33 @@ export class Checker {
   }
 
   inferCall(e: Extract<Expr, { kind: "Call" }>): Type {
+    // v3: `dyn TraitName(value)` is parsed as a Call to a synthetic
+    // `__dyn_<TraitName>` Ident. Handle this specially: check the trait
+    // exists and is object-safe, return a `dyn TraitName` type.
+    if (e.callee.kind === "Ident" && e.callee.name.startsWith("__dyn_")) {
+      const traitName = e.callee.name.slice("__dyn_".length);
+      const trait = this.traits.getTrait(traitName);
+      if (!trait) {
+        this.err(`unknown trait '${traitName}' in dyn constructor`, e.callee.loc);
+        this.setType(e, T_UNIT);
+        return T_UNIT;
+      }
+      if (!this.traits.isTraitObjectSafe(traitName)) {
+        this.err(
+          `trait '${traitName}' is not object-safe (cannot form dyn ${traitName})`,
+          e.loc,
+        );
+      }
+      // Evaluate the wrapped argument (required).
+      if (e.args.length < 1) {
+        this.err(`dyn ${traitName} constructor requires 1 argument`, e.loc);
+      } else {
+        this.infer(e.args[0]);
+      }
+      const t: TNamed = { kind: "Named", name: `dyn ${traitName}`, args: [] };
+      this.setType(e, t);
+      return t;
+    }
     const calleeT = this.infer(e.callee);
     if (calleeT.kind !== "Func") {
       this.err(`cannot call non-function of type ${typeToString(calleeT)}`, e.callee.loc);
@@ -787,19 +1158,167 @@ export class Checker {
         }
       }
     }
+
+    // v3: trait bound check. If the callee is a FnDecl with generic
+    // parameters carrying trait constraints (`<T: Ord>`), verify that the
+    // actual type substituted for each constrained T implements the
+    // constraint trait in the registry.
+    const callee = e.callee;
+    if (callee.kind === "Ident") {
+      const fnDecl = this.findFnDeclByName(callee.name);
+      if (fnDecl && fnDecl.generics.length > 0) {
+        // For each constrained generic, find the substituted concrete type
+        // from `subst` (the fresh TypeVar name → concrete type binding from
+        // argument inference).
+        for (const tp of fnDecl.generics) {
+          if (!tp.constraint) continue;
+          // Find the fresh TypeVar name for this generic.
+          const freshName = genericMap.get(tp.name);
+          if (!freshName) continue;
+          const concrete = subst.get(freshName) ?? typeArgSubst.get(freshName);
+          if (!concrete) continue;
+          // If the concrete type is itself a TypeVar (unresolved), skip
+          // bound checking — likely the call's argument types were
+          // inference variables that didn't get bound.
+          if (concrete.kind === "TypeVar" || concrete.kind === "Generic") continue;
+          if (!this.traits.typeImplementsTrait(concrete, tp.constraint)) {
+            this.err(
+              `trait bound not satisfied: ${tp.name}: ${tp.constraint} is required, ` +
+              `but ${typeToString(concrete)} does not implement ${tp.constraint}`,
+              e.loc,
+            );
+          }
+        }
+      }
+    }
+
     const ret = applySubst(boundFn.ret, subst);
     this.setType(e, ret);
     return ret;
   }
 
+  /** v3: find a top-level FnDecl by name (for trait bound checking). */
+  private findFnDeclByName(name: string): FnDecl | null {
+    // Search all enclosing scopes — top-level fns live in scope 0.
+    for (const scope of this.scopes) {
+      // We don't store the FnDecl in VarInfo, so we can't recover it
+      // directly. Instead we keep a side map populated in `predeclare`.
+    }
+    return (this as any).__fnDecls?.get(name) ?? null;
+  }
+
   inferMethodCall(e: Extract<Expr, { kind: "MethodCall" }>): Type {
     const objT = this.infer(e.object);
-    // We don't have impls/trait resolution in v1; just record the call and
-    // return a fresh type variable so callers can continue.
+    // v3: try trait dispatch. If the receiver's type has a trait method
+    // named `e.name` in the trait registry, resolve to the impl and
+    // annotate the AST node with the (traitName, implTypeName, methodName)
+    // triple for the evaluator.
+    const recvType = this.resolveReceiverType(objT);
+    if (recvType) {
+      // Check if receiver is a dyn value (a Named type with `dyn ` prefix).
+      if (recvType.kind === "Named" && recvType.name.startsWith("dyn ")) {
+        const traitName = recvType.name.slice(4);
+        const trait = this.traits.getTrait(traitName);
+        if (trait) {
+          const tm = trait.methods.find(m => m.name === e.name);
+          if (tm) {
+            // dyn dispatch — mark for the eval; check arg types.
+            (e as any).__dynDispatch = true;
+            const argTypes = e.args.map(a => this.infer(a));
+            // Self in arg positions is forbidden for dyn; the args are
+            // typed against the trait method's signature with Self as
+            // the dyn type itself (erased to the dyn).
+            void argTypes;
+            const ret = tm.selfInRet ? recvType : tm.retType;
+            this.setType(e, ret);
+            return ret;
+          }
+          this.err(`trait '${traitName}' has no method '${e.name}'`, e.loc);
+          const t = freshTypeVar("M");
+          this.setType(e, t);
+          return t;
+        }
+      } else {
+        const found = this.traits.findTraitMethodForType(recvType, e.name);
+        if (found) {
+          (e as any).__traitImpl = {
+            traitName: found.traitName,
+            implTypeName: typeKey(found.impl.implType),
+            methodName: e.name,
+          };
+          // v3: for generic impls, matchImplType returns a substitution
+          // binding each impl type-param to a concrete part of the receiver
+          // type. Apply this substitution to the impl method's signature
+          // so we type-check the call against the instantiated types
+          // (e.g. `impl<T: Ord> Ord for [T]::cmp(other: [T])` becomes
+          // `cmp(other: [int])` when the receiver is `[int]`).
+          const matchSubst = matchImplType(found.impl, recvType) ?? new Map<string, Type>();
+          // Type-check the call against the impl method's signature. The
+          // impl method's parameter types were resolved in `registerOneImpl`
+          // with `Self` substituted to the impl type. (If we used the trait
+          // method's signature, `Self` would still be a placeholder and
+          // would unify with the receiver's type via `subst`.)
+          const methodSig = found.method ?? found.traitMethod;
+          if (methodSig) {
+            const sigParams = "params" in methodSig ? methodSig.params : null;
+            const sigRet = "retType" in methodSig ? methodSig.retType : T_UNIT;
+            if (sigParams) {
+              if (e.args.length !== sigParams.length - 1) {
+                // The first param is `self`; the user-passed args are the rest.
+                const expected = sigParams.length - 1;
+                this.err(
+                  `method '${e.name}' expects ${expected} argument(s), found ${e.args.length}`,
+                  e.loc,
+                );
+              }
+              const subst = new Map<string, Type>();
+              for (let i = 1; i < sigParams.length; i++) {
+                const argT = this.infer(e.args[i - 1]);
+                // Apply the impl's matchSubst to the param type so generic
+                // impl params (T) become the concrete receiver element type.
+                const sigParamT = applySubst(sigParams[i].type, matchSubst);
+                try {
+                  unify(sigParamT, argT, subst);
+                } catch (err) {
+                  if (err instanceof UnifyError) {
+                    this.err(
+                      `argument ${i}: expected ${typeToString(applySubst(sigParamT, subst))}, ` +
+                      `found ${typeToString(argT)}`,
+                      e.args[i - 1].loc,
+                    );
+                  }
+                }
+              }
+              const ret = applySubst(applySubst(sigRet, matchSubst), subst);
+              this.setType(e, ret);
+              return ret;
+            }
+          }
+        }
+      }
+    }
+    // Fall back to free-function dispatch (legacy v1 behaviour).
     void objT;
     const t = freshTypeVar("M");
     this.setType(e, t);
     return t;
+  }
+
+  /**
+   * v3: Resolve a receiver expression's type to a concrete type that can be
+   * looked up in the trait registry. For `dyn Trait` (Named "dyn Trait"),
+   * returns it as-is. For struct/enum/primitive types, returns the
+   * concrete type. For arrays/tuples, returns the structural type so
+   * generic impls (e.g. `impl<T: Ord> Ord for [T]`) can match.
+   */
+  private resolveReceiverType(t: Type): Type | null {
+    if (t.kind === "Named" || t.kind === "Struct" || t.kind === "Enum") return t;
+    if (t.kind === "Int" || t.kind === "Float" || t.kind === "Bool" ||
+        t.kind === "String" || t.kind === "Char") return t;
+    if (t.kind === "Array") return t;
+    if (t.kind === "Tuple") return t;
+    if (t.kind === "Option" || t.kind === "Result") return t;
+    return null;
   }
 
   inferIndex(e: Extract<Expr, { kind: "Index" }>): Type {
@@ -1256,4 +1775,33 @@ function instantiate(t: Type): { type: Type; genericMap: Map<string, string> } {
     }
   }
   return { type: go(t), genericMap };
+}
+
+//----------------------------------------------------------------------------
+// v3: Self-substitution helper. Used by `resolveImplParamType` to replace
+// `Self` (Named "Self") inside an impl method's parameter type with the
+// impl's concrete impl type.
+//----------------------------------------------------------------------------
+function substituteSelf(t: Type, impl: Type): Type {
+  switch (t.kind) {
+    case "Named":
+      if (t.name === "Self") return impl;
+      return { kind: "Named", name: t.name, args: t.args.map(a => substituteSelf(a, impl)) };
+    case "Func":
+      return { kind: "Func", params: t.params.map(p => substituteSelf(p, impl)), ret: substituteSelf(t.ret, impl) };
+    case "Tuple":
+      return { kind: "Tuple", items: t.items.map(i => substituteSelf(i, impl)) };
+    case "Array":
+      return { kind: "Array", elem: substituteSelf(t.elem, impl) };
+    case "Map":
+      return { kind: "Map", key: substituteSelf(t.key, impl), value: substituteSelf(t.value, impl) };
+    case "Option":
+      return { kind: "Option", inner: substituteSelf(t.inner, impl) };
+    case "Result":
+      return { kind: "Result", ok: substituteSelf(t.ok, impl), err: substituteSelf(t.err, impl) };
+    case "Struct":
+      return { kind: "Struct", name: t.name, fields: t.fields.map(f => ({ name: f.name, type: substituteSelf(f.type, impl) })) };
+    default:
+      return t;
+  }
 }

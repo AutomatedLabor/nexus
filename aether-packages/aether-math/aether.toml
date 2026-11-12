@@ -1,0 +1,13 @@
+[package]
+name = "aether-math"
+version = "0.1.0"
+description = "Extended math functions for Aether — 30 pure functions covering number theory (gcd, lcm, factorial, primes, fib), exponentiation (pow, modPow, exp, log), roots (sqrt_, cbrt), trigonometry via Taylor series (sin, cos, tan, atan, atan2), rounding, and utilities (clamp, lerp, sign, mean, deg, rad)."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — uses only core builtins (abs, sqrt, int, len,
+# push, panic, min, max).
+
+[exports]
+# Exposed via `pub fn` and `pub const` declarations in src/lib.ae.
+# Constants: PI, E_CONST.

@@ -406,6 +406,10 @@ function printNode(node: Node | null | undefined, ctx: Ctx): void {
       printNode(node.body, ctx);
       return;
     case "EnumDecl":
+      if (node.derive && node.derive.length) {
+        push(ctx, `#[derive(${node.derive.join(", ")})]`);
+        newline(ctx);
+      }
       push(ctx, `enum ${node.name}`);
       printTypeParams(node.generics, ctx);
       push(ctx, " {");
@@ -436,6 +440,10 @@ function printNode(node: Node | null | undefined, ctx: Ctx): void {
       push(ctx, "}");
       return;
     case "StructDecl":
+      if (node.derive && node.derive.length) {
+        push(ctx, `#[derive(${node.derive.join(", ")})]`);
+        newline(ctx);
+      }
       push(ctx, `struct ${node.name}`);
       printTypeParams(node.generics, ctx);
       push(ctx, " { ");
@@ -604,6 +612,79 @@ function printNode(node: Node | null | undefined, ctx: Ctx): void {
       push(ctx, ", ");
       printNode(node.err, ctx);
       push(ctx, ">");
+      return;
+    case "DynType":
+      push(ctx, `dyn ${node.traitName}`);
+      return;
+    case "TraitDecl":
+      push(ctx, `trait ${node.name}`);
+      printTypeParams(node.typeParams, ctx);
+      if (node.superTraits.length) push(ctx, `: ${node.superTraits.join(" + ")}`);
+      push(ctx, " {");
+      withIndent(ctx, (c) => {
+        for (const m of node.methods) {
+          newline(c);
+          push(c, "fn ");
+          push(c, m.name);
+          push(c, "(");
+          for (let i = 0; i < m.params.length; i++) {
+            if (i) push(c, ", ");
+            printParam(m.params[i], c);
+          }
+          push(c, ")");
+          if (m.ret) { push(c, " -> "); printNode(m.ret, c); }
+          if (m.hasDefault && m.body) { push(c, " "); printNode(m.body, c); }
+          else push(c, ";");
+        }
+        for (const at of node.assocTypes) {
+          newline(c);
+          push(c, `type ${at.name}`);
+          if (at.bound) push(c, `: ${at.bound}`);
+          push(c, ";");
+        }
+      });
+      newline(ctx);
+      push(ctx, "}");
+      return;
+    case "ImplBlock": {
+      push(ctx, "impl");
+      printTypeParams(node.typeParams, ctx);
+      push(ctx, " ");
+      push(ctx, node.traitName);
+      push(ctx, " for ");
+      printNode(node.implType, ctx);
+      push(ctx, " {");
+      withIndent(ctx, (c) => {
+        for (const m of node.methods) {
+          newline(c);
+          push(c, "fn ");
+          push(c, m.name);
+          push(c, "(");
+          for (let i = 0; i < m.params.length; i++) {
+            if (i) push(c, ", ");
+            printParam(m.params[i], c);
+          }
+          push(c, ")");
+          if (m.ret) { push(c, " -> "); printNode(m.ret, c); }
+          push(c, " ");
+          printNode(m.body, c);
+        }
+        for (const at of node.assocTypes) {
+          newline(c);
+          push(c, `type ${at.name} = `);
+          printNode(at.type, c);
+          push(c, ";");
+        }
+      });
+      newline(ctx);
+      push(ctx, "}");
+      return;
+    }
+    case "TraitMethodDecl":
+    case "ImplMethodDecl":
+    case "TraitAssocTypeDecl":
+    case "ImplAssocTypeDecl":
+      // Standalone print of these is unusual; skip.
       return;
     default: {
       // Exhaustive guard

@@ -1,0 +1,11 @@
+[package]
+name = "aether-result"
+version = "0.1.0"
+description = "Result and Option types for Aether — 20 pure functions modeled as enums, covering the Haskell Either/Maybe and Rust Result/Option APIs: constructors, predicates, extraction, transformation (map/mapErr/andThen/orElse), and collection (collect/traverse)."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — uses only core builtins (panic, str, push, len).
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

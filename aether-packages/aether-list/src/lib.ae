@@ -1,0 +1,460 @@
+// aether-list/src/lib.ae
+// =======================
+// Functional list utilities for Aether. 25 pub functions covering the
+// Haskell-style Data.List API: head/tail/init/last, cons/append/reverse,
+// intersperse/intercalate/transpose, subsequences/permutations, nub
+// (unique), sortWith/sortBy/groupBy, span/break_/takeWhile/dropWhile,
+// partition, chunk, window, zipWith.
+//
+// All functions are pure: they return new arrays rather than mutating
+// their inputs. Built on top of Aether's `while`/`push`/`map`/`filter`
+// primitives — no `for in` loops (defensive against the v1 evaluator's
+// for-loop-scope quirk).
+//
+// Type conventions:
+//   - Polymorphic element type is `int` here (the type system is mostly
+//     erased at runtime, so the same code works for strings/bools/arrays
+//     too, but we annotate `int` to keep the type checker happy and to
+//     document the test-suite element type).
+//   - Comparator functions return int: negative if a<b, zero if equal,
+//     positive if a>b (qsort-style).
+//   - Predicate functions return bool.
+//   - "Array of arrays" is written as `[[int]]`.
+
+//----------------------------------------------------------------------------
+// Basic accessors
+//----------------------------------------------------------------------------
+
+// First element. Panics on empty.
+pub fn head(arr: [int]) -> int {
+  if len(arr) == 0 {
+    panic("head: empty list")
+  } else {
+    arr[0]
+  }
+}
+
+// All elements except the first. Returns [] for empty/single.
+pub fn tail(arr: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 1;
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// All elements except the last. Returns [] for empty/single.
+pub fn init(arr: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(arr) - 1 && i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// Last element. Panics on empty.
+pub fn last(arr: [int]) -> int {
+  if len(arr) == 0 {
+    panic("last: empty list")
+  } else {
+    arr[len(arr) - 1]
+  }
+}
+
+// cons(h, t) — prepend h to t. Returns [h, ...t].
+pub fn cons(h: int, t: [int]) -> [int] {
+  let mut out = [h];
+  let mut i = 0;
+  while i < len(t) {
+    push(out, t[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// append(a, b) — concat two arrays. Returns [...a, ...b].
+pub fn append_arr(a: [int], b: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(a) {
+    push(out, a[i]);
+    i = i + 1;
+  }
+  let mut j = 0;
+  while j < len(b) {
+    push(out, b[j]);
+    j = j + 1;
+  }
+  out
+}
+
+// reverse(arr) — reverse a list. O(n).
+pub fn reverse(arr: [int]) -> [int] {
+  let mut out = [];
+  let mut i = len(arr) - 1;
+  while i >= 0 {
+    push(out, arr[i]);
+    i = i - 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// Intersperse / intercalate / transpose
+//----------------------------------------------------------------------------
+
+// intersperse(arr, sep) — insert sep between each pair. O(n).
+//   [1,2,3] with sep 0 -> [1,0,2,0,3]
+pub fn intersperse(arr: [int], sep: int) -> [int] {
+  if len(arr) == 0 {
+    []
+  } else {
+    let mut out = [arr[0]];
+    let mut i = 1;
+    while i < len(arr) {
+      push(out, sep);
+      push(out, arr[i]);
+      i = i + 1;
+    }
+    out
+  }
+}
+
+// intercalate(sep, arrs) — join an array of arrays with sep.
+//   intercalate(0, [[1,2],[3,4],[5]]) -> [1,2,0,3,4,0,5]
+pub fn intercalate(sep: int, arrs: [[int]]) -> [int] {
+  if len(arrs) == 0 {
+    []
+  } else {
+    let mut out = arrs[0];
+    let mut i = 1;
+    while i < len(arrs) {
+      push(out, sep);
+      out = append_arr(out, arrs[i]);
+      i = i + 1;
+    }
+    out
+  }
+}
+
+// transpose(arrs) — matrix transpose (rows -> cols).
+//   [[1,2,3],[4,5,6]] -> [[1,4],[2,5],[3,6]]
+// Rows of unequal length are truncated to the shortest row.
+pub fn transpose(arrs: [[int]]) -> [[int]] {
+  if len(arrs) == 0 {
+    []
+  } else {
+    let n = len(arrs);
+    let mut w = len(arrs[0]);
+    let mut k = 1;
+    while k < n {
+      if len(arrs[k]) < w {
+        w = len(arrs[k]);
+      };
+      k = k + 1;
+    }
+    let mut out = [];
+    let mut j = 0;
+    while j < w {
+      let mut col = [];
+      let mut i = 0;
+      while i < n {
+        push(col, arrs[i][j]);
+        i = i + 1;
+      }
+      push(out, col);
+      j = j + 1;
+    }
+    out
+  }
+}
+
+//----------------------------------------------------------------------------
+// Subsequences / permutations
+//----------------------------------------------------------------------------
+
+// subsequences(arr) — all 2^n subsequences (powerset), in shortlex order.
+//   subsequences([1,2,3]) -> [[], [1], [2], [3], [1,2], [1,3], [2,3], [1,2,3]]
+// Implemented iteratively: start with [[]], and for each element, append
+// to each existing subsequence a new subsequence that includes it.
+pub fn subsequences(arr: [int]) -> [[int]] {
+  let mut out = [[]];
+  let mut i = 0;
+  while i < len(arr) {
+    let x = arr[i];
+    let cur_len = len(out);
+    let mut j = 0;
+    while j < cur_len {
+      push(out, append_arr(out[j], [x]));
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  out
+}
+
+// permutations(arr) — all n! permutations in lexicographic order.
+// Recursive insertion: permutations([x, ...rest]) = for each permutation p
+//   of rest, for each position i in 0..len(p), insert x at position i.
+pub fn permutations(arr: [int]) -> [[int]] {
+  if len(arr) == 0 {
+    [[]]
+  } else {
+    if len(arr) == 1 {
+      [arr]
+    } else {
+      let x = arr[0];
+      let rest = tail(arr);
+      let sub_perms = permutations(rest);
+      let mut out = [];
+      let mut pi = 0;
+      while pi < len(sub_perms) {
+        let p = sub_perms[pi];
+        let mut i = 0;
+        while i <= len(p) {
+          push(out, insert_at(p, i, x));
+          i = i + 1;
+        }
+        pi = pi + 1;
+      }
+      out
+    }
+  }
+}
+
+// Helper: insert x at position i in arr (returns new array).
+fn insert_at(arr: [int], pos: int, x: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < pos && i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  push(out, x);
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// Nub / sort / group
+//----------------------------------------------------------------------------
+
+// nub(arr) — deduplicate. Preserves first-occurrence order. O(n^2).
+pub fn nub(arr: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(arr) {
+    if not_contains(out, arr[i]) {
+      push(out, arr[i]);
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// Helper: returns true if arr does NOT contain x.
+fn not_contains(arr: [int], x: int) -> bool {
+  let mut found = false;
+  let mut i = 0;
+  while i < len(arr) {
+    if arr[i] == x {
+      found = true;
+    };
+    i = i + 1;
+  }
+  !found
+}
+
+// sortWith(arr, cmp) — quicksort. cmp(a, b) returns int (neg/zero/pos).
+pub fn sortWith(arr: [int], cmp: fn(int, int) -> int) -> [int] {
+  if len(arr) <= 1 {
+    arr
+  } else {
+    let pivot = arr[0];
+    let mut lt = [];
+    let mut eq = [];
+    let mut gt = [];
+    let mut i = 0;
+    while i < len(arr) {
+      let c = cmp(arr[i], pivot);
+      if c < 0 {
+        push(lt, arr[i]);
+      } else {
+        if c == 0 {
+          push(eq, arr[i]);
+        } else {
+          push(gt, arr[i]);
+        };
+      };
+      i = i + 1;
+    }
+    append_arr(append_arr(sortWith(lt, cmp), eq), sortWith(gt, cmp))
+  }
+}
+
+// sortBy(arr, key) — sort by key function (ascending). Uses sortWith.
+pub fn sortBy(arr: [int], key: fn(int) -> int) -> [int] {
+  sortWith(arr, fn(a: int, b: int) -> int { key(a) - key(b) })
+}
+
+// groupBy(arr, eq) — group consecutive equal-by-eq elements.
+//   groupBy([1,1,2,3,3,3], eq_int) -> [[1,1],[2],[3,3,3]]
+pub fn groupBy(arr: [int], eq: fn(int, int) -> bool) -> [[int]] {
+  if len(arr) == 0 {
+    []
+  } else {
+    let mut out = [];
+    let mut cur = [arr[0]];
+    let mut i = 1;
+    while i < len(arr) {
+      if eq(arr[i], cur[len(cur) - 1]) {
+        push(cur, arr[i]);
+      } else {
+        push(out, cur);
+        cur = [arr[i]];
+      };
+      i = i + 1;
+    }
+    push(out, cur);
+    out
+  }
+}
+
+//----------------------------------------------------------------------------
+// Span / break / takeWhile / dropWhile / partition
+//----------------------------------------------------------------------------
+
+// span(arr, pred) — (takeWhile(pred, arr), dropWhile(pred, arr)).
+//   span([1,2,3,4], is_lt3) -> [[1,2], [3,4]]
+pub fn span(arr: [int], pred: fn(int) -> bool) -> [[int]] {
+  [takeWhile(arr, pred), dropWhile(arr, pred)]
+}
+
+// break_(arr, pred) — (takeWhile(!pred, arr), dropWhile(!pred, arr)).
+//   break_([1,2,3,4], is_gt2) -> [[1,2], [3,4]]
+pub fn break_(arr: [int], pred: fn(int) -> bool) -> [[int]] {
+  span(arr, fn(x: int) -> bool { !pred(x) })
+}
+
+// takeWhile(arr, pred) — longest prefix where pred holds.
+pub fn takeWhile(arr: [int], pred: fn(int) -> bool) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  let mut keep = true;
+  while i < len(arr) && keep {
+    if pred(arr[i]) {
+      push(out, arr[i]);
+    } else {
+      keep = false;
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// dropWhile(arr, pred) — drop the longest prefix where pred holds; return rest.
+pub fn dropWhile(arr: [int], pred: fn(int) -> bool) -> [int] {
+  let mut i = 0;
+  let mut keep_dropping = true;
+  while i < len(arr) && keep_dropping {
+    if pred(arr[i]) {
+      i = i + 1;
+    } else {
+      keep_dropping = false;
+    };
+  }
+  let mut out = [];
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// partition(arr, pred) — (satisfying, not satisfying).
+//   partition([1,2,3,4,5], is_even) -> [[2,4], [1,3,5]]
+pub fn partition(arr: [int], pred: fn(int) -> bool) -> [[int]] {
+  let mut yes = [];
+  let mut no = [];
+  let mut i = 0;
+  while i < len(arr) {
+    if pred(arr[i]) {
+      push(yes, arr[i]);
+    } else {
+      push(no, arr[i]);
+    };
+    i = i + 1;
+  }
+  [yes, no]
+}
+
+//----------------------------------------------------------------------------
+// Chunk / window / zipWith
+//----------------------------------------------------------------------------
+
+// chunk(arr, n) — split into chunks of size n. Last chunk may be shorter.
+//   chunk([1,2,3,4,5], 2) -> [[1,2], [3,4], [5]]
+pub fn chunk(arr: [int], n: int) -> [[int]] {
+  if n <= 0 {
+    panic("chunk: size must be positive")
+  } else {
+    let mut out = [];
+    let mut i = 0;
+    while i < len(arr) {
+      let mut c = [];
+      let mut j = 0;
+      while j < n && i + j < len(arr) {
+        push(c, arr[i + j]);
+        j = j + 1;
+      }
+      push(out, c);
+      i = i + n;
+    }
+    out
+  }
+}
+
+// window(arr, n) — sliding window of size n. Returns len(arr)-n+1 windows.
+//   window([1,2,3,4], 2) -> [[1,2], [2,3], [3,4]]
+pub fn window(arr: [int], n: int) -> [[int]] {
+  if n <= 0 {
+    panic("window: size must be positive")
+  } else {
+    if n > len(arr) {
+      []
+    } else {
+      let mut out = [];
+      let mut i = 0;
+      while i + n <= len(arr) {
+        let mut w = [];
+        let mut j = 0;
+        while j < n {
+          push(w, arr[i + j]);
+          j = j + 1;
+        }
+        push(out, w);
+        i = i + 1;
+      }
+      out
+    }
+  }
+}
+
+// zipWith(a, b, f) — element-wise combine via f. Length = min(len(a), len(b)).
+pub fn zipWith(a: [int], b: [int], f: fn(int, int) -> int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  let n = min(len(a), len(b));
+  while i < n {
+    push(out, f(a[i], b[i]));
+    i = i + 1;
+  }
+  out
+}

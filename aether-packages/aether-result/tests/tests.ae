@@ -1,0 +1,111 @@
+// aether-result/tests/tests.ae
+// ============================
+// 25+ assertions covering every pub function in aether-result.
+import {
+  ok, err, some, none,
+  isOk, isErr, isSome, isNone,
+  unwrap, unwrapOr, unwrapErr, unwrapOption,
+  map, mapErr, andThen, orElse, mapOption, andThenOption,
+  okToOption, errToOption, optionToResult, fromOption,
+  collect, traverse,
+} from "../src/lib.ae";
+
+// --- Constructors + predicates ---
+assert_eq(isOk(ok(42)), true);
+assert_eq(isOk(err("oops")), false);
+assert_eq(isErr(ok(42)), false);
+assert_eq(isErr(err("oops")), true);
+assert_eq(isSome(some(42)), true);
+assert_eq(isSome(none()), false);
+assert_eq(isNone(some(42)), false);
+assert_eq(isNone(none()), true);
+
+// --- Extraction ---
+assert_eq(unwrap(ok(42)), 42);
+assert_eq(unwrapOr(ok(42), 0), 42);
+assert_eq(unwrapOr(err("oops"), 0), 0);
+assert_eq(unwrapErr(err("oops")), "oops");
+assert_eq(unwrapOption(some(42), 0), 42);
+assert_eq(unwrapOption(none(), 7), 7);
+
+// --- map / mapErr ---
+assert_eq(unwrap(map(ok(5), fn(x: int) -> int { x * 2 })), 10);
+assert_eq(isErr(map(err("oops"), fn(x: int) -> int { x * 2 })), true);
+assert_eq(isOk(mapErr(ok(5), fn(e: string) -> string { e + "!" })), true);
+assert_eq(unwrapErr(mapErr(err("oops"), fn(e: string) -> string { e + "!" })), "oops!");
+
+// --- andThen / orElse ---
+fn safe_div(a: int) -> Result {
+  if a == 0 {
+    err("div by zero")
+  } else {
+    ok(int(100 / a))
+  }
+}
+assert_eq(unwrap(andThen(ok(5), safe_div)), 20);
+assert_eq(unwrapErr(andThen(ok(0), safe_div)), "div by zero");
+assert_eq(unwrap(orElse(err("oops"), fn(e: string) -> Result { ok(99) })), 99);
+assert_eq(unwrap(orElse(ok(5), fn(e: string) -> Result { ok(99) })), 5);
+
+// --- mapOption / andThenOption ---
+assert_eq(unwrapOption(mapOption(some(5), fn(x: int) -> int { x + 1 })), 6);
+assert_eq(isNone(mapOption(none(), fn(x: int) -> int { x + 1 })), true);
+fn safe_sqrt(x: int) -> Option {
+  if x < 0 {
+    none()
+  } else {
+    some(x * x)
+  }
+}
+assert_eq(unwrapOption(andThenOption(some(3), safe_sqrt), 0), 9);
+assert_eq(isNone(andThenOption(some(-1), safe_sqrt)), true);
+assert_eq(isNone(andThenOption(none(), safe_sqrt)), true);
+
+// --- Conversions ---
+assert_eq(unwrapOption(okToOption(ok(42)), 0), 42);
+assert_eq(isNone(okToOption(err("oops"))), true);
+assert_eq(unwrapOption(errToOption(err("oops")), ""), "oops"); // Some carries string "oops"
+assert_eq(isNone(errToOption(ok(42))), true);
+assert_eq(unwrap(optionToResult(some(42), "default")), 42);
+assert_eq(unwrapErr(optionToResult(none(), "missing")), "missing");
+assert_eq(unwrap(fromOption(some(7), "missing")), 7);
+assert_eq(unwrapErr(fromOption(none(), "missing")), "missing");
+
+// --- collect ---
+let all_ok = [ok(1), ok(2), ok(3)];
+let collected = collect(all_ok);
+assert_eq(isOk(collected), true);
+assert_eq(unwrap(collected), [1, 2, 3]);
+
+let mixed = [ok(1), err("oops"), ok(3)];
+let cmix = collect(mixed);
+assert_eq(isErr(cmix), true);
+assert_eq(unwrapErr(cmix), "oops");
+
+let empty: [Result] = [];
+let cempty = collect(empty);
+assert_eq(isOk(cempty), true);
+assert_eq(unwrap(cempty), []);
+
+// --- traverse ---
+let trav = traverse([1, 2, 3], fn(x: int) -> Result {
+  if x > 0 {
+    ok(x * x)
+  } else {
+    err("neg")
+  }
+});
+assert_eq(isOk(trav), true);
+assert_eq(unwrap(trav), [1, 4, 9]);
+
+let trav_fail = traverse([1, -2, 3], fn(x: int) -> Result {
+  if x > 0 {
+    ok(x * x)
+  } else {
+    err("neg")
+  }
+});
+assert_eq(isErr(trav_fail), true);
+assert_eq(unwrapErr(trav_fail), "neg");
+
+print("aether-result: all 25+ assertions passed");

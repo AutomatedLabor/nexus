@@ -63,6 +63,8 @@ const KEYWORDS = new Set<string>([
   "else", "while", "for", "in", "return", "break", "continue", "print",
   "true", "false", "unit", "self", "as", "range", "import", "pub", "use",
   "or", "do",
+  // v3: trait / impl / dyn
+  "trait", "impl", "dyn",
 ]);
 
 const PUNCT = [
@@ -70,7 +72,7 @@ const PUNCT = [
   "..=", "...", "..", "::", "->", "=>", "==", "!=", "<=", ">=", "&&", "||",
   "+=", "-=", "*=", "/=", "%=", "<<", ">>", "??", "?", "!", "~",
   "+", "-", "*", "/", "%", "&", "|", "^", "<", ">", "=",
-  "(", ")", "[", "]", "{", "}", ",", ";", ":", ".", "@",
+  "(", ")", "[", "]", "{", "}", ",", ";", ":", ".", "@", "#",
 ];
 // Sort by descending length so the longest match wins.
 const PUNCT_SORTED = [...PUNCT].sort((a, b) => b.length - a.length);

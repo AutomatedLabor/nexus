@@ -1,0 +1,12 @@
+[package]
+name = "aether-string"
+version = "0.1.0"
+description = "Extended string operations for Aether — 30 pure functions covering splitting/joining, trimming, case conversion, alignment, reversal, and edit distances (Levenshtein, Hamming)."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — uses only core builtins (charCode, fromCharCode,
+# strSlice, len, min, panic, push, strSlice).
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

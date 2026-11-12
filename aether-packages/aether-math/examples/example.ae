@@ -1,0 +1,72 @@
+// aether-math/examples/example.ae
+// =================================
+// A demo of the aether-math package.
+import {
+  PI, E_CONST,
+  gcd, lcm, factorial, isPrime, primesUpTo, fib,
+  pow, modPow, exp, ln, log,
+  sqrt_, cbrt,
+  sin, cos, tan, atan, atan2,
+  floor, ceil, round, trunc,
+  clamp, lerp, sign, abs_, min_, max_, sum_, mean, deg, rad,
+} from "../src/lib.ae";
+
+print("== aether-math example ==");
+print("");
+
+print("PI                   = " + str(PI));
+print("E_CONST              = " + str(E_CONST));
+print("");
+
+print("gcd(12, 18)          = " + str(gcd(12, 18)));
+print("lcm(4, 6)            = " + str(lcm(4, 6)));
+print("factorial(10)        = " + str(factorial(10)));
+print("isPrime(17)          = " + str(isPrime(17)));
+print("isPrime(15)          = " + str(isPrime(15)));
+print("primesUpTo(30)       = " + primesUpTo(30));
+print("fib(10)              = " + str(fib(10)));
+print("fib(15)              = " + str(fib(15)));
+print("");
+
+print("pow(2, 10)           = " + str(pow(2, 10)));
+print("modPow(2, 10, 1000) = " + str(modPow(2, 10, 1000)));
+print("exp(1)               = " + str(exp(1)));
+print("ln(E_CONST)          = " + str(ln(E_CONST)));
+print("log(10, 1000)        = " + str(log(10, 1000)));
+print("");
+
+print("sqrt_(2)             = " + str(sqrt_(2)));
+print("cbrt(27)             = " + str(cbrt(27)));
+print("cbrt(-8)             = " + str(cbrt(-8)));
+print("");
+
+print("sin(0)               = " + str(sin(0)));
+print("sin(PI/2)            = " + str(sin(PI / 2)));
+print("cos(0)               = " + str(cos(0)));
+print("cos(PI)              = " + str(cos(PI)));
+print("tan(PI/4)            = " + str(tan(PI / 4)));
+print("atan(1)              = " + str(atan(1)));
+print("atan2(1, 1)          = " + str(atan2(1, 1)));
+print("");
+
+print("floor(2.5)           = " + str(floor(2.5)));
+print("ceil(2.5)            = " + str(ceil(2.5)));
+print("round(2.5)          = " + str(round(2.5)));
+print("trunc(-2.5)          = " + str(trunc(-2.5)));
+print("");
+
+print("clamp(5, 0, 10)     = " + str(clamp(5, 0, 10)));
+print("clamp(-1, 0, 10)    = " + str(clamp(-1, 0, 10)));
+print("clamp(15, 0, 10)    = " + str(clamp(15, 0, 10)));
+print("lerp(0, 100, 0.25)  = " + str(lerp(0, 100, 0.25)));
+print("sign(-5)            = " + str(sign(-5)));
+print("abs_(-5)            = " + str(abs_(-5)));
+print("min_([3,1,2,5,4])   = " + str(min_([3, 1, 2, 5, 4])));
+print("max_([3,1,2,5,4])   = " + str(max_([3, 1, 2, 5, 4])));
+print("sum_([1,2,3,4,5])   = " + str(sum_([1, 2, 3, 4, 5])));
+print("mean([1,2,3,4,5])   = " + str(mean([1, 2, 3, 4, 5])));
+print("deg(PI)             = " + str(deg(PI)));
+print("rad(180)            = " + str(rad(180)));
+
+print("");
+print("All demos ran successfully.");

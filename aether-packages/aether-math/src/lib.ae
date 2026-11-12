@@ -1,0 +1,558 @@
+// aether-math/src/lib.ae
+// ======================
+// Extended math functions for Aether. 30 pub functions covering number
+// theory (gcd, lcm, factorial, isPrime, primesUpTo, fib), exponentiation
+// (pow, modPow, exp, log), roots (sqrt_, cbrt), trigonometry (sin, cos, tan,
+// atan, atan2) implemented via Taylor series, rounding (floor, ceil, round,
+// trunc), and miscellaneous (clamp, lerp, sign, abs_, min_, max_, sum_, mean,
+// deg, rad).
+//
+// Built only on Aether's core builtins (`+`, `-`, `*`, `/`, `<`, `>`, `==`,
+// `int`, `abs`, `sqrt`, `len`, `push`, `range`, `min`, `max`). No host
+// primitives beyond what the language ships.
+//
+// Type conventions:
+//   - Most functions take `int` or `float` (both are JS `number` at runtime).
+//   - `int(x)` truncates toward zero; we use it for integer casts.
+//   - `floor`/`ceil`/`round`/`trunc` are explicit functions.
+//   - PI is a `let` constant: 3.141592653589793 (16 sig figs).
+
+pub const PI = 3.141592653589793;
+pub const E_CONST = 2.718281828459045;
+
+//----------------------------------------------------------------------------
+// Number theory
+//----------------------------------------------------------------------------
+
+// gcd(a, b) — greatest common divisor. Euclidean algorithm. Returns non-neg.
+pub fn gcd(a: int, b: int) -> int {
+  let mut x = abs(a);
+  let mut y = abs(b);
+  while y != 0 {
+    let t = x % y;
+    x = y;
+    y = t;
+  }
+  x
+}
+
+// lcm(a, b) — least common multiple. Returns 0 if either is 0.
+pub fn lcm(a: int, b: int) -> int {
+  if a == 0 || b == 0 {
+    0
+  } else {
+    abs(a) / gcd(a, b) * abs(b)
+  }
+}
+
+// factorial(n) — n!. Returns 1 for n <= 0.
+pub fn factorial(n: int) -> int {
+  let mut out = 1;
+  let mut i = 2;
+  while i <= n {
+    out = out * i;
+    i = i + 1;
+  }
+  out
+}
+
+// isPrime(n) — true if n is a prime number > 1. Trial division up to sqrt(n).
+pub fn isPrime(n: int) -> bool {
+  if n < 2 {
+    false
+  } else {
+    if n == 2 {
+      true
+    } else {
+      if n % 2 == 0 {
+        false
+      } else {
+        let mut i = 3;
+        let mut found = false;
+        while i * i <= n && !found {
+          if n % i == 0 {
+            found = true;
+          } else {
+            i = i + 2;
+          };
+        }
+        !found
+      }
+    }
+  }
+}
+
+// primesUpTo(n) — all primes <= n. Sieve of Eratosthenes.
+pub fn primesUpTo(n: int) -> [int] {
+  if n < 2 {
+    []
+  } else {
+    // Sieve via a bool array.
+    let mut sieve = [];
+    let mut k = 0;
+    while k <= n {
+      push(sieve, true);
+      k = k + 1;
+    }
+    // 0 and 1 are not prime.
+    sieve[0] = false;
+    if n >= 1 {
+      sieve[1] = false;
+    };
+    let mut i = 2;
+    while i * i <= n {
+      if sieve[i] {
+        let mut j = i * i;
+        while j <= n {
+          sieve[j] = false;
+          j = j + i;
+        }
+      };
+      i = i + 1;
+    }
+    let mut out = [];
+    let mut p = 2;
+    while p <= n {
+      if sieve[p] {
+        push(out, p);
+      };
+      p = p + 1;
+    }
+    out
+  }
+}
+
+// fib(n) — nth Fibonacci number (0-indexed). Iterative.
+pub fn fib(n: int) -> int {
+  if n <= 0 {
+    0
+  } else {
+    if n == 1 {
+      1
+    } else {
+      let mut a = 0;
+      let mut b = 1;
+      let mut i = 2;
+      while i <= n {
+        let t = a + b;
+        a = b;
+        b = t;
+        i = i + 1;
+      }
+      b
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Exponentiation
+//----------------------------------------------------------------------------
+
+// pow(a, b) — a^b for integer b. Uses repeated squaring. b >= 0 only.
+pub fn pow(a: int, b: int) -> int {
+  if b < 0 {
+    panic("pow: negative exponent not supported for integer pow")
+  } else {
+    let mut result = 1;
+    let mut base = a;
+    let mut exp = b;
+    while exp > 0 {
+      if exp % 2 == 1 {
+        result = result * base;
+      };
+      base = base * base;
+      exp = int(exp / 2);
+    }
+    result
+  }
+}
+
+// modPow(a, b, m) — (a^b) mod m. Modular exponentiation via repeated squaring.
+pub fn modPow(a: int, b: int, m: int) -> int {
+  if m == 0 {
+    panic("modPow: modulus must be positive")
+  } else {
+    let mut result = 1;
+    let mut base = a % m;
+    let mut exp = b;
+    while exp > 0 {
+      if exp % 2 == 1 {
+        result = (result * base) % m;
+      };
+      base = (base * base) % m;
+      exp = int(exp / 2);
+    }
+    if result < 0 {
+      result = result + m;
+    };
+    result
+  }
+}
+
+// exp(x) — e^x via Taylor series (1 + x + x^2/2! + ...). Converges for |x| < ~700.
+pub fn exp(x: float) -> float {
+  // Range reduction: e^x = e^n * e^r where x = n*ln(2) + r, |r| <= ln(2)/2.
+  let ln2 = 0.6931471805599453;
+  let half_ln2 = ln2 / 2;
+  let n_f = x / ln2;
+  let n = int(n_f + 0.5);  // nearest integer
+  let r = x - n * ln2;
+  // Taylor: e^r = sum r^k / k!
+  let mut sum = 1.0;
+  let mut term = 1.0;
+  let mut k = 1;
+  while k < 30 {
+    term = term * r / k;
+    sum = sum + term;
+    k = k + 1;
+  }
+  // Multiply by 2^n via bit shift on float (just multiply).
+  let mut result = sum;
+  let mut m = n;
+  if m >= 0 {
+    while m > 0 {
+      result = result * 2;
+      m = m - 1;
+    }
+  } else {
+    while m < 0 {
+      result = result / 2;
+      m = m + 1;
+    }
+  };
+  result
+}
+
+// ln(x) — natural log. Uses range reduction: x = 2^e * m, 1 <= m < 2;
+// ln(x) = e*ln(2) + ln(m); ln(m) via series 2*(y + y^3/3 + ...) where y = (m-1)/(m+1).
+pub fn ln(x: float) -> float {
+  if x <= 0 {
+    panic("ln: domain error (x <= 0)")
+  } else {
+    let ln2 = 0.6931471805599453;
+    let mut e = 0;
+    let mut m = x;
+    while m >= 2 {
+      m = m / 2;
+      e = e + 1;
+    }
+    while m < 1 {
+      m = m * 2;
+      e = e - 1;
+    }
+    // Now 1 <= m < 2.
+    let y = (m - 1) / (m + 1);
+    let mut sum = 0.0;
+    let mut term = y;
+    let mut k = 1;
+    while k < 60 {
+      sum = sum + term / k;
+      term = term * y * y;
+      k = k + 2;
+    }
+    2 * sum + e * ln2
+  }
+}
+
+// log(b, x) — log base b of x. log_b(x) = ln(x) / ln(b).
+pub fn log(b: float, x: float) -> float {
+  ln(x) / ln(b)
+}
+
+//----------------------------------------------------------------------------
+// Roots
+//----------------------------------------------------------------------------
+
+// sqrt_(n) — square root. Uses the builtin `sqrt`.
+pub fn sqrt_(n: float) -> float {
+  if n < 0 {
+    panic("sqrt_: domain error (n < 0)")
+  } else {
+    sqrt(n)
+  }
+}
+
+// cbrt(n) — cube root. Newton's method.
+pub fn cbrt(n: float) -> float {
+  if n == 0 {
+    0.0
+  } else {
+    let neg = n < 0;
+    let a = abs(n);
+    let mut x = a;
+    let mut i = 0;
+    while i < 50 {
+      let next = (2 * x + a / (x * x)) / 3;
+      let diff = next - x;
+      if diff < 0 {
+        if -diff < 0.0000000001 {
+          x = next;
+          i = 50;  // break
+        } else {
+          x = next;
+        };
+      } else {
+        if diff < 0.0000000001 {
+          x = next;
+          i = 50;
+        } else {
+          x = next;
+        };
+      };
+      i = i + 1;
+    }
+    if neg { -x } else { x }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Trigonometry (Taylor series)
+//----------------------------------------------------------------------------
+
+// Reduce x to [-pi, pi].
+fn reduce_angle(x: float) -> float {
+  let two_pi = 2 * PI;
+  let mut y = x - two_pi * int(x / two_pi);
+  // y in (-2pi, 2pi]; reduce to [-pi, pi].
+  if y > PI {
+    y = y - two_pi;
+  };
+  if y < -PI {
+    y = y + two_pi;
+  };
+  y
+}
+
+// sin(x) — Taylor series: x - x^3/3! + x^5/5! - x^7/7! + ... (15 terms).
+pub fn sin(x: float) -> float {
+  let y = reduce_angle(x);
+  let mut sum = y;
+  let mut term = y;
+  let mut k = 1;
+  while k < 15 {
+    // term_{k+1} = term_k * (-y^2) / ((2k)*(2k+1))
+    term = term * (-y * y) / ((2 * k) * (2 * k + 1));
+    sum = sum + term;
+    k = k + 1;
+  }
+  sum
+}
+
+// cos(x) — Taylor series: 1 - x^2/2! + x^4/4! - ... (15 terms).
+pub fn cos(x: float) -> float {
+  let y = reduce_angle(x);
+  let mut sum = 1.0;
+  let mut term = 1.0;
+  let mut k = 1;
+  while k < 15 {
+    term = term * (-y * y) / ((2 * k - 1) * (2 * k));
+    sum = sum + term;
+    k = k + 1;
+  }
+  sum
+}
+
+// tan(x) — sin(x) / cos(x). Panics if cos(x) == 0 (pi/2 + n*pi).
+pub fn tan(x: float) -> float {
+  let c = cos(x);
+  if c == 0 {
+    panic("tan: undefined at pi/2 + n*pi")
+  } else {
+    sin(x) / c
+  }
+}
+
+// atan(x) — arctan. Uses the halving identity atan(x) = 2*atan(x/(1+sqrt(1+x*x)))
+// twice to shrink the argument, then a Taylor series on the shrunk value.
+// For |x| > 1, uses atan(x) = pi/2 - atan(1/x).
+pub fn atan(x: float) -> float {
+  if x > 1 {
+    PI / 2 - atan(1 / x)
+  } else {
+    if x < -1 {
+      -PI / 2 - atan(1 / x)
+    } else {
+      // Apply halving identity twice to shrink x to ~0.2 (for x=1).
+      let y1 = x / (1 + sqrt_(1 + x * x));
+      let y2 = y1 / (1 + sqrt_(1 + y1 * y1));
+      // Taylor series for atan(y2) = y2 - y2^3/3 + y2^5/5 - ...
+      let mut sum = y2;
+      let mut term = y2;
+      let mut k = 1;
+      while k < 30 {
+        term = term * (-y2 * y2);
+        sum = sum + term / (2 * k + 1);
+        k = k + 1;
+      }
+      4 * sum   // atan(x) = 4 * atan(y2)
+    }
+  }
+}
+
+// atan2(y, x) — 4-quadrant arctangent. Returns angle in (-pi, pi].
+pub fn atan2(y: float, x: float) -> float {
+  if x > 0 {
+    atan(y / x)
+  } else {
+    if x < 0 {
+      if y >= 0 {
+        atan(y / x) + PI
+      } else {
+        atan(y / x) - PI
+      }
+    } else {
+      // x == 0
+      if y > 0 {
+        PI / 2
+      } else {
+        if y < 0 {
+          -PI / 2
+        } else {
+          0.0
+        }
+      }
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Rounding
+//----------------------------------------------------------------------------
+
+// floor(x) — greatest integer <= x.
+pub fn floor(x: float) -> float {
+  let t = int(x);
+  if x < t {
+    t - 1
+  } else {
+    t
+  }
+}
+
+// ceil(x) — smallest integer >= x.
+pub fn ceil(x: float) -> float {
+  let t = int(x);
+  if x > t {
+    t + 1
+  } else {
+    t
+  }
+}
+
+// round(x) — nearest integer, ties away from zero.
+pub fn round(x: float) -> float {
+  if x >= 0 {
+    int(x + 0.5)
+  } else {
+    int(x - 0.5)
+  }
+}
+
+// trunc(x) — truncate toward zero.
+pub fn trunc(x: float) -> float {
+  int(x)
+}
+
+//----------------------------------------------------------------------------
+// Miscellaneous
+//----------------------------------------------------------------------------
+
+// clamp(n, lo, hi) — clamp n to [lo, hi].
+pub fn clamp(n: float, lo: float, hi: float) -> float {
+  if n < lo {
+    lo
+  } else {
+    if n > hi {
+      hi
+    } else {
+      n
+    }
+  }
+}
+
+// lerp(a, b, t) — linear interpolation: a + (b - a) * t.
+pub fn lerp(a: float, b: float, t: float) -> float {
+  a + (b - a) * t
+}
+
+// sign(x) — -1, 0, or 1.
+pub fn sign(x: float) -> int {
+  if x > 0 {
+    1
+  } else {
+    if x < 0 {
+      -1
+    } else {
+      0
+    }
+  }
+}
+
+// abs_(x) — absolute value. Uses builtin abs.
+pub fn abs_(x: float) -> float {
+  abs(x)
+}
+
+// min_(arr) — minimum of an array. Panics on empty.
+pub fn min_(arr: [float]) -> float {
+  if len(arr) == 0 {
+    panic("min_: empty array")
+  } else {
+    let mut m = arr[0];
+    let mut i = 1;
+    while i < len(arr) {
+      if arr[i] < m {
+        m = arr[i];
+      };
+      i = i + 1;
+    }
+    m
+  }
+}
+
+// max_(arr) — maximum of an array. Panics on empty.
+pub fn max_(arr: [float]) -> float {
+  if len(arr) == 0 {
+    panic("max_: empty array")
+  } else {
+    let mut m = arr[0];
+    let mut i = 1;
+    while i < len(arr) {
+      if arr[i] > m {
+        m = arr[i];
+      };
+      i = i + 1;
+    }
+    m
+  }
+}
+
+// sum_(arr) — sum of an array of numbers.
+pub fn sum_(arr: [float]) -> float {
+  let mut s = 0.0;
+  let mut i = 0;
+  while i < len(arr) {
+    s = s + arr[i];
+    i = i + 1;
+  }
+  s
+}
+
+// mean(arr) — arithmetic mean. Panics on empty.
+pub fn mean(arr: [float]) -> float {
+  if len(arr) == 0 {
+    panic("mean: empty array")
+  } else {
+    sum_(arr) / len(arr)
+  }
+}
+
+// deg(r) — radians to degrees.
+pub fn deg(r: float) -> float {
+  r * 180 / PI
+}
+
+// rad(d) — degrees to radians.
+pub fn rad(d: float) -> float {
+  d * PI / 180
+}
