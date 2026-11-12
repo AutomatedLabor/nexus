@@ -682,6 +682,14 @@ fn scopeDeclare(ctx: LowerCtx, name: string, boxed: int) -> int {
   vreg
 }
 
+// Declare a name bound to an existing vreg (no fresh alloc).
+fn scopeDeclareVreg(ctx: LowerCtx, name: string, vreg: int) -> int {
+  let b = VarBinding { vreg: vreg, boxed: 0, isUpvalue: 0, upvalueIndex: -1 };
+  let scope = ctx.scopes[len(ctx.scopes) - 1];
+  push(scope, ScopeEntry { name: name, binding: b });
+  vreg
+}
+
 fn scopeDeclareUpvalue(ctx: LowerCtx, name: string, idx: int) -> int {
   let b = VarBinding { vreg: -1, boxed: 0, isUpvalue: 1, upvalueIndex: idx };
   let scope = ctx.scopes[len(ctx.scopes) - 1];
@@ -785,7 +793,7 @@ pub fn lowerToIr(program: Node) -> IrProgram {
   while i < len(body) {
     let s = body[i];
     if s.kind == "FnDecl" {
-      let gReg = allocReg(ctx);
+      let gReg = scopeDeclare(ctx, s.name, 0);
       push(globals, GlobalEntry { name: s.name, reg: gReg });
     };
     i = i + 1;
@@ -830,7 +838,7 @@ pub fn lowerToIr(program: Node) -> IrProgram {
     i = i + 1;
   }
   // Then lower the remaining stmts in main.
-  let lastVal = 0;
+  let mut lastVal = 0;
   i = 0;
   while i < len(body) {
     let s = body[i];
@@ -855,8 +863,9 @@ pub fn lowerToIr(program: Node) -> IrProgram {
   // Cleanup: remove empty trailing blocks (those that have no instrs and are
   // not the entry block).
   let mut fi = 0;
+  print("[trace] before cleanup loop, fi=" + str(fi));
   while fi < len(ctx.funcs) {
-    let f = ctx.funcs[fi];
+    let mut f = ctx.funcs[fi];
     let kept = [];
     let mut j = 0;
     while j < len(f.blocks) {
@@ -867,6 +876,7 @@ pub fn lowerToIr(program: Node) -> IrProgram {
       j = j + 1;
     }
     f.blocks = kept;
+    ctx.funcs[fi] = f;
     fi = fi + 1;
   }
 
@@ -883,7 +893,7 @@ fn currentBlockOf(ctx: LowerCtx) -> IrBlock {
   IrBlock { id: -1, instrs: [] }
 }
 
-fn findGlobal(globals: [GlobalEntry], name: string) -> int {
+fn findGlobalReg(globals: [GlobalEntry], name: string) -> int {
   let mut i = 0;
   while i < len(globals) {
     if globals[i].name == name { return globals[i].reg; };
@@ -927,7 +937,6 @@ fn lowerFnDeclTopLevel(ctx: LowerCtx, fnDecl: Node, globals: [GlobalEntry]) -> i
   let mut p = 0;
   while p < len(paramList) {
     let param = paramList[p];
-    let r = allocReg(ctx);
     scopeDeclare(ctx, param.name, 0);
     p = p + 1;
   }
@@ -936,7 +945,7 @@ fn lowerFnDeclTopLevel(ctx: LowerCtx, fnDecl: Node, globals: [GlobalEntry]) -> i
   // Self-reference slot.
   let selfReg = allocReg(ctx);
   ctx.funcs[funcIdx].selfReg = selfReg;
-  scopeDeclare(ctx, fnDecl.name, 0);
+  scopeDeclareVreg(ctx, fnDecl.name, selfReg);
 
   // Lower the body.
   let body = fnDecl.items[3];
@@ -944,15 +953,13 @@ fn lowerFnDeclTopLevel(ctx: LowerCtx, fnDecl: Node, globals: [GlobalEntry]) -> i
 
   // Emit Return if no terminator.
   let cb = currentBlockOf(ctx);
-  if len(cb.instrs) == 0 {
-    let d = allocReg(ctx);
-    emit(ctx, opLoadUnit(d));
-    emit(ctx, opReturn(d));
-  } else {
+  let mut hasTerm = 0;
+  if len(cb.instrs) > 0 {
     let last = cb.instrs[len(cb.instrs) - 1];
-    if last.op != "Return" && last.op != "Jmp" {
-      emit(ctx, opReturn(lastVal));
-    };
+    if last.op == "Return" || last.op == "Jmp" { hasTerm = 1; };
+  };
+  if hasTerm == 0 {
+    emit(ctx, opReturn(lastVal));
   }
 
   // Restore enclosing context.
@@ -962,7 +969,7 @@ fn lowerFnDeclTopLevel(ctx: LowerCtx, fnDecl: Node, globals: [GlobalEntry]) -> i
   ctx.capturedNames = savedCaptured;
 
   // In main, emit MakeClosure to the global register.
-  let gReg = findGlobal(globals, fnDecl.name);
+  let gReg = findGlobalReg(globals, fnDecl.name);
   emit(ctx, opMakeClosure(gReg, funcIdx, []));
   0
 }
@@ -1100,7 +1107,6 @@ fn lowerNestedFnDecl(ctx: LowerCtx, s: Node) -> int {
   let mut p = 0;
   while p < len(paramList) {
     let param = paramList[p];
-    let r = allocReg(ctx);
     scopeDeclare(ctx, param.name, 0);
     p = p + 1;
   }
@@ -1116,22 +1122,20 @@ fn lowerNestedFnDecl(ctx: LowerCtx, s: Node) -> int {
   // Self-reference slot.
   let selfReg = allocReg(ctx);
   ctx.funcs[fIdx].selfReg = selfReg;
-  scopeDeclare(ctx, s.name, 0);
+  scopeDeclareVreg(ctx, s.name, selfReg);
 
   // Lower the body.
   let body = s.items[3];
   let lastVal = lowerBlockBody(ctx, body);
 
   let cb = currentBlockOf(ctx);
-  if len(cb.instrs) == 0 {
-    let d = allocReg(ctx);
-    emit(ctx, opLoadUnit(d));
-    emit(ctx, opReturn(d));
-  } else {
+  let mut hasTerm = 0;
+  if len(cb.instrs) > 0 {
     let last = cb.instrs[len(cb.instrs) - 1];
-    if last.op != "Return" && last.op != "Jmp" {
-      emit(ctx, opReturn(lastVal));
-    };
+    if last.op == "Return" || last.op == "Jmp" { hasTerm = 1; };
+  };
+  if hasTerm == 0 {
+    emit(ctx, opReturn(lastVal));
   }
 
   // Restore enclosing context.
@@ -1487,7 +1491,8 @@ fn lowerIf(ctx: LowerCtx, e: Node) -> int {
   let thenBlock = newBlock(ctx);
   let elseBlock = newBlock(ctx);
   let mergeBlock = newBlock(ctx);
-  let hasElse = isNull(e.items[2]) == 0;
+  let mut hasElse = 0;
+  if isNull(e.items[2]) == 0 { hasElse = 1; };
   terminate(ctx, opJmpIfNot(cond, elseBlock));
   terminate(ctx, opJmp(thenBlock));
 

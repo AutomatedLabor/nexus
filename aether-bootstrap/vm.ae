@@ -1,0 +1,1244 @@
+// =====================================================================
+// aether-bootstrap/vm.ae — Bytecode VM (bootstrap part 7/7)
+// =====================================================================
+// Mirrors aether/vm/interpreter/vm.ts (921 LOC). Pure Aether; runs on
+// the host tree-walker.
+//
+// Public surface
+// --------------
+//   pub fn runBytecode(module: BytecodeModule, entryName: string, args: [Value],
+//                      maxSteps: int) -> VmResult
+//
+// Design
+// ------
+// Each call frame holds:
+//   - `func`: the BytecodeFunc being executed
+//   - `ip`: instruction pointer (index into func.code)
+//   - `regs`: a [Value] of size `func.nlocals`
+//   - `upvalues`: a [Value] of Boxes (closure captures)
+//
+// The main dispatch loop is a chain of if-else on `instr.op` in a
+// `while` loop. Each handler reads operands, performs the operation,
+// and advances `ip`. Control flow ops set `ip` directly. `Return` exits
+// the loop and returns a value to the caller.
+//
+// Closures
+// --------
+// A closure is a Value with tag="closure", ival=funcIdx, arr=upvalues.
+// `MakeClosure` packs upvalue boxes from the calling frame's registers.
+// `CallClosure` pushes a new frame, copies args, sets selfReg to the
+// closure value, runs to Return, returns the value.
+//
+// Builtins
+// --------
+// print, println, len, range, type_of, assert, assert_eq, panic, str,
+// int, float, min, max, abs, sqrt, push, pop, map, filter, reduce.
+//
+// Pattern matching
+// ----------------
+// `Match` op uses func.matchTables[idx]. For each entry, the VM tries
+// to match the scrutinee value against the entry's pattern. On a
+// match, the VM binds pattern variables to registers (via
+// func.matchBindings side table) and jumps to the entry's target.
+//
+// Errors
+// ------
+// The VM uses a mutable `error` field on the VmState to signal runtime
+// errors (division by zero, panic, unhandled opcode, etc.). The
+// dispatch loop checks `state.error` each iteration and exits if set.
+// =====================================================================
+
+// -----------------------------------------------------------------------------
+// VM result type
+// -----------------------------------------------------------------------------
+
+struct VmResult {
+  value: Value,
+  output: [string],
+  error: string,   // "" if no error
+  steps: int,
+}
+
+// -----------------------------------------------------------------------------
+// Call frame
+// -----------------------------------------------------------------------------
+
+struct Frame {
+  func: BytecodeFunc,
+  ip: int,
+  regs: [Value],
+  upvalues: [Value],
+}
+
+// -----------------------------------------------------------------------------
+// VM state (passed by reference through call frames)
+// -----------------------------------------------------------------------------
+
+struct VmState {
+  module: BytecodeModule,
+  output: [string],
+  maxSteps: int,
+  steps: int,
+  error: string,
+  globals: [GlobalSlot],
+}
+
+struct GlobalSlot { name: string, value: Value }
+
+// -----------------------------------------------------------------------------
+// Public entry: runBytecode
+// -----------------------------------------------------------------------------
+
+pub fn runBytecode(mod_: BytecodeModule, entryName: string, args: [Value], maxSteps: int) -> VmResult {
+  let state = VmState {
+    module: mod_,
+    output: [],
+    maxSteps: maxSteps,
+    steps: 0,
+    error: "",
+    globals: [],
+  };
+  // Find the entry function by name; fallback to module.entry.
+  let mut entryFn = emptyBcFn();
+  let mut found = 0;
+  let mut i = 0;
+  while i < len(mod_.funcs) {
+    if mod_.funcs[i].name == entryName { entryFn = mod_.funcs[i]; found = 1; i = len(mod_.funcs); };
+    i = i + 1;
+  }
+  if found == 0 {
+    if len(mod_.funcs) > mod_.entry {
+      entryFn = mod_.funcs[mod_.entry];
+      found = 1;
+    };
+  };
+  if found == 0 {
+    return VmResult { value: mkUnit(), output: state.output, error: "entry function not found", steps: 0 };
+  };
+  // Pre-populate globals: scan main function for LoadGlobal bindings — we
+  // instead just initialize from the main function's global slots if any.
+  // For v1, we run main first if entry is not main, then call entry.
+  // Actually, just call entry directly.
+  let val = callFunc(state, entryFn, args, []);
+  VmResult {
+    value: val,
+    output: state.output,
+    error: state.error,
+    steps: state.steps,
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Call a BytecodeFunc with args + upvalues. Returns the function's return
+// value, or mkUnit() if state.error is set.
+// -----------------------------------------------------------------------------
+
+fn callFunc(state: VmState, func: BytecodeFunc, args: [Value], upvalues: [Value]) -> Value {
+  // Allocate registers.
+  let regs: [Value] = [];
+  let mut i = 0;
+  while i < func.nlocals {
+    push(regs, mkUnit());
+    i = i + 1;
+  }
+  // Copy args into first nparams registers.
+  i = 0;
+  while i < func.nparams && i < len(args) {
+    regs[i] = args[i];
+    i = i + 1;
+  }
+  let frame = Frame { func: func, ip: 0, regs: regs, upvalues: upvalues };
+  execFrame(state, frame)
+}
+
+// -----------------------------------------------------------------------------
+// Call a closure value with args.
+// -----------------------------------------------------------------------------
+
+fn callClosure(state: VmState, c: Value, args: [Value]) -> Value {
+  let funcIdx = c.ival;
+  let func = state.module.funcs[funcIdx];
+  // Allocate registers.
+  let regs: [Value] = [];
+  let mut i = 0;
+  while i < func.nlocals {
+    push(regs, mkUnit());
+    i = i + 1;
+  }
+  // Copy args.
+  i = 0;
+  while i < func.nparams && i < len(args) {
+    regs[i] = args[i];
+    i = i + 1;
+  }
+  // Set selfReg to the closure value (so recursive references work).
+  if func.selfReg >= 0 {
+    regs[func.selfReg] = c;
+  };
+  let frame = Frame { func: func, ip: 0, regs: regs, upvalues: c.arr };
+  execFrame(state, frame)
+}
+
+// -----------------------------------------------------------------------------
+// Call any callable value (closure or native).
+// -----------------------------------------------------------------------------
+
+fn callValue(state: VmState, fnVal: Value, args: [Value]) -> Value {
+  if fnVal.tag == "closure" { return callClosure(state, fnVal, args); };
+  if fnVal.tag == "native" { return callNative(state, fnVal, args); };
+  state.error = "cannot call non-function value";
+  mkUnit()
+}
+
+// -----------------------------------------------------------------------------
+// Call a native (host builtin) by name.
+// -----------------------------------------------------------------------------
+
+fn callNative(state: VmState, fnVal: Value, args: [Value]) -> Value {
+  let name = fnVal.sval;
+  invokeBuiltin(state, name, args)
+}
+
+// -----------------------------------------------------------------------------
+// The dispatch loop. Returns the function's return value, or mkUnit() on
+// error.
+// -----------------------------------------------------------------------------
+
+fn execFrame(state: VmState, frame: Frame) -> Value {
+  let func = frame.func;
+  let code = func.code;
+  let mut result = mkUnit();
+  while state.error == "" {
+    // Step counter.
+    if state.steps >= state.maxSteps {
+      state.error = "VM step limit exceeded (" + str(state.maxSteps) + ")";
+      return mkUnit();
+    };
+    state.steps = state.steps + 1;
+    // Fetch.
+    if frame.ip >= len(code) {
+      // Ran off the end — return unit (shouldn't happen with proper Return).
+      return result;
+    };
+    let instr = code[frame.ip];
+    frame.ip = frame.ip + 1;
+    let op = instr.op;
+
+    // ---- Constants ----
+    if op == OP_LOAD_INT {
+      frame.regs[instr.a] = mkInt(instr.imm);
+    } else if op == OP_LOAD_FLOAT {
+      let c = func.constants[instr.imm];
+      frame.regs[instr.a] = c;
+    } else if op == OP_LOAD_STRING {
+      let s = func.strings[instr.imm];
+      frame.regs[instr.a] = mkStr(s);
+    } else if op == OP_LOAD_BOOL {
+      frame.regs[instr.a] = mkBool(instr.imm);
+    } else if op == OP_LOAD_UNIT {
+      frame.regs[instr.a] = mkUnit();
+    } else if op == OP_LOAD_NULL {
+      frame.regs[instr.a] = mkNull();
+    } else if op == OP_DUP {
+      // Dup a=src, b=dest
+      frame.regs[instr.b] = frame.regs[instr.a];
+    } else if op == OP_POP {
+      // discard — no-op
+    } else if op == OP_ADD {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      frame.regs[instr.a] = addValues(l, r);
+    } else if op == OP_SUB {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      frame.regs[instr.a] = mkInt(l.ival - r.ival);
+    } else if op == OP_MUL {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      frame.regs[instr.a] = mkInt(l.ival * r.ival);
+    } else if op == OP_DIV {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      if r.ival == 0 {
+        if r.fval == 0.0 { state.error = "division by zero"; return mkUnit(); };
+      };
+      frame.regs[instr.a] = mkFloat((l.fval + float(l.ival)) / (r.fval + float(r.ival)));
+    } else if op == OP_IDIV {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      if r.ival == 0 { state.error = "division by zero"; return mkUnit(); };
+      frame.regs[instr.a] = mkInt(int(l.ival / r.ival));
+    } else if op == OP_MOD {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      if r.ival == 0 { state.error = "modulo by zero"; return mkUnit(); };
+      let a = l.ival;
+      let b = r.ival;
+      let m = ((a % b) + b) % b;
+      frame.regs[instr.a] = mkInt(m);
+    } else if op == OP_NEG {
+      let v = frame.regs[instr.b];
+      if v.tag == "int" { frame.regs[instr.a] = mkInt(-v.ival); }
+      else { frame.regs[instr.a] = mkFloat(-v.fval); };
+    } else if op == OP_NOT {
+      let v = frame.regs[instr.b];
+      let t = truthy(v);
+      if t == 0 { frame.regs[instr.a] = mkBool(1); } else { frame.regs[instr.a] = mkBool(0); };
+    } else if op == OP_BITAND {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      frame.regs[instr.a] = mkInt(bitAnd(l.ival, r.ival));
+    } else if op == OP_BITOR {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      frame.regs[instr.a] = mkInt(bitOr(l.ival, r.ival));
+    } else if op == OP_BITXOR {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      frame.regs[instr.a] = mkInt(bitXor(l.ival, r.ival));
+    } else if op == OP_BITNOT {
+      let v = frame.regs[instr.b];
+      frame.regs[instr.a] = mkInt(bitNot(v.ival));
+    } else if op == OP_SHL {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      frame.regs[instr.a] = mkInt(shl(l.ival, r.ival));
+    } else if op == OP_SHR {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      frame.regs[instr.a] = mkInt(shr(l.ival, r.ival));
+    } else if op == OP_EQ {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      if valueEq(l, r) == 1 { frame.regs[instr.a] = mkBool(1); } else { frame.regs[instr.a] = mkBool(0); };
+    } else if op == OP_NEQ {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      if valueEq(l, r) == 1 { frame.regs[instr.a] = mkBool(0); } else { frame.regs[instr.a] = mkBool(1); };
+    } else if op == OP_LT {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      if cmpLt(l, r) == 1 { frame.regs[instr.a] = mkBool(1); } else { frame.regs[instr.a] = mkBool(0); };
+    } else if op == OP_LE {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      if cmpLe(l, r) == 1 { frame.regs[instr.a] = mkBool(1); } else { frame.regs[instr.a] = mkBool(0); };
+    } else if op == OP_GT {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      if cmpLt(r, l) == 1 { frame.regs[instr.a] = mkBool(1); } else { frame.regs[instr.a] = mkBool(0); };
+    } else if op == OP_GE {
+      let l = frame.regs[instr.b];
+      let r = frame.regs[instr.c];
+      if cmpLe(r, l) == 1 { frame.regs[instr.a] = mkBool(1); } else { frame.regs[instr.a] = mkBool(0); };
+    } else if op == OP_JMP {
+      frame.ip = instr.imm;
+    } else if op == OP_JMPIF {
+      if truthy(frame.regs[instr.a]) == 1 { frame.ip = instr.imm; };
+    } else if op == OP_JMPIFNOT {
+      if truthy(frame.regs[instr.a]) == 0 { frame.ip = instr.imm; };
+    } else if op == OP_RETURN {
+      return frame.regs[instr.a];
+    } else if op == OP_RETURNUNIT {
+      return mkUnit();
+    } else if op == OP_CALL {
+      let fnVal = frame.regs[instr.b];
+      let argRegs = func.regLists[instr.regs];
+      let args: [Value] = [];
+      let mut k = 0;
+      while k < len(argRegs) {
+        push(args, frame.regs[argRegs[k]]);
+        k = k + 1;
+      }
+      let val = callValue(state, fnVal, args);
+      if state.error != "" { return mkUnit(); };
+      frame.regs[instr.a] = val;
+    } else if op == OP_CALLBUILTIN {
+      let name = func.strings[instr.imm];
+      let argRegs = func.regLists[instr.regs];
+      let args: [Value] = [];
+      let mut k = 0;
+      while k < len(argRegs) {
+        push(args, frame.regs[argRegs[k]]);
+        k = k + 1;
+      }
+      let val = invokeBuiltin(state, name, args);
+      if state.error != "" { return mkUnit(); };
+      frame.regs[instr.a] = val;
+    } else if op == OP_CALLCLOSURE {
+      let c = frame.regs[instr.b];
+      let argRegs = func.regLists[instr.regs];
+      let args: [Value] = [];
+      let mut k = 0;
+      while k < len(argRegs) {
+        push(args, frame.regs[argRegs[k]]);
+        k = k + 1;
+      }
+      let val = callClosure(state, c, args);
+      if state.error != "" { return mkUnit(); };
+      frame.regs[instr.a] = val;
+    } else if op == OP_CALLNAMED {
+      // Look up name in globals; fallback to builtin.
+      let name = func.strings[instr.imm];
+      let argRegs = func.regLists[instr.regs];
+      let args: [Value] = [];
+      let mut k = 0;
+      while k < len(argRegs) {
+        push(args, frame.regs[argRegs[k]]);
+        k = k + 1;
+      }
+      let g = findGlobal(state, name);
+      if g.tag != "unit" {
+        let val = callValue(state, g, args);
+        if state.error != "" { return mkUnit(); };
+        frame.regs[instr.a] = val;
+      } else {
+        let val = invokeBuiltin(state, name, args);
+        if state.error != "" { return mkUnit(); };
+        frame.regs[instr.a] = val;
+      };
+    } else if op == OP_ALLOCSTRUCT {
+      let name = func.strings[instr.imm];
+      let fl = func.fieldLists[instr.fields];
+      let fields: [VField] = [];
+      let mut k = 0;
+      while k < len(fl) {
+        push(fields, VField { name: fl[k].name, val: frame.regs[fl[k].reg] });
+        k = k + 1;
+      }
+      frame.regs[instr.a] = mkStructN(name, fields);
+    } else if op == OP_ALLOCVARIANT {
+      let tag = func.strings[instr.imm];
+      let parts = splitOnStr(tag, "::");
+      let enumName = parts[0];
+      let variant = parts[1];
+      let argRegs = func.regLists[instr.regs];
+      let data: [Value] = [];
+      let mut k = 0;
+      while k < len(argRegs) {
+        push(data, frame.regs[argRegs[k]]);
+        k = k + 1;
+      }
+      frame.regs[instr.a] = mkVariant(enumName, variant, data);
+    } else if op == OP_ALLOCARRAY {
+      let argRegs = func.regLists[instr.regs];
+      let elems: [Value] = [];
+      let mut k = 0;
+      while k < len(argRegs) {
+        push(elems, frame.regs[argRegs[k]]);
+        k = k + 1;
+      }
+      frame.regs[instr.a] = mkArray(elems);
+    } else if op == OP_ALLOCTUPLE {
+      let argRegs = func.regLists[instr.regs];
+      let elems: [Value] = [];
+      let mut k = 0;
+      while k < len(argRegs) {
+        push(elems, frame.regs[argRegs[k]]);
+        k = k + 1;
+      }
+      frame.regs[instr.a] = mkArray(elems);
+    } else if op == OP_ALLOCMAP {
+      let flat = func.regLists[instr.regs];
+      let pairs: [KVP] = [];
+      let mut k = 0;
+      while k + 1 < len(flat) {
+        push(pairs, KVP { key: frame.regs[flat[k]], val: frame.regs[flat[k + 1]] });
+        k = k + 2;
+      }
+      frame.regs[instr.a] = mkMapV(pairs);
+    } else if op == OP_ALLOCRANGE {
+      let start = frame.regs[instr.b];
+      let end = frame.regs[instr.c];
+      let adjEnd = end.ival;
+      if instr.imm == 1 { adjEnd = end.ival + 1; };
+      frame.regs[instr.a] = mkRange(start.ival, adjEnd, 1);
+    } else if op == OP_LOADFIELD {
+      let obj = frame.regs[instr.b];
+      let name = func.strings[instr.imm];
+      if obj.tag != "struct" { state.error = "cannot access field on non-struct"; return mkUnit(); };
+      let v = findField(obj.fields, name);
+      if v.tag == "unit" && state.error == "" {
+        // Field not found; check more carefully.
+        if !hasField(obj.fields, name) { state.error = "struct has no field '" + name + "'"; return mkUnit(); };
+      };
+      frame.regs[instr.a] = v;
+    } else if op == OP_STOREFIELD {
+      let obj = frame.regs[instr.a];
+      let name = func.strings[instr.imm];
+      let val = frame.regs[instr.b];
+      if obj.tag != "struct" { state.error = "cannot assign field on non-struct"; return mkUnit(); };
+      setField(obj.fields, name, val);
+    } else if op == OP_INDEXGET {
+      let obj = frame.regs[instr.b];
+      let idx = frame.regs[instr.c];
+      if obj.tag == "array" {
+        let i = idx.ival;
+        if i < 0 || i >= len(obj.arr) { state.error = "array index out of bounds"; return mkUnit(); };
+        frame.regs[instr.a] = obj.arr[i];
+      } else if obj.tag == "string" {
+        let i = idx.ival;
+        if i < 0 || i >= len(obj.sval) { state.error = "string index out of bounds"; return mkUnit(); };
+        frame.regs[instr.a] = mkStr(strSlice(obj.sval, i, i + 1));
+      } else if obj.tag == "map" {
+        let v = findMapKey(obj.pairs, idx);
+        frame.regs[instr.a] = v;
+      } else {
+        state.error = "cannot index into value";
+        return mkUnit();
+      };
+    } else if op == OP_INDEXSET {
+      let obj = frame.regs[instr.a];
+      let idx = frame.regs[instr.b];
+      let val = frame.regs[instr.c];
+      if obj.tag == "array" {
+        let i = idx.ival;
+        if i < 0 || i >= len(obj.arr) { state.error = "array index out of bounds"; return mkUnit(); };
+        obj.arr[i] = val;
+      } else if obj.tag == "map" {
+        setMapKey(obj.pairs, idx, val);
+      } else {
+        state.error = "cannot index-assign into non-array/map";
+        return mkUnit();
+      };
+    } else if op == OP_TUPLEGET {
+      let obj = frame.regs[instr.b];
+      if obj.tag != "array" { state.error = "cannot apply tuple-get to non-tuple"; return mkUnit(); };
+      let i = instr.imm;
+      if i < 0 || i >= len(obj.arr) { state.error = "tuple index out of bounds"; return mkUnit(); };
+      frame.regs[instr.a] = obj.arr[i];
+    } else if op == OP_LEN {
+      let v = frame.regs[instr.b];
+      if v.tag == "string" { frame.regs[instr.a] = mkInt(len(v.sval)); }
+      else if v.tag == "array" { frame.regs[instr.a] = mkInt(len(v.arr)); }
+      else if v.tag == "map" { frame.regs[instr.a] = mkInt(len(v.pairs)); }
+      else if v.tag == "struct" { frame.regs[instr.a] = mkInt(len(v.fields)); }
+      else { state.error = "len: unsupported value"; return mkUnit(); };
+    } else if op == OP_PUSH {
+      let arr = frame.regs[instr.a];
+      if arr.tag != "array" { state.error = "push: expected array"; return mkUnit(); };
+      push(arr.arr, frame.regs[instr.b]);
+    } else if op == OP_POPARR {
+      let arr = frame.regs[instr.b];
+      if arr.tag != "array" { state.error = "pop: expected array"; return mkUnit(); };
+      if len(arr.arr) == 0 { frame.regs[instr.a] = mkUnit(); }
+      else {
+        let v = arr.arr[len(arr.arr) - 1];
+        pop(arr.arr);
+        frame.regs[instr.a] = v;
+      };
+    } else if op == OP_MAKECLOSURE {
+      let funcIdx = instr.imm;
+      let capRegs = func.regLists[instr.regs];
+      let ups: [Value] = [];
+      let mut k = 0;
+      while k < len(capRegs) {
+        let v = frame.regs[capRegs[k]];
+        if v.tag == "box" {
+          push(ups, v);
+        } else {
+          push(ups, mkBox(v));
+        };
+        k = k + 1;
+      }
+      frame.regs[instr.a] = mkClosure(funcIdx, ups);
+    } else if op == OP_GETUPVALUE {
+      let box = frame.upvalues[instr.imm];
+      if box.tag == "box" {
+        frame.regs[instr.a] = box.arr[0];
+      } else {
+        frame.regs[instr.a] = box;
+      };
+    } else if op == OP_SETUPVALUE {
+      let box = frame.upvalues[instr.imm];
+      if box.tag == "box" {
+        box.arr[0] = frame.regs[instr.b];
+      };
+    } else if op == OP_MAKEBOX {
+      frame.regs[instr.a] = mkBox(frame.regs[instr.b]);
+    } else if op == OP_UNBOX {
+      let v = frame.regs[instr.b];
+      if v.tag == "box" { frame.regs[instr.a] = v.arr[0]; }
+      else { frame.regs[instr.a] = v; };
+    } else if op == OP_SETBOX {
+      let box = frame.regs[instr.a];
+      if box.tag == "box" { box.arr[0] = frame.regs[instr.b]; };
+    } else if op == OP_MATCH {
+      let scrutinee = frame.regs[instr.a];
+      let tableIdx = instr.imm;
+      let table = func.matchTables[tableIdx];
+      let mut matched = 0;
+      let mut matchTarget = 0;
+      let mut ei = 0;
+      while ei < len(table) {
+        let entry = table[ei];
+        // Save regs state for rollback.
+        let savedRegs = copyRegs(frame.regs);
+        if tryMatch(state, entry, scrutinee, frame, func, tableIdx) == 1 {
+          matched = 1;
+          matchTarget = entry.target;
+          ei = len(table);
+        } else {
+          // Rollback regs.
+          let mut r = 0;
+          while r < len(frame.regs) {
+            frame.regs[r] = savedRegs[r];
+            r = r + 1;
+          }
+          ei = ei + 1;
+        };
+      }
+      if matched == 1 {
+        frame.ip = matchTarget;
+      } else {
+        state.error = "no match arm matched";
+        return mkUnit();
+      };
+    } else if op == OP_PRINT {
+      push(state.output, displayV(frame.regs[instr.a]));
+    } else if op == OP_CASTINT {
+      let v = frame.regs[instr.b];
+      if v.tag == "int" { frame.regs[instr.a] = v; }
+      else if v.tag == "float" { frame.regs[instr.a] = mkInt(int(v.fval)); }
+      else if v.tag == "string" { frame.regs[instr.a] = mkInt(parseInt(v.sval)); }
+      else if v.tag == "bool" { frame.regs[instr.a] = mkInt(v.ival); }
+      else { frame.regs[instr.a] = mkInt(0); };
+    } else if op == OP_CASTFLOAT {
+      let v = frame.regs[instr.b];
+      if v.tag == "int" { frame.regs[instr.a] = mkFloat(float(v.ival)); }
+      else if v.tag == "float" { frame.regs[instr.a] = v; }
+      else if v.tag == "string" { frame.regs[instr.a] = mkFloat(parseFloat(v.sval)); }
+      else { frame.regs[instr.a] = mkFloat(0.0); };
+    } else if op == OP_CASTBOOL {
+      let v = frame.regs[instr.b];
+      let t = truthy(v);
+      frame.regs[instr.a] = mkBool(t);
+    } else if op == OP_CASTSTRING {
+      let v = frame.regs[instr.b];
+      frame.regs[instr.a] = mkStr(displayV(v));
+    } else if op == OP_PANIC {
+      state.error = displayV(frame.regs[instr.a]);
+      return mkUnit();
+    } else if op == OP_LOADGLOBAL {
+      let name = func.strings[instr.imm];
+      let g = findGlobal(state, name);
+      frame.regs[instr.a] = g;
+    } else if op == OP_SELFREF {
+      // No-op (handled at closure call time)
+    } else if op == OP_NOP {
+      // No-op
+    } else if op == OP_TRACE {
+      // No-op
+    } else if op == OP_BREAKPOINT {
+      // No-op
+    } else if op == OP_BREAK {
+      state.error = "break outside loop";
+      return mkUnit();
+    } else if op == OP_CONTINUE {
+      state.error = "continue outside loop";
+      return mkUnit();
+    } else if op == OP_BR {
+      // Br a=cond, imm=then, b=else
+      if instr.a >= 0 && truthy(frame.regs[instr.a]) == 1 {
+        frame.ip = instr.imm;
+      } else {
+        frame.ip = instr.b;
+      };
+    } else if op == OP_UNWRAPORPROP {
+      let v = frame.regs[instr.b];
+      if v.tag == "variant" {
+        if v.vname == "Ok" || v.vname == "Some" {
+          if len(v.arr) > 0 { frame.regs[instr.a] = v.arr[0]; }
+          else { frame.regs[instr.a] = mkUnit(); };
+        } else if v.vname == "Err" || v.vname == "None" {
+          // Propagate: return v from the current function.
+          return v;
+        } else {
+          state.error = "? operator on non-Result/Option";
+          return mkUnit();
+        };
+      } else {
+        state.error = "? operator on non-variant";
+        return mkUnit();
+      };
+    } else if op == OP_TAILCALL {
+      let fnVal = frame.regs[instr.b];
+      let argRegs = func.regLists[instr.regs];
+      let args: [Value] = [];
+      let mut k = 0;
+      while k < len(argRegs) {
+        push(args, frame.regs[argRegs[k]]);
+        k = k + 1;
+      }
+      let val = callValue(state, fnVal, args);
+      if state.error != "" { return mkUnit(); };
+      frame.regs[instr.a] = val;
+    } else {
+      state.error = "unhandled opcode " + str(op);
+      return mkUnit();
+    };
+  }
+  result
+}
+
+// -----------------------------------------------------------------------------
+// Helpers: arithmetic / comparison on Values
+// -----------------------------------------------------------------------------
+
+fn addValues(l: Value, r: Value) -> Value {
+  if l.tag == "string" || r.tag == "string" {
+    return mkStr(displayV(l) + displayV(r));
+  };
+  if l.tag == "array" && r.tag == "array" {
+    let out: [Value] = [];
+    let mut i = 0;
+    while i < len(l.arr) { push(out, l.arr[i]); i = i + 1; }
+    i = 0;
+    while i < len(r.arr) { push(out, r.arr[i]); i = i + 1; }
+    return mkArray(out);
+  };
+  if l.tag == "int" && r.tag == "int" { return mkInt(l.ival + r.ival); };
+  if l.tag == "float" || r.tag == "float" {
+    let lf = if l.tag == "int" { float(l.ival) } else { l.fval };
+    let rf = if r.tag == "int" { float(r.ival) } else { r.fval };
+    return mkFloat(lf + rf);
+  };
+  mkInt(l.ival + r.ival)
+}
+
+fn cmpLt(l: Value, r: Value) -> int {
+  if l.tag == "int" && r.tag == "int" {
+    if l.ival < r.ival { return 1; } else { return 0; };
+  };
+  if l.tag == "float" || r.tag == "float" {
+    let lf = if l.tag == "int" { float(l.ival) } else { l.fval };
+    let rf = if r.tag == "int" { float(r.ival) } else { r.fval };
+    if lf < rf { return 1; } else { return 0; };
+  };
+  if l.tag == "string" && r.tag == "string" {
+    if l.sval < r.sval { return 1; } else { return 0; };
+  };
+  0
+}
+
+fn cmpLe(l: Value, r: Value) -> int {
+  if cmpLt(l, r) == 1 { return 1; };
+  if valueEq(l, r) == 1 { return 1; };
+  0
+}
+
+// Bitwise ops (Aether has native bitwise operators).
+fn bitAnd(a: int, b: int) -> int { a & b }
+fn bitOr(a: int, b: int) -> int { a | b }
+fn bitXor(a: int, b: int) -> int { a ^ b }
+fn bitNot(a: int) -> int { ~a }
+fn shl(a: int, b: int) -> int { a << b }
+fn shr(a: int, b: int) -> int { a >> b }
+
+// -----------------------------------------------------------------------------
+// Helpers: struct field access
+// -----------------------------------------------------------------------------
+
+fn findField(fields: [VField], name: string) -> Value {
+  let mut i = 0;
+  while i < len(fields) {
+    if fields[i].name == name { return fields[i].val; };
+    i = i + 1;
+  }
+  mkUnit()
+}
+
+fn hasField(fields: [VField], name: string) -> int {
+  let mut i = 0;
+  while i < len(fields) {
+    if fields[i].name == name { return 1; };
+    i = i + 1;
+  }
+  0
+}
+
+fn setField(fields: [VField], name: string, val: Value) -> int {
+  let mut i = 0;
+  while i < len(fields) {
+    if fields[i].name == name { fields[i].val = val; return 0; };
+    i = i + 1;
+  }
+  push(fields, VField { name: name, val: val });
+  0
+}
+
+// -----------------------------------------------------------------------------
+// Helpers: map access
+// -----------------------------------------------------------------------------
+
+fn findMapKey(pairs: [KVP], key: Value) -> Value {
+  let mut i = 0;
+  while i < len(pairs) {
+    if valueEq(pairs[i].key, key) == 1 { return pairs[i].val; };
+    i = i + 1;
+  }
+  mkUnit()
+}
+
+fn setMapKey(pairs: [KVP], key: Value, val: Value) -> int {
+  let mut i = 0;
+  while i < len(pairs) {
+    if valueEq(pairs[i].key, key) == 1 { pairs[i].val = val; return 0; };
+    i = i + 1;
+  }
+  push(pairs, KVP { key: key, val: val });
+  0
+}
+
+// -----------------------------------------------------------------------------
+// Helpers: globals
+// -----------------------------------------------------------------------------
+
+fn findGlobal(state: VmState, name: string) -> Value {
+  let mut i = 0;
+  while i < len(state.globals) {
+    if state.globals[i].name == name { return state.globals[i].value; };
+    i = i + 1;
+  }
+  mkUnit()
+}
+
+fn setGlobal(state: VmState, name: string, val: Value) -> int {
+  let mut i = 0;
+  while i < len(state.globals) {
+    if state.globals[i].name == name { state.globals[i].value = val; return 0; };
+    i = i + 1;
+  }
+  push(state.globals, GlobalSlot { name: name, value: val });
+  0
+}
+
+// -----------------------------------------------------------------------------
+// Helpers: string split (for AllocVariant tag parsing)
+// -----------------------------------------------------------------------------
+
+// Split a string on a delimiter, returning a list of parts.
+fn splitOnStr(s: string, delim: string) -> [string] {
+  let parts: [string] = [];
+  let dlen = len(delim);
+  if dlen == 0 {
+    push(parts, s);
+    return parts;
+  };
+  let mut start = 0;
+  let mut i = 0;
+  while i + dlen <= len(s) {
+    let seg = strSlice(s, i, i + dlen);
+    if seg == delim {
+      push(parts, strSlice(s, start, i));
+      start = i + dlen;
+      i = i + dlen;
+    } else {
+      i = i + 1;
+    };
+  }
+  push(parts, strSlice(s, start, len(s)));
+  parts
+}
+
+// -----------------------------------------------------------------------------
+// Helpers: copy a register file (for match rollback)
+// -----------------------------------------------------------------------------
+
+fn copyRegs(regs: [Value]) -> [Value] {
+  let out: [Value] = [];
+  let mut i = 0;
+  while i < len(regs) {
+    push(out, regs[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// -----------------------------------------------------------------------------
+// Pattern matching
+// -----------------------------------------------------------------------------
+
+fn tryMatch(state: VmState, entry: BcMatchEntry, value: Value, frame: Frame, func: BytecodeFunc, tableIdx: int) -> int {
+  let k = entry.patternKind;
+  if k == "Wildcard" { return 1; };
+  if k == "Bind" {
+    let reg = resolveBindingReg(func, tableIdx, entry.bindName);
+    if reg >= 0 { frame.regs[reg] = value; };
+    return 1;
+  };
+  if k == "Lit" {
+    if valueEq(value, entry.litValue) == 1 { return 1; } else { return 0; };
+  };
+  if k == "Tuple" || k == "Array" {
+    if value.tag != "array" { return 0; };
+    if len(entry.subregs) != len(value.arr) {
+      if k == "Array" && entry.hasRest == 1 {
+        if len(entry.subregs) > len(value.arr) { return 0; };
+      } else {
+        return 0;
+      };
+    };
+    let mut i = 0;
+    while i < len(entry.subregs) {
+      if tryMatch(state, entry.subregs[i], value.arr[i], frame, func, tableIdx) == 0 { return 0; };
+      i = i + 1;
+    }
+    return 1;
+  };
+  if k == "Struct" {
+    if value.tag != "struct" { return 0; };
+    if entry.structName != "" && value.sval != entry.structName { return 0; };
+    let mut i = 0;
+    while i < len(entry.fieldBindings) {
+      let name = entry.fieldNames[i];
+      let fv = findField(value.fields, name);
+      if !hasField(value.fields, name) { return 0; };
+      if tryMatch(state, entry.fieldBindings[i], fv, frame, func, tableIdx) == 0 { return 0; };
+      i = i + 1;
+    }
+    return 1;
+  };
+  if k == "Enum" {
+    if value.tag != "variant" { return 0; };
+    if entry.enumName != "" && value.sval != entry.enumName { return 0; };
+    if entry.variant != "" && value.vname != entry.variant { return 0; };
+    if len(entry.subregs) != len(value.arr) {
+      if len(entry.subregs) == 0 && len(value.arr) == 0 { return 1; };
+      return 0;
+    };
+    let mut i = 0;
+    while i < len(entry.subregs) {
+      if tryMatch(state, entry.subregs[i], value.arr[i], frame, func, tableIdx) == 0 { return 0; };
+      i = i + 1;
+    }
+    return 1;
+  };
+  if k == "Or" {
+    let mut i = 0;
+    while i < len(entry.orPatterns) {
+      let savedRegs = copyRegs(frame.regs);
+      if tryMatch(state, entry.orPatterns[i], value, frame, func, tableIdx) == 1 { return 1; };
+      let mut r = 0;
+      while r < len(frame.regs) { frame.regs[r] = savedRegs[r]; r = r + 1; }
+      i = i + 1;
+    }
+    return 0;
+  };
+  0
+}
+
+fn resolveBindingReg(func: BytecodeFunc, tableIdx: int, name: string) -> int {
+  let mut i = 0;
+  while i < len(func.matchBindings) {
+    let b = func.matchBindings[i];
+    if b.tableIdx == tableIdx && b.name == name { return b.reg; };
+    i = i + 1;
+  }
+  -1
+}
+
+// -----------------------------------------------------------------------------
+// Builtins
+// -----------------------------------------------------------------------------
+
+fn invokeBuiltin(state: VmState, name: string, args: [Value]) -> Value {
+  if name == "print" {
+    if len(args) > 0 { push(state.output, displayV(args[0])); }
+    else { push(state.output, ""); };
+    return mkUnit();
+  };
+  if name == "println" {
+    if len(args) > 0 { push(state.output, displayV(args[0])); }
+    else { push(state.output, ""); };
+    return mkUnit();
+  };
+  if name == "len" {
+    if len(args) == 0 { state.error = "len: no args"; return mkUnit(); };
+    let v = args[0];
+    if v.tag == "string" { return mkInt(len(v.sval)); };
+    if v.tag == "array" { return mkInt(len(v.arr)); };
+    if v.tag == "map" { return mkInt(len(v.pairs)); };
+    if v.tag == "struct" { return mkInt(len(v.fields)); };
+    state.error = "len: unsupported value";
+    mkUnit()
+  };
+  if name == "range" {
+    let start = 0;
+    let end = 0;
+    let step = 1;
+    if len(args) == 1 { return mkRange(0, args[0].ival, 1); };
+    if len(args) == 2 { return mkRange(args[0].ival, args[1].ival, 1); };
+    if len(args) >= 3 { return mkRange(args[0].ival, args[1].ival, args[2].ival); };
+    mkRange(0, 0, 1)
+  };
+  if name == "type_of" {
+    if len(args) == 0 { return mkStr("unit"); };
+    let v = args[0];
+    if v.tag == "int" { return mkStr("int"); };
+    if v.tag == "float" { return mkStr("float"); };
+    if v.tag == "string" { return mkStr("string"); };
+    if v.tag == "bool" { return mkStr("bool"); };
+    if v.tag == "array" { return mkStr("array"); };
+    if v.tag == "map" { return mkStr("map"); };
+    if v.tag == "struct" { return mkStr(v.sval); };
+    if v.tag == "variant" { return mkStr(v.sval); };
+    if v.tag == "closure" { return mkStr("fn"); };
+    if v.tag == "native" { return mkStr("fn"); };
+    if v.tag == "range" { return mkStr("range"); };
+    mkStr("unit")
+  };
+  if name == "assert" {
+    if len(args) == 0 { state.error = "assert: no args"; return mkUnit(); };
+    if truthy(args[0]) == 0 {
+      if len(args) >= 2 { state.error = "assertion failed: " + displayV(args[1]); }
+      else { state.error = "assertion failed"; };
+      return mkUnit();
+    };
+    mkUnit()
+  };
+  if name == "assert_eq" {
+    if len(args) < 2 { state.error = "assert_eq: needs 2 args"; return mkUnit(); };
+    if valueEq(args[0], args[1]) == 0 {
+      state.error = "assertion failed: " + displayV(args[0]) + " != " + displayV(args[1]);
+      return mkUnit();
+    };
+    mkUnit()
+  };
+  if name == "panic" {
+    if len(args) == 0 { state.error = "panic"; } else { state.error = displayV(args[0]); };
+    mkUnit()
+  };
+  if name == "str" {
+    if len(args) == 0 { return mkStr(""); };
+    mkStr(displayV(args[0]))
+  };
+  if name == "int" {
+    if len(args) == 0 { return mkInt(0); };
+    let v = args[0];
+    if v.tag == "string" { return mkInt(parseInt(v.sval)); };
+    if v.tag == "int" { return v; };
+    if v.tag == "float" { return mkInt(int(v.fval)); };
+    if v.tag == "bool" { return mkInt(v.ival); };
+    mkInt(0)
+  };
+  if name == "float" {
+    if len(args) == 0 { return mkFloat(0.0); };
+    let v = args[0];
+    if v.tag == "string" { return mkFloat(parseFloat(v.sval)); };
+    if v.tag == "int" { return mkFloat(float(v.ival)); };
+    if v.tag == "float" { return v; };
+    mkFloat(0.0)
+  };
+  if name == "min" {
+    if len(args) == 0 { return mkInt(0); };
+    if len(args) == 1 && args[0].tag == "array" {
+      let arr = args[0].arr;
+      if len(arr) == 0 { return mkInt(0); };
+      let mut m = arr[0].ival;
+      let mut i = 1;
+      while i < len(arr) { if arr[i].ival < m { m = arr[i].ival; }; i = i + 1; }
+      return mkInt(m);
+    };
+    let mut m = args[0].ival;
+    let mut i = 1;
+    while i < len(args) { if args[i].ival < m { m = args[i].ival; }; i = i + 1; }
+    mkInt(m)
+  };
+  if name == "max" {
+    if len(args) == 0 { return mkInt(0); };
+    if len(args) == 1 && args[0].tag == "array" {
+      let arr = args[0].arr;
+      if len(arr) == 0 { return mkInt(0); };
+      let mut m = arr[0].ival;
+      let mut i = 1;
+      while i < len(arr) { if arr[i].ival > m { m = arr[i].ival; }; i = i + 1; }
+      return mkInt(m);
+    };
+    let mut m = args[0].ival;
+    let mut i = 1;
+    while i < len(args) { if args[i].ival > m { m = args[i].ival; }; i = i + 1; }
+    mkInt(m)
+  };
+  if name == "abs" {
+    if len(args) == 0 { return mkInt(0); };
+    let v = args[0];
+    if v.tag == "int" { if v.ival < 0 { return mkInt(-v.ival); } else { return v; }; };
+    if v.tag == "float" { if v.fval < 0.0 { return mkFloat(-v.fval); } else { return v; }; };
+    mkInt(0)
+  };
+  if name == "sqrt" {
+    if len(args) == 0 { return mkFloat(0.0); };
+    let v = args[0];
+    let x = if v.tag == "int" { float(v.ival) } else { v.fval };
+    mkFloat(sqrt(x))
+  };
+  if name == "push" {
+    if len(args) < 2 { state.error = "push: needs 2 args"; return mkUnit(); };
+    let arr = args[0];
+    if arr.tag != "array" { state.error = "push: expected array"; return mkUnit(); };
+    push(arr.arr, args[1]);
+    arr
+  };
+  if name == "pop" {
+    if len(args) == 0 { state.error = "pop: needs 1 arg"; return mkUnit(); };
+    let arr = args[0];
+    if arr.tag != "array" { state.error = "pop: expected array"; return mkUnit(); };
+    if len(arr.arr) == 0 { return mkUnit(); };
+    let v = arr.arr[len(arr.arr) - 1];
+    pop(arr.arr);
+    v
+  };
+  if name == "iter_to_items" {
+    if len(args) == 0 { return mkArray([]); };
+    let v = args[0];
+    if v.tag == "array" { return v; };
+    if v.tag == "range" {
+      let out: [Value] = [];
+      if v.rangeStep > 0 {
+        let mut i = v.ival;
+        while i < v.rangeEnd { push(out, mkInt(i)); i = i + v.rangeStep; }
+      } else if v.rangeStep < 0 {
+        let mut i = v.ival;
+        while i > v.rangeEnd { push(out, mkInt(i)); i = i + v.rangeStep; }
+      };
+      return mkArray(out);
+    };
+    if v.tag == "string" {
+      let out: [Value] = [];
+      let mut i = 0;
+      while i < len(v.sval) {
+        push(out, mkStr(strSlice(v.sval, i, i + 1)));
+        i = i + 1;
+      }
+      return mkArray(out);
+    };
+    if v.tag == "map" {
+      let out: [Value] = [];
+      let mut i = 0;
+      while i < len(v.pairs) { push(out, v.pairs[i].key); i = i + 1; }
+      return mkArray(out);
+    };
+    state.error = "cannot iterate over value";
+    mkUnit()
+  };
+  if name == "map" {
+    if len(args) < 2 { state.error = "map: needs 2 args"; return mkUnit(); };
+    let arr = args[0];
+    if arr.tag != "array" { state.error = "map: expected array"; return mkUnit(); };
+    let fnVal = args[1];
+    let out: [Value] = [];
+    let mut i = 0;
+    while i < len(arr.arr) {
+      let callArgs = [arr.arr[i], mkInt(i)];
+      let v = callValue(state, fnVal, callArgs);
+      if state.error != "" { return mkUnit(); };
+      push(out, v);
+      i = i + 1;
+    }
+    mkArray(out)
+  };
+  if name == "filter" {
+    if len(args) < 2 { state.error = "filter: needs 2 args"; return mkUnit(); };
+    let arr = args[0];
+    if arr.tag != "array" { state.error = "filter: expected array"; return mkUnit(); };
+    let fnVal = args[1];
+    let out: [Value] = [];
+    let mut i = 0;
+    while i < len(arr.arr) {
+      let callArgs = [arr.arr[i], mkInt(i)];
+      let v = callValue(state, fnVal, callArgs);
+      if state.error != "" { return mkUnit(); };
+      if truthy(v) == 1 { push(out, arr.arr[i]); };
+      i = i + 1;
+    }
+    mkArray(out)
+  };
+  if name == "reduce" {
+    if len(args) < 3 { state.error = "reduce: needs 3 args"; return mkUnit(); };
+    let arr = args[0];
+    if arr.tag != "array" { state.error = "reduce: expected array"; return mkUnit(); };
+    let fnVal = args[1];
+    let mut acc = args[2];
+    let mut i = 0;
+    while i < len(arr.arr) {
+      let callArgs = [acc, arr.arr[i], mkInt(i)];
+      let v = callValue(state, fnVal, callArgs);
+      if state.error != "" { return mkUnit(); };
+      acc = v;
+      i = i + 1;
+    }
+    acc
+  };
+  state.error = "unknown builtin '" + name + "'";
+  mkUnit()
+}
+
+// -----------------------------------------------------------------------------
+// parseInt / parseFloat (string → number)
+// -----------------------------------------------------------------------------
+
+fn parseInt(s: string) -> int {
+  let n = len(s);
+  if n == 0 { return 0; };
+  let mut i = 0;
+  let mut neg = 0;
+  if n > 0 {
+    let c0 = charCodeAt(s, 0);
+    if c0 == 45 { neg = 1; i = 1; };  // '-'
+    if c0 == 43 { i = 1; };          // '+'
+  };
+  let mut v = 0;
+  while i < n {
+    let c = charCodeAt(s, i);
+    if c >= 48 && c <= 57 {
+      v = v * 10 + (c - 48);
+    } else {
+      i = n;
+    };
+    i = i + 1;
+  }
+  if neg == 1 { -v } else { v }
+}
+
+fn parseFloat(s: string) -> float {
+  let n = len(s);
+  if n == 0 { return 0.0; };
+  let mut i = 0;
+  let mut neg = 0;
+  if charCodeAt(s, 0) == 45 { neg = 1; i = 1; };
+  if charCodeAt(s, 0) == 43 { i = 1; };
+  let mut v = 0.0;
+  while i < n {
+    let c = charCodeAt(s, i);
+    if c >= 48 && c <= 57 {
+      v = v * 10.0 + float(c - 48);
+    } else {
+      i = n;
+    };
+    i = i + 1;
+  }
+  // Fractional part (after '.')
+  if i < n && charCodeAt(s, i) == 46 {
+    i = i + 1;
+    let mut div = 10.0;
+    while i < n {
+      let c = charCodeAt(s, i);
+      if c >= 48 && c <= 57 {
+        v = v + float(c - 48) / div;
+        div = div * 10.0;
+      } else {
+        i = n;
+      };
+      i = i + 1;
+    }
+  }
+  if neg == 1 { -v } else { v }
+}
+
+// charCodeAt helper (uses host's charCode builtin).
+fn charCodeAt(s: string, i: int) -> int {
+  charCode(s, i)
+}
+
+print("== aether-bootstrap/vm.ae loaded ==");

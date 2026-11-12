@@ -1,0 +1,1050 @@
+// =====================================================================
+// aether-bootstrap/codegen.test.ae — Tests for the IR → bytecode codegen
+// =====================================================================
+// 50+ tests that exercise each IrOp kind → expected bytecode Instr.
+// Each test builds a mock IrFunc with one block + a single IrOp, runs
+// `compileToBytecode`, and asserts on the resulting code array.
+//
+// Run via:
+//   cat ast.ae parser.ae ir.ae codegen.ae codegen.test.ae > /tmp/combined.ae
+//   bun /tmp/verify_one.ts /tmp/combined.ae
+// =====================================================================
+
+// -----------------------------------------------------------------------------
+// Test driver
+// -----------------------------------------------------------------------------
+struct Stats { passed: int, failed: int }
+
+fn check(st: Stats, cond: int, msg: string) -> int {
+  if cond {
+    st.passed = st.passed + 1;
+  } else {
+    st.failed = st.failed + 1;
+    print("FAIL: " + msg);
+  };
+  0
+}
+
+fn checkEq(st: Stats, actual: int, expected: int, msg: string) -> int {
+  if actual == expected {
+    st.passed = st.passed + 1;
+  } else {
+    st.failed = st.failed + 1;
+    print("FAIL: " + msg + " (expected " + str(expected) + ", got " + str(actual) + ")");
+  };
+  0
+}
+
+fn checkStrEq(st: Stats, actual: string, expected: string, msg: string) -> int {
+  if actual == expected {
+    st.passed = st.passed + 1;
+  } else {
+    st.failed = st.failed + 1;
+    print("FAIL: " + msg + " (expected '" + expected + "', got '" + actual + "')");
+  };
+  0
+}
+
+// -----------------------------------------------------------------------------
+// Mock IR builders
+// -----------------------------------------------------------------------------
+
+// Build an IrFunc with one block and a list of IrOps.
+fn mockFn(name: string, ops: [IrOp]) -> IrFunc {
+  let b = IrBlock { id: 0, instrs: ops };
+  IrFunc {
+    name: name,
+    nparams: 0,
+    nlocals: 8,
+    blocks: [b],
+    entry: 0,
+    captures: [],
+    selfReg: -1,
+    isMain: 0,
+    nested: [],
+    matchTables: [],
+    strings: [],
+    regLists: [],
+    fieldLists: [],
+    constants: [],
+    matchBindings: [],
+  }
+}
+
+// Build an IrFunc with multiple blocks (for control-flow tests).
+fn mockFnBlocks(name: string, blocks: [IrBlock]) -> IrFunc {
+  IrFunc {
+    name: name,
+    nparams: 0,
+    nlocals: 8,
+    blocks: blocks,
+    entry: 0,
+    captures: [],
+    selfReg: -1,
+    isMain: 0,
+    nested: [],
+    matchTables: [],
+    strings: [],
+    regLists: [],
+    fieldLists: [],
+    constants: [],
+    matchBindings: [],
+  }
+}
+
+// Wrap a single IrFunc in an IrProgram.
+fn mockProg(func: IrFunc) -> IrProgram {
+  IrProgram { funcs: [func], globals: [], entry: 0 }
+}
+
+// Compile a mock IrFunc and return its code array.
+fn compileMock(func: IrFunc) -> [Instr] {
+  let prog = mockProg(func);
+  let mod_ = compileToBytecode(prog);
+  mod_.funcs[0].code
+}
+
+// Compile a mock IrFunc and return the BytecodeFunc (for inspecting side tables).
+fn compileMockFn(func: IrFunc) -> BytecodeFunc {
+  let prog = mockProg(func);
+  let mod_ = compileToBytecode(prog);
+  mod_.funcs[0]
+}
+
+// =============================================================================
+// 1. Constant ops
+// =============================================================================
+
+fn test_loadint(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opLoadInt(3, 42)]));
+  checkEq(st, len(code), 1, "loadint: 1 instr");
+  checkEq(st, code[0].op, OP_LOAD_INT, "loadint: op");
+  checkEq(st, code[0].a, 3, "loadint: a=3");
+  checkEq(st, code[0].imm, 42, "loadint: imm=42");
+  0
+}
+
+fn test_loadint_zero(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opLoadInt(0, 0)]));
+  checkEq(st, code[0].op, OP_LOAD_INT, "loadint-zero: op");
+  checkEq(st, code[0].imm, 0, "loadint-zero: imm=0");
+  0
+}
+
+fn test_loadint_neg(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opLoadInt(2, -100)]));
+  checkEq(st, code[0].op, OP_LOAD_INT, "loadint-neg: op");
+  checkEq(st, code[0].imm, -100, "loadint-neg: imm=-100");
+  0
+}
+
+fn test_loadfloat(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opLoadFloat(1, 3.14)]));
+  checkEq(st, code[0].op, OP_LOAD_FLOAT, "loadfloat: op");
+  checkEq(st, code[0].a, 1, "loadfloat: a=1");
+  0
+}
+
+fn test_loadstring(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opLoadString(2, "hello")]));
+  checkEq(st, code[0].op, OP_LOAD_STRING, "loadstring: op");
+  checkEq(st, code[0].a, 2, "loadstring: a=2");
+  0
+}
+
+fn test_loadbool_true(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opLoadBool(0, 1)]));
+  checkEq(st, code[0].op, OP_LOAD_BOOL, "loadbool-true: op");
+  checkEq(st, code[0].imm, 1, "loadbool-true: imm=1");
+  0
+}
+
+fn test_loadbool_false(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opLoadBool(0, 0)]));
+  checkEq(st, code[0].op, OP_LOAD_BOOL, "loadbool-false: op");
+  checkEq(st, code[0].imm, 0, "loadbool-false: imm=0");
+  0
+}
+
+fn test_loadunit(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opLoadUnit(0)]));
+  checkEq(st, code[0].op, OP_LOAD_UNIT, "loadunit: op");
+  checkEq(st, code[0].a, 0, "loadunit: a=0");
+  0
+}
+
+fn test_string_interning(st: Stats) -> int {
+  // Two LoadString ops with the same string should share the string table index.
+  let ops = [opLoadString(0, "x"), opLoadString(1, "x")];
+  let f = compileMockFn(mockFn("f", ops));
+  checkEq(st, len(f.strings), 1, "intern: 1 string");
+  checkStrEq(st, f.strings[0], "x", "intern: string is 'x'");
+  checkEq(st, f.code[0].imm, 0, "intern: first imm=0");
+  checkEq(st, f.code[1].imm, 0, "intern: second imm=0 (deduped)");
+  0
+}
+
+fn test_string_interning_distinct(st: Stats) -> int {
+  let ops = [opLoadString(0, "a"), opLoadString(1, "b")];
+  let f = compileMockFn(mockFn("f", ops));
+  checkEq(st, len(f.strings), 2, "intern-distinct: 2 strings");
+  checkEq(st, f.code[0].imm, 0, "intern-distinct: first imm=0");
+  checkEq(st, f.code[1].imm, 1, "intern-distinct: second imm=1");
+  0
+}
+
+fn test_float_interning(st: Stats) -> int {
+  let ops = [opLoadFloat(0, 2.5), opLoadFloat(1, 2.5)];
+  let f = compileMockFn(mockFn("f", ops));
+  checkEq(st, len(f.constants), 1, "intern-float: 1 const");
+  checkEq(st, f.code[0].imm, 0, "intern-float: first imm=0");
+  checkEq(st, f.code[1].imm, 0, "intern-float: second imm=0 (deduped)");
+  0
+}
+
+// =============================================================================
+// 2. Move op
+// =============================================================================
+
+fn test_move(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opMove(2, 5)]));
+  checkEq(st, len(code), 1, "move: 1 instr");
+  checkEq(st, code[0].op, OP_DUP, "move: op=Dup");
+  checkEq(st, code[0].a, 5, "move: a=src=5");
+  checkEq(st, code[0].b, 2, "move: b=dest=2");
+  0
+}
+
+// =============================================================================
+// 3. Arithmetic binary ops
+// =============================================================================
+
+fn test_add(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("Add", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_ADD, "add: op");
+  checkEq(st, code[0].a, 0, "add: a=0");
+  checkEq(st, code[0].b, 1, "add: b=1");
+  checkEq(st, code[0].c, 2, "add: c=2");
+  0
+}
+
+fn test_sub(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("Sub", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_SUB, "sub: op");
+  0
+}
+
+fn test_mul(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("Mul", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_MUL, "mul: op");
+  0
+}
+
+fn test_div(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("Div", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_DIV, "div: op");
+  0
+}
+
+fn test_idiv(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("IDiv", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_IDIV, "idiv: op");
+  0
+}
+
+fn test_mod(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("Mod", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_MOD, "mod: op");
+  0
+}
+
+fn test_bitand(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("BitAnd", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_BITAND, "bitand: op");
+  0
+}
+
+fn test_bitor(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("BitOr", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_BITOR, "bitor: op");
+  0
+}
+
+fn test_bitxor(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("BitXor", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_BITXOR, "bitxor: op");
+  0
+}
+
+fn test_shl(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("Shl", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_SHL, "shl: op");
+  0
+}
+
+fn test_shr(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("Shr", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_SHR, "shr: op");
+  0
+}
+
+// =============================================================================
+// 4. Comparison ops
+// =============================================================================
+
+fn test_eq(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("Eq", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_EQ, "eq: op");
+  0
+}
+
+fn test_neq(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("Neq", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_NEQ, "neq: op");
+  0
+}
+
+fn test_lt(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("Lt", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_LT, "lt: op");
+  0
+}
+
+fn test_le(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("Le", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_LE, "le: op");
+  0
+}
+
+fn test_gt(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("Gt", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_GT, "gt: op");
+  0
+}
+
+fn test_ge(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opBin("Ge", 0, 1, 2)]));
+  checkEq(st, code[0].op, OP_GE, "ge: op");
+  0
+}
+
+// =============================================================================
+// 5. Unary ops
+// =============================================================================
+
+fn test_neg(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opUn("Neg", 0, 1)]));
+  checkEq(st, code[0].op, OP_NEG, "neg: op");
+  checkEq(st, code[0].a, 0, "neg: a=dest=0");
+  checkEq(st, code[0].b, 1, "neg: b=src=1");
+  0
+}
+
+fn test_not(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opUn("Not", 0, 1)]));
+  checkEq(st, code[0].op, OP_NOT, "not: op");
+  0
+}
+
+fn test_bitnot(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opUn("BitNot", 0, 1)]));
+  checkEq(st, code[0].op, OP_BITNOT, "bitnot: op");
+  0
+}
+
+// =============================================================================
+// 6. Control flow ops
+// =============================================================================
+
+fn test_jmp(st: Stats) -> int {
+  // Two blocks: block 0 has Jmp(1); block 1 has Return(0).
+  let b0 = IrBlock { id: 0, instrs: [opJmp(1)] };
+  let b1 = IrBlock { id: 1, instrs: [opReturn(0)] };
+  let code = compileMock(mockFnBlocks("f", [b0, b1]));
+  checkEq(st, len(code), 2, "jmp: 2 instrs");
+  checkEq(st, code[0].op, OP_JMP, "jmp: op");
+  // Block 1 starts at instr index 1.
+  checkEq(st, code[0].imm, 1, "jmp: imm=1 (block 1 offset)");
+  checkEq(st, code[1].op, OP_RETURN, "jmp: block1 has Return");
+  0
+}
+
+fn test_jmpif(st: Stats) -> int {
+  let b0 = IrBlock { id: 0, instrs: [opJmpIf(2, 1)] };
+  let b1 = IrBlock { id: 1, instrs: [opReturn(0)] };
+  let code = compileMock(mockFnBlocks("f", [b0, b1]));
+  checkEq(st, code[0].op, OP_JMPIF, "jmpif: op");
+  checkEq(st, code[0].a, 2, "jmpif: a=cond=2");
+  checkEq(st, code[0].imm, 1, "jmpif: imm=1");
+  0
+}
+
+fn test_jmpifnot(st: Stats) -> int {
+  let b0 = IrBlock { id: 0, instrs: [opJmpIfNot(2, 1)] };
+  let b1 = IrBlock { id: 1, instrs: [opReturn(0)] };
+  let code = compileMock(mockFnBlocks("f", [b0, b1]));
+  checkEq(st, code[0].op, OP_JMPIFNOT, "jmpifnot: op");
+  checkEq(st, code[0].a, 2, "jmpifnot: a=cond=2");
+  checkEq(st, code[0].imm, 1, "jmpifnot: imm=1");
+  0
+}
+
+fn test_return(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opReturn(3)]));
+  checkEq(st, code[0].op, OP_RETURN, "return: op");
+  checkEq(st, code[0].a, 3, "return: a=3");
+  0
+}
+
+fn test_three_block_jmp(st: Stats) -> int {
+  // Block 0: Jmp(2); Block 1: Return(0); Block 2: Return(1).
+  // Code layout: [Jmp, Return(0), Return(1)] but block order is [0, 1, 2].
+  // Block 0 offset = 0, Block 1 offset = 1, Block 2 offset = 2.
+  let b0 = IrBlock { id: 0, instrs: [opJmp(2)] };
+  let b1 = IrBlock { id: 1, instrs: [opReturn(0)] };
+  let b2 = IrBlock { id: 2, instrs: [opReturn(1)] };
+  let code = compileMock(mockFnBlocks("f", [b0, b1, b2]));
+  checkEq(st, len(code), 3, "three-block: 3 instrs");
+  checkEq(st, code[0].imm, 2, "three-block: jmp imm=2 (block 2 offset)");
+  0
+}
+
+// =============================================================================
+// 7. Call ops
+// =============================================================================
+
+fn test_call(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opCall(0, 1, [2, 3])]));
+  checkEq(st, code[0].op, OP_CALL, "call: op");
+  checkEq(st, code[0].a, 0, "call: a=dest=0");
+  checkEq(st, code[0].b, 1, "call: b=fn=1");
+  check(st, code[0].regs >= 0, "call: regs index set");
+  0
+}
+
+fn test_call_reglist_interning(st: Stats) -> int {
+  let ops = [opCall(0, 1, [2, 3]), opCall(4, 1, [2, 3])];
+  let f = compileMockFn(mockFn("f", ops));
+  // Both calls have the same args [2, 3], so they share the regList index.
+  checkEq(st, f.code[0].regs, f.code[1].regs, "call-reglist: same regList idx");
+  checkEq(st, len(f.regLists), 1, "call-reglist: 1 regList");
+  0
+}
+
+fn test_callbuiltin(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opCallBuiltin(0, "len", [1])]));
+  checkEq(st, code[0].op, OP_CALLBUILTIN, "callbuiltin: op");
+  checkEq(st, code[0].a, 0, "callbuiltin: a=dest=0");
+  check(st, code[0].imm >= 0, "callbuiltin: imm (string idx) set");
+  0
+}
+
+fn test_callbuiltin_name_interning(st: Stats) -> int {
+  let ops = [opCallBuiltin(0, "len", [1]), opCallBuiltin(2, "len", [3])];
+  let f = compileMockFn(mockFn("f", ops));
+  checkEq(st, f.code[0].imm, f.code[1].imm, "callbuiltin-intern: same name idx");
+  checkStrEq(st, f.strings[f.code[0].imm], "len", "callbuiltin-intern: name is 'len'");
+  0
+}
+
+fn test_callclosure(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opCallClosure(0, 1, [2])]));
+  checkEq(st, code[0].op, OP_CALLCLOSURE, "callclosure: op");
+  checkEq(st, code[0].a, 0, "callclosure: a=dest=0");
+  checkEq(st, code[0].b, 1, "callclosure: b=closure=1");
+  0
+}
+
+// =============================================================================
+// 8. Memory / data ops
+// =============================================================================
+
+fn test_allocstruct(st: Stats) -> int {
+  let fields = [IrField { name: "x", reg: 1 }, IrField { name: "y", reg: 2 }];
+  let code = compileMock(mockFn("f", [opAllocStruct(0, "Point", fields)]));
+  checkEq(st, code[0].op, OP_ALLOCSTRUCT, "allocstruct: op");
+  checkEq(st, code[0].a, 0, "allocstruct: a=dest=0");
+  check(st, code[0].imm >= 0, "allocstruct: imm (name idx) set");
+  check(st, code[0].fields >= 0, "allocstruct: fields idx set");
+  0
+}
+
+fn test_allocstruct_name(st: Stats) -> int {
+  let fields = [IrField { name: "x", reg: 1 }];
+  let f = compileMockFn(mockFn("f", [opAllocStruct(0, "Foo", fields)]));
+  checkStrEq(st, f.strings[f.code[0].imm], "Foo", "allocstruct-name: name is 'Foo'");
+  0
+}
+
+fn test_allocvariant(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opAllocVariant(0, "Color", "Red", [1])]));
+  checkEq(st, code[0].op, OP_ALLOCVARIANT, "allocvariant: op");
+  checkEq(st, code[0].a, 0, "allocvariant: a=dest=0");
+  0
+}
+
+fn test_allocvariant_tag(st: Stats) -> int {
+  let f = compileMockFn(mockFn("f", [opAllocVariant(0, "Color", "Red", [])]));
+  checkStrEq(st, f.strings[f.code[0].imm], "Color::Red", "allocvariant-tag: tag is 'Color::Red'");
+  0
+}
+
+fn test_allocarray(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opAllocArray(0, [1, 2, 3])]));
+  checkEq(st, code[0].op, OP_ALLOCARRAY, "allocarray: op");
+  checkEq(st, code[0].a, 0, "allocarray: a=dest=0");
+  check(st, code[0].regs >= 0, "allocarray: regs idx set");
+  0
+}
+
+fn test_allocmap(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opAllocMap(0, [1, 2, 3, 4])]));
+  checkEq(st, code[0].op, OP_ALLOCMAP, "allocmap: op");
+  checkEq(st, code[0].a, 0, "allocmap: a=dest=0");
+  0
+}
+
+fn test_allocrange(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opAllocRange(0, 1, 2, 0)]));
+  checkEq(st, code[0].op, OP_ALLOCRANGE, "allocrange: op");
+  checkEq(st, code[0].a, 0, "allocrange: a=dest=0");
+  checkEq(st, code[0].b, 1, "allocrange: b=start=1");
+  checkEq(st, code[0].c, 2, "allocrange: c=end=2");
+  checkEq(st, code[0].imm, 0, "allocrange: imm=inclusive=0");
+  0
+}
+
+fn test_loadfield(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opLoadField(0, 1, "x")]));
+  checkEq(st, code[0].op, OP_LOADFIELD, "loadfield: op");
+  checkEq(st, code[0].a, 0, "loadfield: a=dest=0");
+  checkEq(st, code[0].b, 1, "loadfield: b=obj=1");
+  check(st, code[0].imm >= 0, "loadfield: imm (name idx) set");
+  0
+}
+
+fn test_storefield(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opStoreField(0, "x", 2)]));
+  checkEq(st, code[0].op, OP_STOREFIELD, "storefield: op");
+  checkEq(st, code[0].a, 0, "storefield: a=obj=0");
+  checkEq(st, code[0].b, 2, "storefield: b=val=2");
+  0
+}
+
+fn test_indexget(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opIndexGet(0, 1, 2)]));
+  checkEq(st, code[0].op, OP_INDEXGET, "indexget: op");
+  checkEq(st, code[0].a, 0, "indexget: a=dest=0");
+  checkEq(st, code[0].b, 1, "indexget: b=obj=1");
+  checkEq(st, code[0].c, 2, "indexget: c=idx=2");
+  0
+}
+
+fn test_indexset(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opIndexSet(0, 1, 2)]));
+  checkEq(st, code[0].op, OP_INDEXSET, "indexset: op");
+  checkEq(st, code[0].a, 0, "indexset: a=obj=0");
+  checkEq(st, code[0].b, 1, "indexset: b=idx=1");
+  checkEq(st, code[0].c, 2, "indexset: c=val=2");
+  0
+}
+
+fn test_len(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opLen(0, 1)]));
+  checkEq(st, code[0].op, OP_LEN, "len: op");
+  checkEq(st, code[0].a, 0, "len: a=dest=0");
+  checkEq(st, code[0].b, 1, "len: b=src=1");
+  0
+}
+
+fn test_push(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opPush(0, 1)]));
+  checkEq(st, code[0].op, OP_PUSH, "push: op");
+  checkEq(st, code[0].a, 0, "push: a=arr=0");
+  checkEq(st, code[0].b, 1, "push: b=val=1");
+  0
+}
+
+fn test_poparr(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opPopArr(0, 1)]));
+  checkEq(st, code[0].op, OP_POPARR, "poparr: op");
+  checkEq(st, code[0].a, 0, "poparr: a=dest=0");
+  checkEq(st, code[0].b, 1, "poparr: b=arr=1");
+  0
+}
+
+// =============================================================================
+// 9. Closure / box ops
+// =============================================================================
+
+fn test_makeclosure(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opMakeClosure(0, 1, [2, 3])]));
+  checkEq(st, code[0].op, OP_MAKECLOSURE, "makeclosure: op");
+  checkEq(st, code[0].a, 0, "makeclosure: a=dest=0");
+  checkEq(st, code[0].imm, 1, "makeclosure: imm=funcIdx=1");
+  check(st, code[0].regs >= 0, "makeclosure: regs idx set");
+  0
+}
+
+fn test_makeclosure_caps(st: Stats) -> int {
+  let f = compileMockFn(mockFn("f", [opMakeClosure(0, 1, [2, 3])]));
+  // The regList at index `regs` should be [2, 3].
+  let rl = f.regLists[f.code[0].regs];
+  checkEq(st, len(rl), 2, "makeclosure-caps: 2 captures");
+  checkEq(st, rl[0], 2, "makeclosure-caps: first cap=2");
+  checkEq(st, rl[1], 3, "makeclosure-caps: second cap=3");
+  0
+}
+
+fn test_getupvalue(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opGetUpvalue(0, 2)]));
+  checkEq(st, code[0].op, OP_GETUPVALUE, "getupvalue: op");
+  checkEq(st, code[0].a, 0, "getupvalue: a=dest=0");
+  checkEq(st, code[0].imm, 2, "getupvalue: imm=idx=2");
+  0
+}
+
+fn test_setupvalue(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opSetUpvalue(2, 3)]));
+  checkEq(st, code[0].op, OP_SETUPVALUE, "setupvalue: op");
+  checkEq(st, code[0].imm, 2, "setupvalue: imm=idx=2");
+  checkEq(st, code[0].b, 3, "setupvalue: b=val=3");
+  0
+}
+
+fn test_makebox(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opMakeBox(0, 1)]));
+  checkEq(st, code[0].op, OP_MAKEBOX, "makebox: op");
+  checkEq(st, code[0].a, 0, "makebox: a=dest=0");
+  checkEq(st, code[0].b, 1, "makebox: b=src=1");
+  0
+}
+
+fn test_unbox(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opUnbox(0, 1)]));
+  checkEq(st, code[0].op, OP_UNBOX, "unbox: op");
+  checkEq(st, code[0].a, 0, "unbox: a=dest=0");
+  checkEq(st, code[0].b, 1, "unbox: b=src=1");
+  0
+}
+
+fn test_setbox(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opSetBox(0, 1)]));
+  checkEq(st, code[0].op, OP_SETBOX, "setbox: op");
+  checkEq(st, code[0].a, 0, "setbox: a=box=0");
+  checkEq(st, code[0].b, 1, "setbox: b=val=1");
+  0
+}
+
+// =============================================================================
+// 10. Print / cast / panic ops
+// =============================================================================
+
+fn test_print(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opPrint(0)]));
+  checkEq(st, code[0].op, OP_PRINT, "print: op");
+  checkEq(st, code[0].a, 0, "print: a=src=0");
+  0
+}
+
+fn test_panic(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opPanic(0)]));
+  checkEq(st, code[0].op, OP_PANIC, "panic: op");
+  checkEq(st, code[0].a, 0, "panic: a=msg=0");
+  0
+}
+
+fn test_castint(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opCast("CastInt", 0, 1)]));
+  checkEq(st, code[0].op, OP_CASTINT, "castint: op");
+  0
+}
+
+fn test_castfloat(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opCast("CastFloat", 0, 1)]));
+  checkEq(st, code[0].op, OP_CASTFLOAT, "castfloat: op");
+  0
+}
+
+fn test_castbool(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opCast("CastBool", 0, 1)]));
+  checkEq(st, code[0].op, OP_CASTBOOL, "castbool: op");
+  0
+}
+
+fn test_caststring(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opCast("CastString", 0, 1)]));
+  checkEq(st, code[0].op, OP_CASTSTRING, "caststring: op");
+  0
+}
+
+// =============================================================================
+// 11. LoadGlobal / SelfRef
+// =============================================================================
+
+fn test_loadglobal(st: Stats) -> int {
+  let code = compileMock(mockFn("f", [opLoadGlobal(0, "foo")]));
+  checkEq(st, code[0].op, OP_LOADGLOBAL, "loadglobal: op");
+  checkEq(st, code[0].a, 0, "loadglobal: a=dest=0");
+  check(st, code[0].imm >= 0, "loadglobal: imm (name idx) set");
+  0
+}
+
+// =============================================================================
+// 12. Loop detection (Break / Continue → Jmp)
+// =============================================================================
+
+fn test_loop_break(st: Stats) -> int {
+  // A simple while loop (mirrors IR's lowerWhile structure):
+  //   block 0 (entry): Jmp(1)
+  //   block 1 (condBlock): JmpIfNot(cond, 4)   ← breakBlock = 4
+  //   block 2 (intermediate): Jmp(3)
+  //   block 3 (bodyBlock): Break; Jmp(1)   ← back-edge to condBlock 1
+  //   block 4 (breakBlock): Return(0)
+  // Block layout offsets: b0=0, b1=1, b2=2, b3=3, b4=5.
+  // Break should compile to Jmp to block 4's offset (5).
+  let b0 = IrBlock { id: 0, instrs: [opJmp(1)] };
+  let b1 = IrBlock { id: 1, instrs: [opJmpIfNot(0, 4)] };
+  let b2 = IrBlock { id: 2, instrs: [opJmp(3)] };
+  let b3 = IrBlock { id: 3, instrs: [opBreak(), opJmp(1)] };
+  let b4 = IrBlock { id: 4, instrs: [opReturn(0)] };
+  let code = compileMock(mockFnBlocks("f", [b0, b1, b2, b3, b4]));
+  let mut found = 0;
+  let mut i = 0;
+  while i < len(code) {
+    if code[i].op == OP_JMP && code[i].imm == 5 { found = 1; i = len(code); };
+    i = i + 1;
+  }
+  check(st, found == 1, "loop-break: Break compiled to Jmp(5)");
+  0
+}
+
+fn test_loop_continue(st: Stats) -> int {
+  // Same loop structure as test_loop_break, but with Continue instead of Break.
+  // Continue should jump to condBlock (block 1, offset 1).
+  let b0 = IrBlock { id: 0, instrs: [opJmp(1)] };
+  let b1 = IrBlock { id: 1, instrs: [opJmpIfNot(0, 4)] };
+  let b2 = IrBlock { id: 2, instrs: [opJmp(3)] };
+  let b3 = IrBlock { id: 3, instrs: [opContinue(), opJmp(1)] };
+  let b4 = IrBlock { id: 4, instrs: [opReturn(0)] };
+  let code = compileMock(mockFnBlocks("f", [b0, b1, b2, b3, b4]));
+  // Continue should be Jmp to block 1's offset (1).
+  let mut found = 0;
+  let mut i = 0;
+  while i < len(code) {
+    if code[i].op == OP_JMP && code[i].imm == 1 { found = 1; i = len(code); };
+    i = i + 1;
+  }
+  check(st, found == 1, "loop-continue: Continue compiled to Jmp(1)");
+  0
+}
+
+// =============================================================================
+// 13. Match table conversion
+// =============================================================================
+
+fn test_match_table(st: Stats) -> int {
+  // Build an IrFunc with a match table containing one entry.
+  // The Match op is in block 0, the arm body is in block 1, the else is in block 2.
+  // Match table: [Wildcard entry → block 1, default → block 2]
+  let wildEntry = MatchEntry {
+    patternKind: "Wildcard", bindName: "", litValue: mkUnit(),
+    structName: "", enumName: "", variant: "",
+    fieldBindings: [], subregs: [], orPatterns: [], hasRest: 0, target: 1,
+  };
+  let table = MatchTable { entries: [wildEntry], defaultTarget: 2 };
+  let func = IrFunc {
+    name: "f", nparams: 0, nlocals: 4,
+    blocks: [
+      IrBlock { id: 0, instrs: [opMatch(0, 0)] },
+      IrBlock { id: 1, instrs: [opReturn(0)] },
+      IrBlock { id: 2, instrs: [opReturn(1)] },
+    ],
+    entry: 0, captures: [], selfReg: -1, isMain: 0, nested: [],
+    matchTables: [table],
+    strings: [], regLists: [], fieldLists: [], constants: [], matchBindings: [],
+  };
+  let f = compileMockFn(func);
+  checkEq(st, f.code[0].op, OP_MATCH, "match: op");
+  checkEq(st, f.code[0].a, 0, "match: a=scrutinee=0");
+  checkEq(st, f.code[0].imm, 0, "match: imm=tableIdx=0");
+  checkEq(st, len(f.matchTables), 1, "match: 1 table");
+  let t = f.matchTables[0];
+  // Table has 1 entry (Wildcard) + 1 default (Wildcard).
+  checkEq(st, len(t), 2, "match: table has 2 entries (1 + default)");
+  checkStrEq(st, t[0].patternKind, "Wildcard", "match: first entry Wildcard");
+  // Block 1 is at offset 1 (block 0 has 1 instr: Match).
+  checkEq(st, t[0].target, 1, "match: first entry target=1 (block 1 offset)");
+  checkEq(st, t[1].target, 2, "match: default target=2 (block 2 offset)");
+  0
+}
+
+fn test_match_bind_entry(st: Stats) -> int {
+  // Match with a Bind entry.
+  let bindEntry = MatchEntry {
+    patternKind: "Bind", bindName: "x", litValue: mkUnit(),
+    structName: "", enumName: "", variant: "",
+    fieldBindings: [], subregs: [], orPatterns: [], hasRest: 0, target: 1,
+  };
+  let table = MatchTable { entries: [bindEntry], defaultTarget: 2 };
+  let func = IrFunc {
+    name: "f", nparams: 0, nlocals: 4,
+    blocks: [
+      IrBlock { id: 0, instrs: [opMatch(0, 0)] },
+      IrBlock { id: 1, instrs: [opReturn(0)] },
+      IrBlock { id: 2, instrs: [opReturn(1)] },
+    ],
+    entry: 0, captures: [], selfReg: -1, isMain: 0, nested: [],
+    matchTables: [table],
+    strings: [], regLists: [], fieldLists: [], constants: [],
+    matchBindings: [MatchBinding { tableIdx: 0, name: "x", reg: 2 }],
+  };
+  let f = compileMockFn(func);
+  let t = f.matchTables[0];
+  checkStrEq(st, t[0].patternKind, "Bind", "match-bind: first entry Bind");
+  checkStrEq(st, t[0].bindName, "x", "match-bind: bindName='x'");
+  checkEq(st, len(f.matchBindings), 1, "match-bind: 1 binding");
+  checkStrEq(st, f.matchBindings[0].name, "x", "match-bind: binding name='x'");
+  checkEq(st, f.matchBindings[0].reg, 2, "match-bind: binding reg=2");
+  0
+}
+
+fn test_match_lit_entry(st: Stats) -> int {
+  let litEntry = MatchEntry {
+    patternKind: "Lit", bindName: "", litValue: mkInt(42),
+    structName: "", enumName: "", variant: "",
+    fieldBindings: [], subregs: [], orPatterns: [], hasRest: 0, target: 1,
+  };
+  let table = MatchTable { entries: [litEntry], defaultTarget: 2 };
+  let func = IrFunc {
+    name: "f", nparams: 0, nlocals: 4,
+    blocks: [
+      IrBlock { id: 0, instrs: [opMatch(0, 0)] },
+      IrBlock { id: 1, instrs: [opReturn(0)] },
+      IrBlock { id: 2, instrs: [opReturn(1)] },
+    ],
+    entry: 0, captures: [], selfReg: -1, isMain: 0, nested: [],
+    matchTables: [table],
+    strings: [], regLists: [], fieldLists: [], constants: [], matchBindings: [],
+  };
+  let f = compileMockFn(func);
+  let t = f.matchTables[0];
+  checkStrEq(st, t[0].patternKind, "Lit", "match-lit: first entry Lit");
+  checkEq(st, t[0].litValue.ival, 42, "match-lit: litValue=42");
+  0
+}
+
+// =============================================================================
+// 14. Module-level: entry function selection
+// =============================================================================
+
+fn test_entry_main(st: Stats) -> int {
+  // Two funcs: foo (isMain=0) and <main> (isMain=1). Entry should be 1.
+  let foo = mockFn("foo", [opReturn(0)]);
+  let main_ = IrFunc {
+    name: "<main>", nparams: 0, nlocals: 4,
+    blocks: [IrBlock { id: 0, instrs: [opReturn(0)] }],
+    entry: 0, captures: [], selfReg: -1, isMain: 1, nested: [],
+    matchTables: [], strings: [], regLists: [], fieldLists: [],
+    constants: [], matchBindings: [],
+  };
+  let prog = IrProgram { funcs: [foo, main_], globals: [], entry: 1 };
+  let mod_ = compileToBytecode(prog);
+  checkEq(st, mod_.entry, 1, "entry-main: entry=1");
+  checkEq(st, len(mod_.funcs), 2, "entry-main: 2 funcs");
+  checkStrEq(st, mod_.funcs[1].name, "<main>", "entry-main: func 1 name=<main>");
+  0
+}
+
+fn test_entry_no_main(st: Stats) -> int {
+  // No main; entry should default to 0.
+  let foo = mockFn("foo", [opReturn(0)]);
+  let prog = mockProg(foo);
+  let mod_ = compileToBytecode(prog);
+  checkEq(st, mod_.entry, 0, "entry-no-main: entry=0");
+  0
+}
+
+// =============================================================================
+// 15. opNameToInt tests
+// =============================================================================
+
+fn test_opname_to_int(st: Stats) -> int {
+  checkEq(st, opNameToInt("LoadInt"), OP_LOAD_INT, "opname: LoadInt");
+  checkEq(st, opNameToInt("Add"), OP_ADD, "opname: Add");
+  checkEq(st, opNameToInt("Sub"), OP_SUB, "opname: Sub");
+  checkEq(st, opNameToInt("Mul"), OP_MUL, "opname: Mul");
+  checkEq(st, opNameToInt("Div"), OP_DIV, "opname: Div");
+  checkEq(st, opNameToInt("Eq"), OP_EQ, "opname: Eq");
+  checkEq(st, opNameToInt("Lt"), OP_LT, "opname: Lt");
+  checkEq(st, opNameToInt("Gt"), OP_GT, "opname: Gt");
+  checkEq(st, opNameToInt("Jmp"), OP_JMP, "opname: Jmp");
+  checkEq(st, opNameToInt("JmpIf"), OP_JMPIF, "opname: JmpIf");
+  checkEq(st, opNameToInt("JmpIfNot"), OP_JMPIFNOT, "opname: JmpIfNot");
+  checkEq(st, opNameToInt("Return"), OP_RETURN, "opname: Return");
+  checkEq(st, opNameToInt("Call"), OP_CALL, "opname: Call");
+  checkEq(st, opNameToInt("CallBuiltin"), OP_CALLBUILTIN, "opname: CallBuiltin");
+  checkEq(st, opNameToInt("CallClosure"), OP_CALLCLOSURE, "opname: CallClosure");
+  checkEq(st, opNameToInt("Match"), OP_MATCH, "opname: Match");
+  checkEq(st, opNameToInt("Print"), OP_PRINT, "opname: Print");
+  checkEq(st, opNameToInt("Panic"), OP_PANIC, "opname: Panic");
+  checkEq(st, opNameToInt("MakeClosure"), OP_MAKECLOSURE, "opname: MakeClosure");
+  checkEq(st, opNameToInt("LoadGlobal"), OP_LOADGLOBAL, "opname: LoadGlobal");
+  0
+}
+
+// =============================================================================
+// 16. Multi-op function
+// =============================================================================
+
+fn test_multi_op(st: Stats) -> int {
+  // A function with several ops in sequence.
+  let ops = [
+    opLoadInt(0, 10),
+    opLoadInt(1, 20),
+    opBin("Add", 2, 0, 1),
+    opReturn(2),
+  ];
+  let code = compileMock(mockFn("f", ops));
+  checkEq(st, len(code), 4, "multi-op: 4 instrs");
+  checkEq(st, code[0].op, OP_LOAD_INT, "multi-op: 0=LoadInt");
+  checkEq(st, code[1].op, OP_LOAD_INT, "multi-op: 1=LoadInt");
+  checkEq(st, code[2].op, OP_ADD, "multi-op: 2=Add");
+  checkEq(st, code[3].op, OP_RETURN, "multi-op: 3=Return");
+  0
+}
+
+// =============================================================================
+// Driver: run all tests
+// =============================================================================
+
+fn runAllTests() -> int {
+  let st = Stats { passed: 0, failed: 0 };
+
+  // Constants
+  test_loadint(st);
+  test_loadint_zero(st);
+  test_loadint_neg(st);
+  test_loadfloat(st);
+  test_loadstring(st);
+  test_loadbool_true(st);
+  test_loadbool_false(st);
+  test_loadunit(st);
+  test_string_interning(st);
+  test_string_interning_distinct(st);
+  test_float_interning(st);
+
+  // Move
+  test_move(st);
+
+  // Arithmetic
+  test_add(st);
+  test_sub(st);
+  test_mul(st);
+  test_div(st);
+  test_idiv(st);
+  test_mod(st);
+  test_bitand(st);
+  test_bitor(st);
+  test_bitxor(st);
+  test_shl(st);
+  test_shr(st);
+
+  // Comparison
+  test_eq(st);
+  test_neq(st);
+  test_lt(st);
+  test_le(st);
+  test_gt(st);
+  test_ge(st);
+
+  // Unary
+  test_neg(st);
+  test_not(st);
+  test_bitnot(st);
+
+  // Control flow
+  test_jmp(st);
+  test_jmpif(st);
+  test_jmpifnot(st);
+  test_return(st);
+  test_three_block_jmp(st);
+
+  // Calls
+  test_call(st);
+  test_call_reglist_interning(st);
+  test_callbuiltin(st);
+  test_callbuiltin_name_interning(st);
+  test_callclosure(st);
+
+  // Memory
+  test_allocstruct(st);
+  test_allocstruct_name(st);
+  test_allocvariant(st);
+  test_allocvariant_tag(st);
+  test_allocarray(st);
+  test_allocmap(st);
+  test_allocrange(st);
+  test_loadfield(st);
+  test_storefield(st);
+  test_indexget(st);
+  test_indexset(st);
+  test_len(st);
+  test_push(st);
+  test_poparr(st);
+
+  // Closures / boxes
+  test_makeclosure(st);
+  test_makeclosure_caps(st);
+  test_getupvalue(st);
+  test_setupvalue(st);
+  test_makebox(st);
+  test_unbox(st);
+  test_setbox(st);
+
+  // Print / cast / panic
+  test_print(st);
+  test_panic(st);
+  test_castint(st);
+  test_castfloat(st);
+  test_castbool(st);
+  test_caststring(st);
+
+  // LoadGlobal
+  test_loadglobal(st);
+
+  // Loops
+  test_loop_break(st);
+  test_loop_continue(st);
+
+  // Match
+  test_match_table(st);
+  test_match_bind_entry(st);
+  test_match_lit_entry(st);
+
+  // Module entry
+  test_entry_main(st);
+  test_entry_no_main(st);
+
+  // opNameToInt
+  test_opname_to_int(st);
+
+  // Multi-op
+  test_multi_op(st);
+
+  print("=============================");
+  print("Codegen test results:");
+  print("  passed: " + str(st.passed));
+  print("  failed: " + str(st.failed));
+  if st.failed == 0 {
+    print("  STATUS: ALL PASS");
+  } else {
+    print("  STATUS: FAILURES");
+  };
+  print("=============================");
+  assert_eq(st.failed, 0);
+  st.passed
+}
+
+let npass = runAllTests();
+print("Total asserts passed: " + str(npass));

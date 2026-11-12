@@ -34,19 +34,19 @@ fn mkNode(kind: string, loc: Loc) -> Node {
   Node { kind: kind, loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [] }
 }
 
-fn mkInt(value: int, loc: Loc) -> Node {
+fn mkIntLit(value: int, loc: Loc) -> Node {
   Node { kind: "IntLit", loc: loc, name: "", text: "", ival: value, fval: 0.0, items: [] }
 }
 
-fn mkFloat(value: float, loc: Loc) -> Node {
+fn mkFloatLit(value: float, loc: Loc) -> Node {
   Node { kind: "FloatLit", loc: loc, name: "", text: "", ival: 0, fval: value, items: [] }
 }
 
-fn mkBool(value: int, loc: Loc) -> Node {
+fn mkBoolLit(value: int, loc: Loc) -> Node {
   Node { kind: "BoolLit", loc: loc, name: "", text: "", ival: value, fval: 0.0, items: [] }
 }
 
-fn mkStr(text: string, loc: Loc) -> Node {
+fn mkStrLit(text: string, loc: Loc) -> Node {
   Node { kind: "StringLit", loc: loc, name: "", text: text, ival: 0, fval: 0.0, items: [] }
 }
 
@@ -54,7 +54,7 @@ fn mkChar(text: string, loc: Loc) -> Node {
   Node { kind: "CharLit", loc: loc, name: "", text: text, ival: 0, fval: 0.0, items: [] }
 }
 
-fn mkUnit(loc: Loc) -> Node { mkNode("UnitLit", loc) }
+fn mkUnitLit(loc: Loc) -> Node { mkNode("UnitLit", loc) }
 
 fn mkIdent(name: string, loc: Loc) -> Node {
   Node { kind: "Ident", loc: loc, name: name, text: "", ival: 0, fval: 0.0, items: [] }
@@ -117,7 +117,7 @@ fn mkTuple(elements: [Node], loc: Loc) -> Node {
   Node { kind: "TupleExpr", loc: loc, name: "", text: "", ival: len(elements), fval: 0.0, items: elements }
 }
 
-fn mkArray(elements: [Node], loc: Loc) -> Node {
+fn mkArrayLit(elements: [Node], loc: Loc) -> Node {
   Node { kind: "ArrayExpr", loc: loc, name: "", text: "", ival: len(elements), fval: 0.0, items: elements }
 }
 
@@ -176,7 +176,7 @@ fn mkParen(expr: Node, loc: Loc) -> Node {
   Node { kind: "Paren", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [expr] }
 }
 
-fn mkRange(start: Node, end: Node, inclusive: int, loc: Loc) -> Node {
+fn mkRangeLit(start: Node, end: Node, inclusive: int, loc: Loc) -> Node {
   Node { kind: "Range", loc: loc, name: "", text: "", ival: inclusive, fval: 0.0, items: [start, end] }
 }
 
@@ -803,7 +803,7 @@ fn parsePub(p: Parser) -> Node {
   } else {
     errHere(p, "expected 'fn' after 'pub', found '" + peekTok(p).text + "'");
     recover(p);
-    mkExprStmt(mkUnit(start), start)
+    mkExprStmt(mkUnitLit(start), start)
   }
 }
 
@@ -1215,7 +1215,7 @@ fn parseBinary(p: Parser, minPrec: int, allowStruct: int) -> Node {
           let op = advanceTok(p).text;
           let right = parseBinary(p, RANGE_PREC + 1, allowStruct);
           let inc = if op == "..=" { 1 } else { 0 };
-          cur = mkRange(cur, right, inc, locFrom(p, cur.loc));
+          cur = mkRangeLit(cur, right, inc, locFrom(p, cur.loc));
         } else {
           keepGoing = 0;
         };
@@ -1383,26 +1383,26 @@ fn parseAtom(p: Parser, allowStruct: int) -> Node {
   let start = tokLoc(t);
   if t.kind == "Int" {
     advanceTok(p);
-    return mkInt(int(t.text), locFrom(p, start));
+    return mkIntLit(int(t.text), locFrom(p, start));
   };
   if t.kind == "Float" {
     advanceTok(p);
-    return mkFloat(float(t.text), locFrom(p, start));
+    return mkFloatLit(float(t.text), locFrom(p, start));
   };
   if t.kind == "Hex" {
     advanceTok(p);
     let s = strSlice(t.text, 2, len(t.text));
-    return mkInt(intHex(s), locFrom(p, start));
+    return mkIntLit(intHex(s), locFrom(p, start));
   };
   if t.kind == "Binary" {
     advanceTok(p);
     let s = strSlice(t.text, 2, len(t.text));
-    return mkInt(intBin(s), locFrom(p, start));
+    return mkIntLit(intBin(s), locFrom(p, start));
   };
   if t.kind == "Octal" {
     advanceTok(p);
     let s = strSlice(t.text, 2, len(t.text));
-    return mkInt(intOct(s), locFrom(p, start));
+    return mkIntLit(intOct(s), locFrom(p, start));
   };
   if t.kind == "Char" {
     advanceTok(p);
@@ -1433,24 +1433,24 @@ fn parseAtom(p: Parser, allowStruct: int) -> Node {
   };
   if t.kind == "Eof" || t.kind == "Error" {
     errHere(p, "unexpected end of input at " + locStr(tokLoc(t)));
-    return mkUnit(locFrom(p, start));
+    return mkUnitLit(locFrom(p, start));
   };
   errHere(p, "unexpected token '" + t.text + "' at " + locStr(tokLoc(t)));
   advanceTok(p);
-  mkUnit(locFrom(p, start))
+  mkUnitLit(locFrom(p, start))
 }
 
 struct AtomResult { kind: string, node: Node }
 
 fn parseKeywordAtom(p: Parser, t: Token, start: Loc, allowStruct: int) -> AtomResult {
-  let stop = AtomResult { kind: "stop", node: mkUnit(start) };
+  let stop = AtomResult { kind: "stop", node: mkUnitLit(start) };
   if t.text == "true" {
     advanceTok(p);
-    return AtomResult { kind: "ok", node: mkBool(1, locFrom(p, start)) };
+    return AtomResult { kind: "ok", node: mkBoolLit(1, locFrom(p, start)) };
   };
   if t.text == "false" {
     advanceTok(p);
-    return AtomResult { kind: "ok", node: mkBool(0, locFrom(p, start)) };
+    return AtomResult { kind: "ok", node: mkBoolLit(0, locFrom(p, start)) };
   };
   if t.text == "self" {
     advanceTok(p);
@@ -1458,7 +1458,7 @@ fn parseKeywordAtom(p: Parser, t: Token, start: Loc, allowStruct: int) -> AtomRe
   };
   if t.text == "unit" {
     advanceTok(p);
-    return AtomResult { kind: "ok", node: mkUnit(locFrom(p, start)) };
+    return AtomResult { kind: "ok", node: mkUnitLit(locFrom(p, start)) };
   };
   if t.text == "fn" {
     advanceTok(p);
@@ -1510,7 +1510,7 @@ fn parseKeywordAtom(p: Parser, t: Token, start: Loc, allowStruct: int) -> AtomRe
 fn parseParenOrTuple(p: Parser, start: Loc) -> Node {
   advanceTok(p);
   if eatPunct(p, ")") == 1 {
-    return mkUnit(locFrom(p, start));
+    return mkUnitLit(locFrom(p, start));
   };
   let e = parseExpr(p, 1);
   if eatPunct(p, ",") == 1 {
@@ -1550,7 +1550,7 @@ fn parseArrayLiteral(p: Parser, start: Loc) -> Node {
     }
   };
   expectPunct(p, "]");
-  mkArray(elements, locFrom(p, start))
+  mkArrayLit(elements, locFrom(p, start))
 }
 
 fn parseIdent(p: Parser, t: Token, start: Loc) -> Node {

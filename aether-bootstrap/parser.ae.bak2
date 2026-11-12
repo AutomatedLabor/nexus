@@ -1,0 +1,1975 @@
+// =====================================================================
+// aether-bootstrap/parser.ae — Aether parser in Aether (bootstrap part 3/6)
+// Recursive descent + Pratt. Mirrors aether/core/parser/parser.ts.
+// See parser.README.md for design notes.
+// =====================================================================
+
+// === Data structures ===
+struct Loc { line: int, col: int, offset: int }
+struct Token { kind: string, text: string, line: int, col: int, offset: int }
+struct Node { kind: string, loc: Loc, name: string, text: string, ival: int, fval: float, items: [Node] }
+struct ParseError { line: int, col: int, message: string }
+struct ParseResult { program: Node, errors: [ParseError] }
+struct Parser { tokens: [Token], pos: int, errors: [ParseError] }
+
+let ZERO_LOC = Loc { line: 0, col: 0, offset: 0 };
+let EOF_TOK = Token { kind: "Eof", text: "", line: 0, col: 0, offset: 0 };
+
+fn nullNode() -> Node {
+  Node { kind: "Null", loc: ZERO_LOC, name: "", text: "", ival: 0, fval: 0.0, items: [] }
+}
+
+fn isNull(n: Node) -> int {
+  if n.kind == "Null" { 1 } else { 0 }
+}
+
+// === Helper: push returning the array ===
+fn pushN(arr: [Node], x: Node) -> [Node] {
+  push(arr, x);
+  arr
+}
+
+// === Node constructors ===
+fn mkNode(kind: string, loc: Loc) -> Node {
+  Node { kind: kind, loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [] }
+}
+
+fn mkInt(value: int, loc: Loc) -> Node {
+  Node { kind: "IntLit", loc: loc, name: "", text: "", ival: value, fval: 0.0, items: [] }
+}
+
+fn mkFloat(value: float, loc: Loc) -> Node {
+  Node { kind: "FloatLit", loc: loc, name: "", text: "", ival: 0, fval: value, items: [] }
+}
+
+fn mkBool(value: int, loc: Loc) -> Node {
+  Node { kind: "BoolLit", loc: loc, name: "", text: "", ival: value, fval: 0.0, items: [] }
+}
+
+fn mkStr(text: string, loc: Loc) -> Node {
+  Node { kind: "StringLit", loc: loc, name: "", text: text, ival: 0, fval: 0.0, items: [] }
+}
+
+fn mkChar(text: string, loc: Loc) -> Node {
+  Node { kind: "CharLit", loc: loc, name: "", text: text, ival: 0, fval: 0.0, items: [] }
+}
+
+fn mkUnit(loc: Loc) -> Node { mkNode("UnitLit", loc) }
+
+fn mkIdent(name: string, loc: Loc) -> Node {
+  Node { kind: "Ident", loc: loc, name: name, text: "", ival: 0, fval: 0.0, items: [] }
+}
+
+fn mkSelf(loc: Loc) -> Node { mkNode("SelfExpr", loc) }
+
+fn mkBinary(left: Node, op: string, right: Node, loc: Loc) -> Node {
+  Node { kind: "Binary", loc: loc, name: op, text: "", ival: 0, fval: 0.0, items: [left, right] }
+}
+
+fn mkUnary(op: string, operand: Node, loc: Loc) -> Node {
+  Node { kind: "Unary", loc: loc, name: op, text: "", ival: 0, fval: 0.0, items: [operand] }
+}
+
+fn mkAssign(target: Node, value: Node, loc: Loc) -> Node {
+  Node { kind: "Assign", loc: loc, name: "=", text: "", ival: 0, fval: 0.0, items: [target, value] }
+}
+
+fn mkCompoundAssign(op: string, target: Node, value: Node, loc: Loc) -> Node {
+  Node { kind: "CompoundAssign", loc: loc, name: op, text: "", ival: 0, fval: 0.0, items: [target, value] }
+}
+
+fn mkCall(callee: Node, args: [Node], loc: Loc) -> Node {
+let mut out = [callee];
+  let mut i = 0;
+  while i < len(args) { out = pushN(out, args[i]); i = i + 1; }
+  Node { kind: "Call", loc: loc, name: "", text: "", ival: len(args), fval: 0.0, items: out }
+}
+
+fn mkCallWithTypeArgs(callee: Node, args: [Node], typeArgs: [Node], loc: Loc) -> Node {
+let mut out = [callee];
+  let mut i = 0;
+  while i < len(args) { out = pushN(out, args[i]); i = i + 1; }
+  let ta = Node { kind: "TypeArgs", loc: loc, name: "", text: "", ival: len(typeArgs), fval: 0.0, items: typeArgs };
+  out = pushN(out, ta);
+  Node { kind: "Call", loc: loc, name: "", text: "", ival: len(args), fval: 0.0, items: out }
+}
+
+fn mkIndex(object: Node, index: Node, loc: Loc) -> Node {
+  Node { kind: "Index", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [object, index] }
+}
+
+fn mkField(object: Node, name: string, loc: Loc) -> Node {
+  Node { kind: "Field", loc: loc, name: name, text: "", ival: 0, fval: 0.0, items: [object] }
+}
+
+fn mkTupleField(object: Node, index: int, loc: Loc) -> Node {
+  Node { kind: "TupleField", loc: loc, name: "", text: "", ival: index, fval: 0.0, items: [object] }
+}
+
+fn mkMethodCall(object: Node, name: string, args: [Node], loc: Loc) -> Node {
+let mut out = [object];
+  let mut i = 0;
+  while i < len(args) { out = pushN(out, args[i]); i = i + 1; }
+  Node { kind: "MethodCall", loc: loc, name: name, text: "", ival: len(args), fval: 0.0, items: out }
+}
+
+fn mkTuple(elements: [Node], loc: Loc) -> Node {
+  Node { kind: "TupleExpr", loc: loc, name: "", text: "", ival: len(elements), fval: 0.0, items: elements }
+}
+
+fn mkArray(elements: [Node], loc: Loc) -> Node {
+  Node { kind: "ArrayExpr", loc: loc, name: "", text: "", ival: len(elements), fval: 0.0, items: elements }
+}
+
+fn mkMap(entries: [Node], loc: Loc) -> Node {
+  Node { kind: "MapExpr", loc: loc, name: "", text: "", ival: len(entries), fval: 0.0, items: entries }
+}
+
+fn mkMapEntry(key: Node, value: Node, loc: Loc) -> Node {
+  Node { kind: "MapEntry", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [key, value] }
+}
+
+fn mkStructExpr(name: string, fields: [Node], spread: Node, loc: Loc) -> Node {
+let mut out = [spread];
+  let mut i = 0;
+  while i < len(fields) { out = pushN(out, fields[i]); i = i + 1; }
+  Node { kind: "StructExpr", loc: loc, name: name, text: "", ival: len(fields), fval: 0.0, items: out }
+}
+
+fn mkStructExprField(name: string, value: Node, loc: Loc) -> Node {
+  Node { kind: "StructExprField", loc: loc, name: name, text: "", ival: 0, fval: 0.0, items: [value] }
+}
+
+fn mkEnumVariant(enumName: string, variant: string, args: [Node], loc: Loc) -> Node {
+  Node { kind: "EnumVariant", loc: loc, name: enumName, text: variant, ival: len(args), fval: 0.0, items: args }
+}
+
+fn mkLambda(params: Node, ret: Node, body: Node, loc: Loc) -> Node {
+  Node { kind: "Lambda", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [params, ret, body] }
+}
+
+fn mkIf(cond: Node, then: Node, els: Node, loc: Loc) -> Node {
+  Node { kind: "If", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [cond, then, els] }
+}
+
+fn mkMatch(scrutinee: Node, arms: [Node], loc: Loc) -> Node {
+let mut out = [scrutinee];
+  let mut i = 0;
+  while i < len(arms) { out = pushN(out, arms[i]); i = i + 1; }
+  Node { kind: "Match", loc: loc, name: "", text: "", ival: len(arms), fval: 0.0, items: out }
+}
+
+fn mkMatchArm(pattern: Node, guard: Node, body: Node, loc: Loc) -> Node {
+  Node { kind: "MatchArm", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [pattern, guard, body] }
+}
+
+fn mkBlock(stmts: [Node], trailing: Node, loc: Loc) -> Node {
+let mut out = [];
+  let mut i = 0;
+  while i < len(stmts) { out = pushN(out, stmts[i]); i = i + 1; }
+  let trailFlag = 1 - isNull(trailing);
+  out = pushN(out, trailing);
+  Node { kind: "Block", loc: loc, name: "", text: "", ival: trailFlag, fval: 0.0, items: out }
+}
+
+fn mkParen(expr: Node, loc: Loc) -> Node {
+  Node { kind: "Paren", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [expr] }
+}
+
+fn mkRange(start: Node, end: Node, inclusive: int, loc: Loc) -> Node {
+  Node { kind: "Range", loc: loc, name: "", text: "", ival: inclusive, fval: 0.0, items: [start, end] }
+}
+
+fn mkAs(expr: Node, typeN: Node, loc: Loc) -> Node {
+  Node { kind: "As", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [expr, typeN] }
+}
+
+fn mkErrorProp(expr: Node, loc: Loc) -> Node {
+  Node { kind: "ErrorProp", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [expr] }
+}
+
+fn mkSpread(expr: Node, loc: Loc) -> Node {
+  Node { kind: "Spread", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [expr] }
+}
+
+fn mkLet(name: string, typeN: Node, init: Node, loc: Loc) -> Node {
+  Node { kind: "Let", loc: loc, name: name, text: "", ival: 0, fval: 0.0, items: [typeN, init] }
+}
+
+fn mkMutLet(name: string, typeN: Node, init: Node, loc: Loc) -> Node {
+  Node { kind: "MutLet", loc: loc, name: name, text: "", ival: 0, fval: 0.0, items: [typeN, init] }
+}
+
+fn mkConst(name: string, typeN: Node, init: Node, loc: Loc) -> Node {
+  Node { kind: "Const", loc: loc, name: name, text: "", ival: 0, fval: 0.0, items: [typeN, init] }
+}
+
+fn mkExprStmt(expr: Node, loc: Loc) -> Node {
+  Node { kind: "ExprStmt", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [expr] }
+}
+
+fn mkFnDecl(name: string, generics: Node, params: Node, ret: Node, body: Node, exported: int, loc: Loc) -> Node {
+  Node { kind: "FnDecl", loc: loc, name: name, text: "", ival: exported, fval: 0.0, items: [generics, params, ret, body] }
+}
+
+fn mkEnumDecl(name: string, generics: Node, variants: [Node], loc: Loc) -> Node {
+let mut out = [generics];
+  let mut i = 0;
+  while i < len(variants) { out = pushN(out, variants[i]); i = i + 1; }
+  Node { kind: "EnumDecl", loc: loc, name: name, text: "", ival: len(variants), fval: 0.0, items: out }
+}
+
+fn mkEnumVariantDecl(name: string, vkind: int, types: [Node], fields: [Node], loc: Loc) -> Node {
+let mut out = [];
+  if vkind == 1 {
+    let mut i = 0;
+    while i < len(types) { out = pushN(out, types[i]); i = i + 1; }
+  };
+  if vkind == 2 {
+    let mut i = 0;
+    while i < len(fields) { out = pushN(out, fields[i]); i = i + 1; }
+  };
+  Node { kind: "EnumVariantDecl", loc: loc, name: name, text: "", ival: vkind, fval: 0.0, items: out }
+}
+
+fn mkStructDecl(name: string, generics: Node, fields: [Node], loc: Loc) -> Node {
+let mut out = [generics];
+  let mut i = 0;
+  while i < len(fields) { out = pushN(out, fields[i]); i = i + 1; }
+  Node { kind: "StructDecl", loc: loc, name: name, text: "", ival: len(fields), fval: 0.0, items: out }
+}
+
+fn mkStructField(name: string, typeN: Node, loc: Loc) -> Node {
+  Node { kind: "StructField", loc: loc, name: name, text: "", ival: 0, fval: 0.0, items: [typeN] }
+}
+
+fn mkTypeAlias(name: string, generics: Node, typeN: Node, loc: Loc) -> Node {
+  Node { kind: "TypeAlias", loc: loc, name: name, text: "", ival: 0, fval: 0.0, items: [generics, typeN] }
+}
+
+fn mkReturn(expr: Node, loc: Loc) -> Node {
+  Node { kind: "Return", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [expr] }
+}
+
+fn mkBreak(loc: Loc) -> Node { mkNode("Break", loc) }
+fn mkContinue(loc: Loc) -> Node { mkNode("Continue", loc) }
+
+fn mkWhile(cond: Node, body: Node, loc: Loc) -> Node {
+  Node { kind: "While", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [cond, body] }
+}
+
+fn mkForIn(varName: string, iterable: Node, body: Node, loc: Loc) -> Node {
+  Node { kind: "ForIn", loc: loc, name: varName, text: "", ival: 0, fval: 0.0, items: [iterable, body] }
+}
+
+fn mkImport(path: string, names: [Node], loc: Loc) -> Node {
+  Node { kind: "Import", loc: loc, name: path, text: "", ival: len(names), fval: 0.0, items: names }
+}
+
+fn mkPrint(expr: Node, loc: Loc) -> Node {
+  Node { kind: "Print", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [expr] }
+}
+
+fn mkAssignStmt(target: Node, value: Node, loc: Loc) -> Node {
+  Node { kind: "AssignStmt", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [target, value] }
+}
+
+fn mkParam(name: string, typeN: Node, loc: Loc) -> Node {
+  Node { kind: "Param", loc: loc, name: name, text: "", ival: 0, fval: 0.0, items: [typeN] }
+}
+
+fn mkTypeParam(name: string, constraint: string, loc: Loc) -> Node {
+  Node { kind: "TypeParam", loc: loc, name: name, text: constraint, ival: 0, fval: 0.0, items: [] }
+}
+
+fn mkParamsList(params: [Node]) -> Node {
+  Node { kind: "Params", loc: ZERO_LOC, name: "", text: "", ival: len(params), fval: 0.0, items: params }
+}
+
+fn mkGenericsList(typeParams: [Node]) -> Node {
+  Node { kind: "Generics", loc: ZERO_LOC, name: "", text: "", ival: len(typeParams), fval: 0.0, items: typeParams }
+}
+
+fn mkNamedType(name: string, loc: Loc) -> Node {
+  Node { kind: "NamedType", loc: loc, name: name, text: "", ival: 0, fval: 0.0, items: [] }
+}
+
+fn mkPrimitiveType(name: string, loc: Loc) -> Node {
+  Node { kind: "PrimitiveType", loc: loc, name: name, text: "", ival: 0, fval: 0.0, items: [] }
+}
+
+fn mkGenericType(name: string, args: [Node], loc: Loc) -> Node {
+  Node { kind: "GenericType", loc: loc, name: name, text: "", ival: len(args), fval: 0.0, items: args }
+}
+
+fn mkFuncType(params: [Node], ret: Node, loc: Loc) -> Node {
+let mut out = [ret];
+  let mut i = 0;
+  while i < len(params) { out = pushN(out, params[i]); i = i + 1; }
+  Node { kind: "FuncType", loc: loc, name: "", text: "", ival: len(params), fval: 0.0, items: out }
+}
+
+fn mkTupleType(types: [Node], loc: Loc) -> Node {
+  Node { kind: "TupleType", loc: loc, name: "", text: "", ival: len(types), fval: 0.0, items: types }
+}
+
+fn mkArrayType(elem: Node, loc: Loc) -> Node {
+  Node { kind: "ArrayType", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [elem] }
+}
+
+fn mkMapType(key: Node, value: Node, loc: Loc) -> Node {
+  Node { kind: "MapType", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [key, value] }
+}
+
+fn mkOptionType(inner: Node, loc: Loc) -> Node {
+  Node { kind: "OptionType", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [inner] }
+}
+
+fn mkResultType(ok: Node, err: Node, loc: Loc) -> Node {
+  Node { kind: "ResultType", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [ok, err] }
+}
+
+fn mkUnitType(loc: Loc) -> Node { mkNode("UnitType", loc) }
+
+fn mkWildcardPat(loc: Loc) -> Node { mkNode("WildcardPat", loc) }
+
+fn mkBindPat(name: string, isMut: int, typeN: Node, loc: Loc) -> Node {
+  Node { kind: "BindPat", loc: loc, name: name, text: "", ival: isMut, fval: 0.0, items: [typeN] }
+}
+
+fn mkLitPat(value: Node, loc: Loc) -> Node {
+  Node { kind: "LitPat", loc: loc, name: "", text: "", ival: 0, fval: 0.0, items: [value] }
+}
+
+fn mkTuplePat(elements: [Node], loc: Loc) -> Node {
+  Node { kind: "TuplePat", loc: loc, name: "", text: "", ival: len(elements), fval: 0.0, items: elements }
+}
+
+fn mkArrayPat(elements: [Node], rest: int, loc: Loc) -> Node {
+  Node { kind: "ArrayPat", loc: loc, name: "", text: "", ival: rest, fval: 0.0, items: elements }
+}
+
+fn mkStructPat(name: string, fields: [Node], hasRest: int, loc: Loc) -> Node {
+  Node { kind: "StructPat", loc: loc, name: name, text: "", ival: hasRest, fval: 0.0, items: fields }
+}
+
+fn mkStructPatField(name: string, pattern: Node, loc: Loc) -> Node {
+  Node { kind: "StructPatField", loc: loc, name: name, text: "", ival: 0, fval: 0.0, items: [pattern] }
+}
+
+fn mkEnumPat(enumName: string, variant: string, subpatterns: [Node], loc: Loc) -> Node {
+  Node { kind: "EnumPat", loc: loc, name: enumName, text: variant, ival: len(subpatterns), fval: 0.0, items: subpatterns }
+}
+
+fn mkOrPat(patterns: [Node], loc: Loc) -> Node {
+  Node { kind: "OrPat", loc: loc, name: "", text: "", ival: len(patterns), fval: 0.0, items: patterns }
+}
+
+fn mkRestPat(loc: Loc) -> Node { mkNode("RestPat", loc) }
+
+fn mkProgram(body: [Node], loc: Loc) -> Node {
+  Node { kind: "Program", loc: loc, name: "", text: "", ival: len(body), fval: 0.0, items: body }
+}
+
+// === Token accessors ===
+fn newParser(tokens: [Token]) -> Parser {
+  Parser { tokens: tokens, pos: 0, errors: [] }
+}
+
+fn tokLoc(t: Token) -> Loc {
+  Loc { line: t.line, col: t.col, offset: t.offset }
+}
+
+fn peekTok(p: Parser) -> Token {
+  if p.pos < len(p.tokens) { p.tokens[p.pos] } else { EOF_TOK }
+}
+
+fn peekN(p: Parser, n: int) -> Token {
+  let i = p.pos + n;
+  if i < len(p.tokens) { p.tokens[i] } else { EOF_TOK }
+}
+
+fn advanceTok(p: Parser) -> Token {
+  let t = peekTok(p);
+  p.pos = p.pos + 1;
+  t
+}
+
+fn atEnd(p: Parser) -> int {
+  let t = peekTok(p);
+  if t.kind == "Eof" { 1 } else { 0 }
+}
+
+fn isPunctTok(t: Token, v: string) -> int {
+  if t.kind == "Punct" && t.text == v { 1 } else { 0 }
+}
+
+fn isKeywordTok(t: Token, v: string) -> int {
+  if t.kind == "Keyword" && t.text == v { 1 } else { 0 }
+}
+
+fn isPunct(p: Parser, v: string) -> int { isPunctTok(peekTok(p), v) }
+fn isPunctAhead(p: Parser, v: string, n: int) -> int { isPunctTok(peekN(p, n), v) }
+fn isKw(p: Parser, v: string) -> int { isKeywordTok(peekTok(p), v) }
+
+fn eatPunct(p: Parser, v: string) -> int {
+  if isPunct(p, v) == 1 { advanceTok(p); 1 } else { 0 }
+}
+
+fn eatKeyword(p: Parser, v: string) -> int {
+  if isKw(p, v) == 1 { advanceTok(p); 1 } else { 0 }
+}
+
+fn errHere(p: Parser, msg: string) -> int {
+  let t = peekTok(p);
+  let l = tokLoc(t);
+  push(p.errors, ParseError { line: l.line, col: l.col, message: msg });
+  1
+}
+
+fn locStr(loc: Loc) -> string {
+  str(loc.line) + ":" + str(loc.col)
+}
+
+fn locFrom(p: Parser, start: Loc) -> Loc {
+  let lastPos = p.pos - 1;
+  if lastPos >= 0 && lastPos < len(p.tokens) {
+    let t = p.tokens[lastPos];
+    Loc { line: t.line, col: t.col, offset: t.offset };
+  } else {
+    start
+  }
+}
+
+fn expectIdent(p: Parser) -> string {
+  let t = peekTok(p);
+  if t.kind == "Ident" {
+    advanceTok(p);
+    t.text
+  } else {
+    errHere(p, "expected identifier, found '" + t.text + "' at " + locStr(tokLoc(t)));
+    ""
+  }
+}
+
+fn expectPunct(p: Parser, v: string) -> int {
+  if isPunct(p, v) == 1 {
+    advanceTok(p);
+    1
+  } else {
+    let t = peekTok(p);
+    errHere(p, "expected '" + v + "', found '" + t.text + "' at " + locStr(tokLoc(t)));
+    0
+  }
+}
+
+fn recover(p: Parser) -> int {
+  let mut stop = 0;
+  while stop == 0 && atEnd(p) == 0 {
+    let t = advanceTok(p);
+    if t.kind == "Punct" && (t.text == ";" || t.text == "}") {
+      stop = 1;
+    }
+  }
+  0
+}
+
+fn truncateErrors(arr: [ParseError], n: int) -> [ParseError] {
+  let out = [];
+  let mut i = 0;
+  while i < n && i < len(arr) { push(out, arr[i]); i = i + 1; }
+  out
+}
+
+// === Public API ===
+pub fn parse(tokens: [Token]) -> ParseResult {
+  let p = newParser(tokens);
+  let prog = parseProgram(p);
+  ParseResult { program: prog, errors: p.errors }
+}
+
+pub fn parseProgramNode(tokens: [Token]) -> Node {
+  let r = parse(tokens);
+  r.program
+}
+
+pub fn parseErrorCount(tokens: [Token]) -> int {
+  let r = parse(tokens);
+  len(r.errors)
+}
+
+// === parseProgram ===
+fn parseProgram(p: Parser) -> Node {
+  let body = [];
+  let start = tokLoc(peekTok(p));
+  while atEnd(p) == 0 {
+    let s = parseStmt(p);
+    if isNull(s) == 0 {
+      push(body, s);
+    }
+  }
+  mkProgram(body, start)
+}
+
+// === Statement dispatch ===
+fn parseStmt(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  if isKw(p, "let") == 1 { return parseLet(p); };
+  if isKw(p, "const") == 1 { return parseConst(p); };
+  if isKw(p, "fn") == 1 {
+    if peekN(p, 1).kind == "Ident" {
+      return parseFnDecl(p);
+    };
+  };
+  if isKw(p, "enum") == 1 { return parseEnum(p); };
+  if isKw(p, "struct") == 1 { return parseStruct(p); };
+  if isKw(p, "type") == 1 { return parseTypeAlias(p); };
+  if isKw(p, "return") == 1 { return parseReturn(p); };
+  if isKw(p, "break") == 1 {
+    advanceTok(p);
+    expectPunct(p, ";");
+    return mkBreak(start);
+  };
+  if isKw(p, "continue") == 1 {
+    advanceTok(p);
+    expectPunct(p, ";");
+    return mkContinue(start);
+  };
+  if isKw(p, "while") == 1 { return parseWhile(p); };
+  if isKw(p, "for") == 1 { return parseFor(p); };
+  if isKw(p, "import") == 1 { return parseImport(p); };
+  if isKw(p, "pub") == 1 { return parsePub(p); };
+  if isKw(p, "print") == 1 { return parsePrintStmt(p); };
+  parseExprOrAssignStmt(p)
+}
+
+// === let ===
+fn parseLet(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  let isMut = eatKeyword(p, "mut");
+  let name = expectIdent(p);
+  let mut typeN = nullNode();
+  if eatPunct(p, ":") == 1 {
+    typeN = parseType(p);
+  };
+  expectPunct(p, "=");
+  let init = parseExpr(p, 1);
+  expectPunct(p, ";");
+  let loc = locFrom(p, start);
+  if isMut == 1 {
+    mkMutLet(name, typeN, init, loc)
+  } else {
+    mkLet(name, typeN, init, loc)
+  }
+}
+
+fn parseConst(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  let name = expectIdent(p);
+  let mut typeN = nullNode();
+  if eatPunct(p, ":") == 1 {
+    typeN = parseType(p);
+  };
+  expectPunct(p, "=");
+  let init = parseExpr(p, 1);
+  expectPunct(p, ";");
+  mkConst(name, typeN, init, locFrom(p, start))
+}
+
+fn parseFnDecl(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  let name = expectIdent(p);
+  let generics = parseTypeParams(p);
+  let params = parseParams(p);
+  let mut ret = nullNode();
+  if eatPunct(p, "->") == 1 {
+    ret = parseType(p);
+  };
+  let body = parseBlock(p);
+  mkFnDecl(name, generics, params, ret, body, 0, locFrom(p, start))
+}
+
+fn parseEnum(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  let name = expectIdent(p);
+  let generics = parseTypeParams(p);
+  expectPunct(p, "{");
+  let variants = [];
+  while isPunct(p, "}") == 0 && atEnd(p) == 0 {
+    let vStart = tokLoc(peekTok(p));
+    let vName = expectIdent(p);
+    if vName == "" {
+      recover(p);
+    } else {
+      let vKind = enumVariantKind(p);
+      if vKind == 1 {
+        advanceTok(p);
+        let types = [];
+        if isPunct(p, ")") == 0 {
+          let mut stop = 0;
+          while stop == 0 {
+            if isPunct(p, ")") == 1 { stop = 1; };
+            if stop == 0 {
+              push(types, parseType(p));
+              if eatPunct(p, ",") == 0 { stop = 1; }
+            }
+          }
+        };
+        expectPunct(p, ")");
+        push(variants, mkEnumVariantDecl(vName, 1, types, [], locFrom(p, vStart)));
+      } else {
+        if vKind == 2 {
+          advanceTok(p);
+          let fields = [];
+          if isPunct(p, "}") == 0 {
+            let mut stop = 0;
+            while stop == 0 {
+              if isPunct(p, "}") == 1 { stop = 1; };
+              if stop == 0 {
+                let fname = expectIdent(p);
+                expectPunct(p, ":");
+                let ftype = parseType(p);
+                if fname != "" {
+                  push(fields, mkStructField(fname, ftype, locFrom(p, vStart)));
+                };
+                if eatPunct(p, ",") == 0 { stop = 1; }
+              }
+            }
+          };
+          expectPunct(p, "}");
+          push(variants, mkEnumVariantDecl(vName, 2, [], fields, locFrom(p, vStart)));
+        } else {
+          push(variants, mkEnumVariantDecl(vName, 0, [], [], locFrom(p, vStart)));
+        }
+      };
+    };
+    eatPunct(p, ",");
+  }
+  expectPunct(p, "}");
+  mkEnumDecl(name, generics, variants, locFrom(p, start))
+}
+
+// Returns 0 for unit, 1 for tuple (peek `(`), 2 for struct (peek `{`)
+fn enumVariantKind(p: Parser) -> int {
+  if isPunct(p, "(") == 1 { 1 } else {
+    if isPunct(p, "{") == 1 { 2 } else { 0 }
+  }
+}
+
+fn parseStruct(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  let name = expectIdent(p);
+  let generics = parseTypeParams(p);
+  expectPunct(p, "{");
+  let fields = [];
+  if isPunct(p, "}") == 0 {
+    let mut stop = 0;
+    while stop == 0 {
+      if isPunct(p, "}") == 1 { stop = 1; };
+      if stop == 0 {
+        let fname = expectIdent(p);
+        expectPunct(p, ":");
+        let ftype = parseType(p);
+        if fname != "" {
+          push(fields, mkStructField(fname, ftype, locFrom(p, start)));
+        };
+        if eatPunct(p, ",") == 0 { stop = 1; }
+      }
+    }
+  };
+  expectPunct(p, "}");
+  mkStructDecl(name, generics, fields, locFrom(p, start))
+}
+
+fn parseTypeAlias(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  let name = expectIdent(p);
+  let generics = parseTypeParams(p);
+  expectPunct(p, "=");
+  let typeN = parseType(p);
+  expectPunct(p, ";");
+  mkTypeAlias(name, generics, typeN, locFrom(p, start))
+}
+
+fn parseReturn(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  let mut expr = nullNode();
+  if isPunct(p, ";") == 0 && isPunct(p, "}") == 0 && atEnd(p) == 0 {
+    expr = parseExpr(p, 1);
+  };
+  expectPunct(p, ";");
+  mkReturn(expr, locFrom(p, start))
+}
+
+fn parseWhile(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  let cond = parseExpr(p, 0);
+  let body = parseBlock(p);
+  mkWhile(cond, body, locFrom(p, start))
+}
+
+fn parseFor(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  let varName = expectIdent(p);
+  if eatKeyword(p, "in") == 0 {
+    let t = peekTok(p);
+    errHere(p, "expected 'in', found '" + t.text + "' at " + locStr(tokLoc(t)));
+  };
+  let iterable = parseExpr(p, 0);
+  let body = parseBlock(p);
+  mkForIn(varName, iterable, body, locFrom(p, start))
+}
+
+fn parseImport(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  let mut path = "";
+  let names = [];
+  // RFC-003 form: `import { names } from "path";` — names first, then `from`,
+  // then path. `from` is not a keyword (it's an Ident), so we check the
+  // token kind + text explicitly.
+  if eatPunct(p, "{") == 1 {
+    let mut stop = 0;
+    while stop == 0 {
+      if isPunct(p, "}") == 1 { stop = 1; };
+      if stop == 0 {
+        let n = expectIdent(p);
+        if n != "" {
+          push(names, mkIdent(n, ZERO_LOC));
+        };
+        if eatPunct(p, ",") == 0 { stop = 1; }
+      }
+    }
+    expectPunct(p, "}");
+    let ft = peekTok(p);
+    if ft.kind == "Ident" && ft.text == "from" {
+      advanceTok(p);
+      let pt = peekTok(p);
+      if pt.kind == "String" {
+        path = pt.text;
+        advanceTok(p);
+      } else {
+        errHere(p, "expected string after from, found '" + pt.text + "'");
+      };
+    } else {
+      errHere(p, "expected 'from' after import names, found '" + ft.text + "'");
+    };
+  } else {
+    // Native form: `import "path" { names };` — path first, then optional names.
+    let t = peekTok(p);
+    if t.kind == "String" {
+      path = t.text;
+      advanceTok(p);
+    } else {
+      errHere(p, "expected string after import, found '" + t.text + "'");
+    };
+    if eatPunct(p, "{") == 1 {
+      let mut stop = 0;
+      while stop == 0 {
+        if isPunct(p, "}") == 1 { stop = 1; };
+        if stop == 0 {
+          let n = expectIdent(p);
+          if n != "" {
+            push(names, mkIdent(n, ZERO_LOC));
+          };
+          if eatPunct(p, ",") == 0 { stop = 1; }
+        }
+      }
+      expectPunct(p, "}");
+    };
+  };
+  eatPunct(p, ";");
+  mkImport(path, names, locFrom(p, start))
+}
+
+fn parsePub(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  if isKw(p, "fn") == 1 {
+    let d = parseFnDecl(p);
+    if d.kind == "FnDecl" {
+      d.ival = 1;
+    };
+    d
+  } else {
+    errHere(p, "expected 'fn' after 'pub', found '" + peekTok(p).text + "'");
+    recover(p);
+    mkExprStmt(mkUnit(start), start)
+  }
+}
+
+fn parsePrintStmt(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  expectPunct(p, "(");
+  let expr = parseExpr(p, 1);
+  expectPunct(p, ")");
+  expectPunct(p, ";");
+  mkPrint(expr, locFrom(p, start))
+}
+
+fn parseExprOrAssignStmt(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  let e = parseExpr(p, 1);
+  if isPunct(p, "=") == 1 {
+    advanceTok(p);
+    let value = parseExpr(p, 1);
+    expectPunct(p, ";");
+    return mkAssignStmt(e, value, locFrom(p, start));
+  };
+  let cur = peekTok(p);
+  let isCompound = isCompoundAssignTok(cur);
+  if isCompound == 1 {
+    let opChar = strSlice(cur.text, 0, 1);
+    advanceTok(p);
+    let value = parseExpr(p, 1);
+    expectPunct(p, ";");
+    return mkAssignStmt(e, mkCompoundAssign(opChar, e, value, locFrom(p, start)), locFrom(p, start));
+  };
+  expectPunct(p, ";");
+  mkExprStmt(e, locFrom(p, start))
+}
+
+fn isCompoundAssignTok(t: Token) -> int {
+  if t.kind != "Punct" { return 0; };
+  if t.text == "+=" { return 1; };
+  if t.text == "-=" { return 1; };
+  if t.text == "*=" { return 1; };
+  if t.text == "/=" { return 1; };
+  if t.text == "%=" { return 1; };
+  0
+}
+
+// === Type parameters and parameters ===
+fn parseTypeParams(p: Parser) -> Node {
+  let out = [];
+  if isPunct(p, "<") == 0 {
+    return mkGenericsList(out);
+  };
+  advanceTok(p);
+  let mut stop = 0;
+  while stop == 0 {
+    if isPunct(p, ">") == 1 { stop = 1; };
+    if stop == 0 {
+      let nameTok = advanceTok(p);
+      let mut constraint = "";
+      if eatPunct(p, ":") == 1 {
+        constraint = advanceTok(p).text;
+      };
+      push(out, mkTypeParam(nameTok.text, constraint, tokLoc(nameTok)));
+      if eatPunct(p, ",") == 0 { stop = 1; }
+    }
+  }
+  expectPunct(p, ">");
+  mkGenericsList(out)
+}
+
+fn parseParams(p: Parser) -> Node {
+  let out = [];
+  expectPunct(p, "(");
+  if isPunct(p, ")") == 0 {
+    let mut stop = 0;
+    while stop == 0 {
+      if isPunct(p, ")") == 1 { stop = 1; };
+      if stop == 0 {
+        let start = tokLoc(peekTok(p));
+        let nameTok = advanceTok(p);
+        if nameTok.kind != "Ident" && isKeywordTok(nameTok, "self") == 0 {
+          errHere(p, "expected parameter name, found '" + nameTok.text + "' at " + locStr(tokLoc(nameTok)));
+        };
+        let mut typeN = nullNode();
+        if eatPunct(p, ":") == 1 {
+          typeN = parseType(p);
+        };
+        push(out, mkParam(nameTok.text, typeN, start));
+        if eatPunct(p, ",") == 0 { stop = 1; }
+      }
+    }
+  };
+  expectPunct(p, ")");
+  mkParamsList(out)
+}
+
+// === Types ===
+fn parseType(p: Parser) -> Node {
+  parseFuncType(p)
+}
+
+fn parseFuncType(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  if isKw(p, "fn") == 1 {
+    advanceTok(p);
+    expectPunct(p, "(");
+    let params = [];
+    if isPunct(p, ")") == 0 {
+      let mut stop = 0;
+      while stop == 0 {
+        if isPunct(p, ")") == 1 { stop = 1; };
+        if stop == 0 {
+          push(params, parseType(p));
+          if eatPunct(p, ",") == 0 { stop = 1; }
+        }
+      }
+    };
+    expectPunct(p, ")");
+    expectPunct(p, "->");
+    let ret = parseType(p);
+    return mkFuncType(params, ret, locFrom(p, start));
+  };
+  parsePrimaryType(p)
+}
+
+fn isPrimitiveTypeName(name: string) -> int {
+  if name == "int" { return 1; };
+  if name == "float" { return 1; };
+  if name == "bool" { return 1; };
+  if name == "string" { return 1; };
+  if name == "char" { return 1; };
+  0
+}
+
+fn parsePrimaryType(p: Parser) -> Node {
+  let t = peekTok(p);
+  let start = tokLoc(t);
+  if isPunct(p, "(") == 1 {
+    advanceTok(p);
+    if eatPunct(p, ")") == 1 {
+      return mkUnitType(locFrom(p, start));
+    };
+    let types = [];
+    let mut stop = 0;
+    while stop == 0 {
+      if isPunct(p, ")") == 1 { stop = 1; };
+      if stop == 0 {
+        push(types, parseType(p));
+        if eatPunct(p, ",") == 0 { stop = 1; }
+      }
+    }
+    expectPunct(p, ")");
+    return mkTupleType(types, locFrom(p, start));
+  };
+  if isPunct(p, "[") == 1 {
+    advanceTok(p);
+    let elem = parseType(p);
+    expectPunct(p, "]");
+    return mkArrayType(elem, locFrom(p, start));
+  };
+  if t.kind == "Ident" && t.text == "map" {
+    advanceTok(p);
+    expectPunct(p, "[");
+    let key = parseType(p);
+    expectPunct(p, "]");
+    let value = parseType(p);
+    return mkMapType(key, value, locFrom(p, start));
+  };
+  if t.kind == "Ident" && t.text == "option" {
+    advanceTok(p);
+    expectPunct(p, "<");
+    let inner = parseType(p);
+    expectPunct(p, ">");
+    return mkOptionType(inner, locFrom(p, start));
+  };
+  if t.kind == "Ident" && t.text == "result" {
+    advanceTok(p);
+    expectPunct(p, "<");
+    let ok = parseType(p);
+    expectPunct(p, ",");
+    let err = parseType(p);
+    expectPunct(p, ">");
+    return mkResultType(ok, err, locFrom(p, start));
+  };
+  if t.kind == "Ident" || t.kind == "Keyword" {
+    let name = advanceTok(p).text;
+    if name == "unit" {
+      return mkUnitType(locFrom(p, start));
+    };
+    if isPrimitiveTypeName(name) == 1 {
+      return mkPrimitiveType(name, locFrom(p, start));
+    };
+    if isPunct(p, "<") == 1 {
+      advanceTok(p);
+      let args = [];
+      let mut stop = 0;
+      while stop == 0 {
+        if isPunct(p, ">") == 1 { stop = 1; };
+        if stop == 0 {
+          push(args, parseType(p));
+          if eatPunct(p, ",") == 0 { stop = 1; }
+        }
+      }
+      expectPunct(p, ">");
+      return mkGenericType(name, args, locFrom(p, start));
+    };
+    return mkNamedType(name, locFrom(p, start));
+  };
+  errHere(p, "expected type, found '" + t.text + "' at " + locStr(tokLoc(t)));
+  mkUnitType(locFrom(p, start))
+}
+
+// === Patterns ===
+fn parsePattern(p: Parser) -> Node {
+  let p0 = parsePatternAtom(p);
+  if isPunct(p, "|") == 1 {
+    let patterns = [p0];
+    while eatPunct(p, "|") == 1 {
+      push(patterns, parsePatternAtom(p));
+    }
+    return mkOrPat(patterns, locFrom(p, p0.loc));
+  };
+  p0
+}
+
+fn parsePatternAtom(p: Parser) -> Node {
+  let t = peekTok(p);
+  let start = tokLoc(t);
+  if isPunct(p, "_") == 1 {
+    advanceTok(p);
+    return mkWildcardPat(locFrom(p, start));
+  };
+  if t.kind == "Ident" && t.text == "_" {
+    advanceTok(p);
+    return mkWildcardPat(locFrom(p, start));
+  };
+  if isPunct(p, "..") == 1 {
+    advanceTok(p);
+    return mkRestPat(locFrom(p, start));
+  };
+  if isPunct(p, "(") == 1 {
+    advanceTok(p);
+    let elements = [];
+    if isPunct(p, ")") == 0 {
+      let mut stop = 0;
+      while stop == 0 {
+        if isPunct(p, ")") == 1 { stop = 1; };
+        if stop == 0 {
+          push(elements, parsePattern(p));
+          if eatPunct(p, ",") == 0 { stop = 1; }
+        }
+      }
+    };
+    expectPunct(p, ")");
+    return mkTuplePat(elements, locFrom(p, start));
+  };
+  if isPunct(p, "[") == 1 {
+    advanceTok(p);
+    let elements = [];
+    let mut rest = -1;
+    if isPunct(p, "]") == 0 {
+      let mut i = 0;
+      let mut stop = 0;
+      while stop == 0 {
+        if isPunct(p, "]") == 1 { stop = 1; };
+        if stop == 0 {
+          if isPunct(p, "..") == 1 {
+            advanceTok(p);
+            rest = i;
+          } else {
+            push(elements, parsePattern(p));
+            i = i + 1;
+          };
+          if eatPunct(p, ",") == 0 { stop = 1; }
+        }
+      }
+    };
+    expectPunct(p, "]");
+    return mkArrayPat(elements, rest, locFrom(p, start));
+  };
+  if isKw(p, "mut") == 1 {
+    advanceTok(p);
+    let name = expectIdent(p);
+    let mut typeN = nullNode();
+    if eatPunct(p, ":") == 1 {
+      typeN = parseType(p);
+    };
+    return mkBindPat(name, 1, typeN, locFrom(p, start));
+  };
+  if t.kind == "Ident" || t.kind == "Keyword" {
+    let name = advanceTok(p).text;
+    if isPunct(p, "::") == 1 {
+      advanceTok(p);
+      let variant = advanceTok(p).text;
+      let subpatterns = [];
+      if eatPunct(p, "(") == 1 {
+        if isPunct(p, ")") == 0 {
+          let mut stop = 0;
+          while stop == 0 {
+            if isPunct(p, ")") == 1 { stop = 1; };
+            if stop == 0 {
+              push(subpatterns, parsePattern(p));
+              if eatPunct(p, ",") == 0 { stop = 1; }
+            }
+          }
+        };
+        expectPunct(p, ")");
+      };
+      return mkEnumPat(name, variant, subpatterns, locFrom(p, start));
+    };
+    if isPunct(p, "{") == 1 {
+      advanceTok(p);
+      let fields = [];
+      let mut hasRest = 0;
+      if isPunct(p, "}") == 0 {
+        let mut stop = 0;
+        while stop == 0 {
+          if isPunct(p, "}") == 1 { stop = 1; };
+          if stop == 0 {
+            if isPunct(p, "..") == 1 {
+              advanceTok(p);
+              hasRest = 1;
+              stop = 1;
+            } else {
+              let fname = expectIdent(p);
+              if eatPunct(p, ":") == 1 {
+                push(fields, mkStructPatField(fname, parsePattern(p), locFrom(p, start)));
+              } else {
+                if fname != "" {
+                  push(fields, mkStructPatField(fname, mkBindPat(fname, 0, nullNode(), locFrom(p, start)), locFrom(p, start)));
+                } else {
+                  push(fields, mkStructPatField(fname, mkWildcardPat(locFrom(p, start)), locFrom(p, start)));
+                };
+              };
+              if eatPunct(p, ",") == 0 { stop = 1; }
+            }
+          }
+        }
+      };
+      expectPunct(p, "}");
+      return mkStructPat(name, fields, hasRest, locFrom(p, start));
+    };
+    let mut typeN = nullNode();
+    if eatPunct(p, ":") == 1 {
+      typeN = parseType(p);
+    };
+    return mkBindPat(name, 0, typeN, locFrom(p, start));
+  };
+  if t.kind == "Int" || t.kind == "Float" || t.kind == "Hex" || t.kind == "Binary" || t.kind == "Octal" || t.kind == "Char" || t.kind == "String" {
+    let e = parseAtom(p, 1);
+    return mkLitPat(e, locFrom(p, start));
+  };
+  if isKw(p, "true") == 1 || isKw(p, "false") == 1 {
+    let e = parseAtom(p, 1);
+    return mkLitPat(e, locFrom(p, start));
+  };
+  if isPunct(p, "-") == 1 {
+    let e = parseExpr(p, 1);
+    return mkLitPat(e, locFrom(p, start));
+  };
+  errHere(p, "expected pattern, found '" + t.text + "' at " + locStr(tokLoc(t)));
+  mkWildcardPat(locFrom(p, start))
+}
+
+// === Expression parser (Pratt) ===
+fn binPrec(op: string) -> int {
+  if op == "||" { return 1; };
+  if op == "&&" { return 2; };
+  if op == "==" { return 3; };
+  if op == "!=" { return 3; };
+  if op == "<" { return 3; };
+  if op == "<=" { return 3; };
+  if op == ">" { return 3; };
+  if op == ">=" { return 3; };
+  if op == "|" { return 4; };
+  if op == "^" { return 4; };
+  if op == "&" { return 4; };
+  if op == "<<" { return 4; };
+  if op == ">>" { return 4; };
+  if op == "+" { return 5; };
+  if op == "-" { return 5; };
+  if op == "*" { return 6; };
+  if op == "/" { return 6; };
+  if op == "%" { return 6; };
+  0
+}
+
+let RANGE_PREC = 4;
+let AS_PREC = 7;
+
+fn parseExpr(p: Parser, allowStruct: int) -> Node {
+  parseBinary(p, 0, allowStruct)
+}
+
+fn parseBinary(p: Parser, minPrec: int, allowStruct: int) -> Node {
+  let left = parseUnary(p, allowStruct);
+  let mut cur = left;
+  let mut keepGoing = 1;
+  while keepGoing == 1 {
+    let t = peekTok(p);
+    if t.kind == "Punct" {
+      let prec = binPrec(t.text);
+      if prec >= minPrec && prec > 0 {
+        let op = advanceTok(p).text;
+        let right = parseBinary(p, prec + 1, allowStruct);
+        cur = mkBinary(cur, op, right, locFrom(p, cur.loc));
+        cur = applyPostfix(p, cur, allowStruct);
+      } else {
+        if (t.text == ".." || t.text == "..=") && RANGE_PREC >= minPrec {
+          let op = advanceTok(p).text;
+          let right = parseBinary(p, RANGE_PREC + 1, allowStruct);
+          let inc = if op == "..=" { 1 } else { 0 };
+          cur = mkRange(cur, right, inc, locFrom(p, cur.loc));
+        } else {
+          keepGoing = 0;
+        };
+      };
+    } else {
+      if t.kind == "Keyword" && t.text == "as" && AS_PREC >= minPrec {
+        advanceTok(p);
+        let typeN = parseType(p);
+        cur = mkAs(cur, typeN, locFrom(p, cur.loc));
+        cur = applyPostfix(p, cur, allowStruct);
+      } else {
+        if t.kind == "Keyword" && t.text == "or" && 0 >= minPrec {
+          advanceTok(p);
+          let right = parseBinary(p, 1, allowStruct);
+          cur = mkBinary(cur, "or", right, locFrom(p, cur.loc));
+        } else {
+          keepGoing = 0;
+        }
+      }
+    }
+  }
+  cur
+}
+
+fn parseUnary(p: Parser, allowStruct: int) -> Node {
+  let t = peekTok(p);
+  if t.kind == "Punct" && (t.text == "!" || t.text == "-" || t.text == "~") {
+    let op = advanceTok(p).text;
+    let operand = parseUnary(p, allowStruct);
+    return mkUnary(op, operand, locFrom(p, tokLoc(t)));
+  };
+  parsePostfix(p, nullNode(), allowStruct)
+}
+
+fn applyPostfix(p: Parser, e: Node, allowStruct: int) -> Node {
+  parsePostfix(p, e, allowStruct)
+}
+
+fn parsePostfix(p: Parser, initial: Node, allowStruct: int) -> Node {
+  let mut e = initial;
+  if isNull(e) == 1 {
+    e = parseAtom(p, allowStruct);
+  };
+  let mut keepGoing = 1;
+  while keepGoing == 1 {
+    let t = peekTok(p);
+    let action = postfixAction(p, t, e, allowStruct);
+    if action.kind == "stop" {
+      keepGoing = 0;
+    } else {
+      e = action.node;
+    }
+  }
+  e
+}
+
+// Helper struct for postfix action decision
+struct PostfixAction { kind: string, node: Node }
+
+fn postfixAction(p: Parser, t: Token, e: Node, allowStruct: int) -> PostfixAction {
+  let stop = PostfixAction { kind: "stop", node: e };
+  if t.kind == "Punct" && t.text == "(" {
+    let start = e.loc;
+    advanceTok(p);
+    let args = [];
+    if isPunct(p, ")") == 0 {
+      let mut s = 0;
+      while s == 0 {
+        if isPunct(p, ")") == 1 { s = 1; };
+        if s == 0 {
+          push(args, parseExpr(p, 1));
+          if eatPunct(p, ",") == 0 { s = 1; }
+        }
+      }
+    };
+    expectPunct(p, ")");
+    return PostfixAction { kind: "ok", node: mkCall(e, args, locFrom(p, start)) };
+  };
+  if t.kind == "Punct" && t.text == "[" {
+    let start = e.loc;
+    advanceTok(p);
+    let index = parseExpr(p, 1);
+    expectPunct(p, "]");
+    return PostfixAction { kind: "ok", node: mkIndex(e, index, locFrom(p, start)) };
+  };
+  if t.kind == "Punct" && t.text == "." {
+    let start = e.loc;
+    advanceTok(p);
+    let next = peekTok(p);
+    if next.kind == "Int" {
+      advanceTok(p);
+      return PostfixAction { kind: "ok", node: mkTupleField(e, int(next.text), locFrom(p, start)) };
+    };
+    if next.kind == "Ident" || next.kind == "Keyword" {
+      advanceTok(p);
+      let name = next.text;
+      if isPunct(p, "(") == 1 {
+        advanceTok(p);
+        let args = [];
+        if isPunct(p, ")") == 0 {
+          let mut s = 0;
+          while s == 0 {
+            if isPunct(p, ")") == 1 { s = 1; };
+            if s == 0 {
+              push(args, parseExpr(p, 1));
+              if eatPunct(p, ",") == 0 { s = 1; }
+            }
+          }
+        };
+        expectPunct(p, ")");
+        return PostfixAction { kind: "ok", node: mkMethodCall(e, name, args, locFrom(p, start)) };
+      };
+      return PostfixAction { kind: "ok", node: mkField(e, name, locFrom(p, start)) };
+    };
+    errHere(p, "expected field name, found '" + next.text + "' at " + locStr(tokLoc(next)));
+    return stop;
+  };
+  if t.kind == "Punct" && t.text == "?" {
+    let start = e.loc;
+    advanceTok(p);
+    return PostfixAction { kind: "ok", node: mkErrorProp(e, locFrom(p, start)) };
+  };
+  if allowStruct == 1 && t.kind == "Punct" && t.text == "{" && e.kind == "Ident" {
+    let save = p.pos;
+    let start = e.loc;
+    advanceTok(p);
+    if isPunct(p, "}") == 1 {
+      advanceTok(p);
+      return PostfixAction { kind: "ok", node: mkStructExpr(e.name, [], nullNode(), locFrom(p, e.loc)) };
+    };
+    if peekTok(p).kind == "Ident" && isPunctAhead(p, ":", 1) == 1 {
+      let fields = [];
+      let mut s = 0;
+      while s == 0 {
+        if isPunct(p, "}") == 1 { s = 1; };
+        if s == 0 {
+          if isPunct(p, "..") == 1 { s = 1; };
+          if s == 0 {
+            let fname = advanceTok(p).text;
+            expectPunct(p, ":");
+            let value = parseExpr(p, 0);
+            push(fields, mkStructExprField(fname, value, locFrom(p, start)));
+            if eatPunct(p, ",") == 0 { s = 1; }
+          }
+        }
+      }
+      let mut spread = nullNode();
+      if isPunct(p, "..") == 1 {
+        advanceTok(p);
+        spread = parseExpr(p, 0);
+        eatPunct(p, ",");
+      };
+      expectPunct(p, "}");
+      return PostfixAction { kind: "ok", node: mkStructExpr(e.name, fields, spread, locFrom(p, e.loc)) };
+    };
+    p.pos = save;
+    return stop;
+  };
+  stop
+}
+
+// === Atoms ===
+fn parseAtom(p: Parser, allowStruct: int) -> Node {
+  let t = peekTok(p);
+  let start = tokLoc(t);
+  if t.kind == "Int" {
+    advanceTok(p);
+    return mkInt(int(t.text), locFrom(p, start));
+  };
+  if t.kind == "Float" {
+    advanceTok(p);
+    return mkFloat(float(t.text), locFrom(p, start));
+  };
+  if t.kind == "Hex" {
+    advanceTok(p);
+    let s = strSlice(t.text, 2, len(t.text));
+    return mkInt(intHex(s), locFrom(p, start));
+  };
+  if t.kind == "Binary" {
+    advanceTok(p);
+    let s = strSlice(t.text, 2, len(t.text));
+    return mkInt(intBin(s), locFrom(p, start));
+  };
+  if t.kind == "Octal" {
+    advanceTok(p);
+    let s = strSlice(t.text, 2, len(t.text));
+    return mkInt(intOct(s), locFrom(p, start));
+  };
+  if t.kind == "Char" {
+    advanceTok(p);
+    return mkChar(t.text, locFrom(p, start));
+  };
+  if t.kind == "String" {
+    advanceTok(p);
+    let segs = splitStringInterp(t.text, locFrom(p, start));
+    return Node { kind: "StringLit", loc: locFrom(p, start), name: "", text: t.text, ival: len(segs), fval: 0.0, items: segs };
+  };
+  if t.kind == "Keyword" {
+    let r = parseKeywordAtom(p, t, start, allowStruct);
+    if r.kind == "ok" {
+      return r.node;
+    };
+  };
+  if isPunct(p, "(") == 1 {
+    return parseParenOrTuple(p, start);
+  };
+  if isPunct(p, "[") == 1 {
+    return parseArrayLiteral(p, start);
+  };
+  if isPunct(p, "{") == 1 {
+    return parseBraceExpr(p, allowStruct);
+  };
+  if t.kind == "Ident" {
+    return parseIdent(p, t, start);
+  };
+  if t.kind == "Eof" || t.kind == "Error" {
+    errHere(p, "unexpected end of input at " + locStr(tokLoc(t)));
+    return mkUnit(locFrom(p, start));
+  };
+  errHere(p, "unexpected token '" + t.text + "' at " + locStr(tokLoc(t)));
+  advanceTok(p);
+  mkUnit(locFrom(p, start))
+}
+
+struct AtomResult { kind: string, node: Node }
+
+fn parseKeywordAtom(p: Parser, t: Token, start: Loc, allowStruct: int) -> AtomResult {
+  let stop = AtomResult { kind: "stop", node: mkUnit(start) };
+  if t.text == "true" {
+    advanceTok(p);
+    return AtomResult { kind: "ok", node: mkBool(1, locFrom(p, start)) };
+  };
+  if t.text == "false" {
+    advanceTok(p);
+    return AtomResult { kind: "ok", node: mkBool(0, locFrom(p, start)) };
+  };
+  if t.text == "self" {
+    advanceTok(p);
+    return AtomResult { kind: "ok", node: mkSelf(locFrom(p, start)) };
+  };
+  if t.text == "unit" {
+    advanceTok(p);
+    return AtomResult { kind: "ok", node: mkUnit(locFrom(p, start)) };
+  };
+  if t.text == "fn" {
+    advanceTok(p);
+    let params = parseParams(p);
+    let mut ret = nullNode();
+    if eatPunct(p, "->") == 1 {
+      ret = parseType(p);
+    };
+    let body = parseBlock(p);
+    return AtomResult { kind: "ok", node: mkLambda(params, ret, body, locFrom(p, start)) };
+  };
+  if t.text == "if" {
+    return AtomResult { kind: "ok", node: parseIf(p) };
+  };
+  if t.text == "match" {
+    return AtomResult { kind: "ok", node: parseMatch(p) };
+  };
+  if t.text == "return" {
+    advanceTok(p);
+    let mut expr = nullNode();
+    if isPunct(p, ";") == 0 && isPunct(p, "}") == 0 && isPunct(p, ")") == 0 && atEnd(p) == 0 {
+      expr = parseExpr(p, 1);
+    };
+    return AtomResult { kind: "ok", node: mkReturn(expr, locFrom(p, start)) };
+  };
+  if t.text == "range" {
+    advanceTok(p);
+    if isPunct(p, "(") == 1 {
+      advanceTok(p);
+      let args = [];
+      if isPunct(p, ")") == 0 {
+        let mut s = 0;
+        while s == 0 {
+          if isPunct(p, ")") == 1 { s = 1; };
+          if s == 0 {
+            push(args, parseExpr(p, 1));
+            if eatPunct(p, ",") == 0 { s = 1; }
+          }
+        }
+      };
+      expectPunct(p, ")");
+      return AtomResult { kind: "ok", node: mkCall(mkIdent("range", locFrom(p, start)), args, locFrom(p, start)) };
+    };
+    return AtomResult { kind: "ok", node: mkIdent("range", locFrom(p, start)) };
+  };
+  stop
+}
+
+fn parseParenOrTuple(p: Parser, start: Loc) -> Node {
+  advanceTok(p);
+  if eatPunct(p, ")") == 1 {
+    return mkUnit(locFrom(p, start));
+  };
+  let e = parseExpr(p, 1);
+  if eatPunct(p, ",") == 1 {
+    let elements = [e];
+    let mut stop = 0;
+    while stop == 0 {
+      if isPunct(p, ")") == 1 { stop = 1; };
+      if stop == 0 {
+        push(elements, parseExpr(p, 1));
+        if eatPunct(p, ",") == 0 { stop = 1; }
+      }
+    }
+    expectPunct(p, ")");
+    return mkTuple(elements, locFrom(p, start));
+  };
+  expectPunct(p, ")");
+  mkParen(e, locFrom(p, start))
+}
+
+fn parseArrayLiteral(p: Parser, start: Loc) -> Node {
+  advanceTok(p);
+  let elements = [];
+  if isPunct(p, "]") == 0 {
+    let mut stop = 0;
+    while stop == 0 {
+      if isPunct(p, "]") == 1 { stop = 1; };
+      if stop == 0 {
+        if isPunct(p, "..") == 1 {
+          advanceTok(p);
+          let spread = parseExpr(p, 0);
+          let _ = spread;
+        } else {
+          push(elements, parseExpr(p, 1));
+        };
+        if eatPunct(p, ",") == 0 { stop = 1; }
+      }
+    }
+  };
+  expectPunct(p, "]");
+  mkArray(elements, locFrom(p, start))
+}
+
+fn parseIdent(p: Parser, t: Token, start: Loc) -> Node {
+  let name = advanceTok(p).text;
+  if isPunct(p, "::") == 1 {
+    advanceTok(p);
+    let variant = advanceTok(p).text;
+    let args = [];
+    if eatPunct(p, "(") == 1 {
+      if isPunct(p, ")") == 0 {
+        let mut stop = 0;
+        while stop == 0 {
+          if isPunct(p, ")") == 1 { stop = 1; };
+          if stop == 0 {
+            push(args, parseExpr(p, 1));
+            if eatPunct(p, ",") == 0 { stop = 1; }
+          }
+        }
+      };
+      expectPunct(p, ")");
+    };
+    return mkEnumVariant(name, variant, args, locFrom(p, start));
+  };
+  if isPunct(p, "<") == 1 && couldStartType(peekN(p, 1)) == 1 {
+    let save = p.pos;
+    let saveErrCount = len(p.errors);
+    advanceTok(p);
+    let typeArgs = [];
+    let mut valid = 1;
+    let mut stop = 0;
+    while stop == 0 {
+      if isPunct(p, ">") == 1 { stop = 1; };
+      if stop == 0 {
+        push(typeArgs, parseType(p));
+        if eatPunct(p, ",") == 0 {
+          if isPunct(p, ">") == 1 {
+            stop = 1;
+          } else {
+            stop = 1;
+            valid = 0;
+          }
+        }
+      }
+    }
+    if eatPunct(p, ">") == 0 { valid = 0; };
+    let errored = len(p.errors) != saveErrCount;
+    if valid == 1 && errored == 0 && isPunct(p, "(") == 1 {
+      advanceTok(p);
+      let args = [];
+      if isPunct(p, ")") == 0 {
+        let mut s2 = 0;
+        while s2 == 0 {
+          if isPunct(p, ")") == 1 { s2 = 1; };
+          if s2 == 0 {
+            push(args, parseExpr(p, 1));
+            if eatPunct(p, ",") == 0 { s2 = 1; }
+          }
+        }
+      };
+      expectPunct(p, ")");
+      return mkCallWithTypeArgs(mkIdent(name, locFrom(p, start)), args, typeArgs, locFrom(p, start));
+    };
+    p.errors = truncateErrors(p.errors, saveErrCount);
+    p.pos = save;
+  };
+  mkIdent(name, locFrom(p, start))
+}
+
+fn couldStartType(t: Token) -> int {
+  if t.kind == "Ident" { return 1; };
+  if t.kind == "Keyword" {
+    if t.text == "fn" { return 1; };
+    if t.text == "map" { return 1; };
+    if t.text == "option" { return 1; };
+    if t.text == "result" { return 1; };
+    if t.text == "unit" { return 1; };
+    return 0;
+  };
+  if t.kind == "Punct" {
+    if t.text == "(" { return 1; };
+    if t.text == "[" { return 1; };
+    return 0;
+  };
+  0
+}
+
+// === if / match / block / brace-expr ===
+fn parseIf(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  let cond = parseExpr(p, 0);
+  let then = parseBlock(p);
+  let mut els = nullNode();
+  if eatKeyword(p, "else") == 1 {
+    if isKw(p, "if") == 1 {
+      els = parseIf(p);
+    } else {
+      els = parseBlock(p);
+    };
+  };
+  mkIf(cond, then, els, locFrom(p, start))
+}
+
+fn parseMatch(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  let scrutinee = parseExpr(p, 0);
+  expectPunct(p, "{");
+  let arms = [];
+  while isPunct(p, "}") == 0 && atEnd(p) == 0 {
+    let aStart = tokLoc(peekTok(p));
+    let pattern = parsePattern(p);
+    let mut guard = nullNode();
+    if eatKeyword(p, "if") == 1 {
+      guard = parseExpr(p, 0);
+    };
+    expectPunct(p, "=>");
+    let body = parseExpr(p, 1);
+    push(arms, mkMatchArm(pattern, guard, body, locFrom(p, aStart)));
+    if eatPunct(p, ",") == 0 {
+      if isPunct(p, "}") == 0 {
+        errHere(p, "expected ',' or '}' after match arm at " + locStr(tokLoc(peekTok(p))));
+        recover(p);
+      }
+    }
+  }
+  expectPunct(p, "}");
+  mkMatch(scrutinee, arms, locFrom(p, start))
+}
+
+// parseBlock parses `{ stmt; stmt; trailing-expr }`. Statements are
+// recognized by isStmtStart (let/const/fn/enum/struct/type/return/break/
+// continue/while/for/import/pub/print); everything else is an expression
+// followed by `;` (ExprStmt), `=` (AssignStmt), or `}` (trailing expr).
+fn parseBlock(p: Parser) -> Node {
+  let start = tokLoc(peekTok(p));
+  expectPunct(p, "{");
+  let stmts = [];
+  let mut trailing = nullNode();
+  let mut trailingSet = 0;
+  while isPunct(p, "}") == 0 && atEnd(p) == 0 && trailingSet == 0 {
+    if isStmtStart(p) == 1 {
+      let s = parseStmt(p);
+      if isNull(s) == 0 {
+        push(stmts, s);
+      };
+    } else {
+      let e = parseExpr(p, 1);
+      if isPunct(p, "=") == 1 {
+        advanceTok(p);
+        let value = parseExpr(p, 1);
+        expectPunct(p, ";");
+        push(stmts, mkAssignStmt(e, value, e.loc));
+      } else {
+        let cur = peekTok(p);
+        if isCompoundAssignTok(cur) == 1 {
+          let opChar = strSlice(cur.text, 0, 1);
+          advanceTok(p);
+          let value = parseExpr(p, 1);
+          expectPunct(p, ";");
+          push(stmts, mkAssignStmt(e, mkCompoundAssign(opChar, e, value, e.loc), e.loc));
+        } else {
+          if isPunct(p, ";") == 1 {
+            advanceTok(p);
+            push(stmts, mkExprStmt(e, e.loc));
+          } else {
+            if isPunct(p, "}") == 1 {
+              trailing = e;
+              trailingSet = 1;
+            } else {
+              errHere(p, "expected ';', found '" + peekTok(p).text + "' at " + locStr(tokLoc(peekTok(p))));
+              recover(p);
+            }
+          }
+        }
+      }
+    }
+  }
+  expectPunct(p, "}");
+  mkBlock(stmts, trailing, locFrom(p, start))
+}
+
+fn parseBraceExpr(p: Parser, allowStruct: int) -> Node {
+  let start = tokLoc(peekTok(p));
+  advanceTok(p);
+  if isPunct(p, "}") == 1 {
+    advanceTok(p);
+    return mkBlock([], nullNode(), locFrom(p, start));
+  };
+  if isStmtStart(p) == 0 {
+    let firstExpr = parseExpr(p, 1);
+    if isPunct(p, ":") == 1 {
+      advanceTok(p);
+      let value = parseExpr(p, 1);
+      let entries = [mkMapEntry(firstExpr, value, locFrom(p, start))];
+      while eatPunct(p, ",") == 1 {
+        if isPunct(p, "}") == 1 {
+          break;
+        };
+        let k = parseExpr(p, 1);
+        expectPunct(p, ":");
+        let v = parseExpr(p, 1);
+        push(entries, mkMapEntry(k, v, locFrom(p, start)));
+      }
+      expectPunct(p, "}");
+      return mkMap(entries, locFrom(p, start));
+    };
+    // block: firstExpr is either ExprStmt or trailing
+    let stmts = [];
+    let mut trailing = nullNode();
+    let mut trailingSet = 0;
+    if isPunct(p, ";") == 1 {
+      advanceTok(p);
+      push(stmts, mkExprStmt(firstExpr, locFrom(p, start)));
+    } else {
+      if isPunct(p, "}") == 1 {
+        advanceTok(p);
+        return mkBlock([], firstExpr, locFrom(p, start));
+      } else {
+        errHere(p, "expected ';' or '}' in block at " + locStr(tokLoc(peekTok(p))));
+        recover(p);
+      };
+    };
+    while isPunct(p, "}") == 0 && atEnd(p) == 0 && trailingSet == 0 {
+      if isStmtStart(p) == 1 {
+        let s = parseStmt(p);
+        if isNull(s) == 0 {
+          push(stmts, s);
+        };
+      } else {
+        let e = parseExpr(p, 1);
+        if isPunct(p, ";") == 1 {
+          advanceTok(p);
+          push(stmts, mkExprStmt(e, locFrom(p, start)));
+        } else {
+          if isPunct(p, "}") == 1 {
+            trailing = e;
+            trailingSet = 1;
+          } else {
+            errHere(p, "expected ';' or '}' in block at " + locStr(tokLoc(peekTok(p))));
+            recover(p);
+          }
+        }
+      }
+    }
+    expectPunct(p, "}");
+    return mkBlock(stmts, trailing, locFrom(p, start));
+  };
+  // statement-start block
+  let stmts = [];
+  let mut trailing = nullNode();
+  let mut trailingSet = 0;
+  while isPunct(p, "}") == 0 && atEnd(p) == 0 && trailingSet == 0 {
+    if isStmtStart(p) == 1 {
+      let s = parseStmt(p);
+      if isNull(s) == 0 {
+        push(stmts, s);
+      };
+    } else {
+      let e = parseExpr(p, 1);
+      if isPunct(p, ";") == 1 {
+        advanceTok(p);
+        push(stmts, mkExprStmt(e, locFrom(p, start)));
+      } else {
+        if isPunct(p, "}") == 1 {
+          trailing = e;
+          trailingSet = 1;
+        } else {
+          errHere(p, "expected ';' or '}' in block at " + locStr(tokLoc(peekTok(p))));
+          recover(p);
+        }
+      }
+    }
+  }
+  expectPunct(p, "}");
+  mkBlock(stmts, trailing, locFrom(p, start))
+}
+
+fn isStmtStart(p: Parser) -> int {
+  let t = peekTok(p);
+  if t.kind != "Keyword" {
+    return 0;
+  };
+  if t.text == "fn" {
+    if peekN(p, 1).kind == "Ident" {
+      return 1;
+    };
+    return 0;
+  };
+  if t.text == "let" { return 1; };
+  if t.text == "const" { return 1; };
+  if t.text == "enum" { return 1; };
+  if t.text == "struct" { return 1; };
+  if t.text == "type" { return 1; };
+  if t.text == "return" { return 1; };
+  if t.text == "break" { return 1; };
+  if t.text == "continue" { return 1; };
+  if t.text == "while" { return 1; };
+  if t.text == "for" { return 1; };
+  if t.text == "import" { return 1; };
+  if t.text == "pub" { return 1; };
+  if t.text == "print" { return 1; };
+  0
+}
+
+// === String interpolation splitter ===
+fn splitStringInterp(raw: string, loc: Loc) -> [Node] {
+  let segs = [];
+  let mut i = 0;
+  let n = len(raw);
+  let mut buf = "";
+  while i < n {
+    let c = charCode(raw, i);
+    if c == 123 {
+      if len(buf) > 0 {
+        push(segs, mkTextSeg(buf, loc));
+        buf = "";
+      };
+      i = i + 1;
+      let mut depth = 1;
+      let mut inner = "";
+      let mut innerStop = 0;
+      while innerStop == 0 && i < n {
+        let c2 = charCode(raw, i);
+        if c2 == 123 {
+          depth = depth + 1;
+        };
+        if c2 == 125 {
+          depth = depth - 1;
+        };
+        if depth == 0 {
+          i = i + 1;
+          innerStop = 1;
+        } else {
+          inner = inner + fromCharCode(c2);
+          i = i + 1;
+        }
+      }
+      push(segs, mkInterpSeg(inner, loc));
+    } else {
+      buf = buf + fromCharCode(c);
+      i = i + 1;
+    }
+  }
+  if len(buf) > 0 {
+    push(segs, mkTextSeg(buf, loc));
+  };
+  segs
+}
+
+fn mkTextSeg(text: string, loc: Loc) -> Node {
+  Node { kind: "StringSegment", loc: loc, name: "text", text: text, ival: 0, fval: 0.0, items: [] }
+}
+
+fn mkInterpSeg(text: string, loc: Loc) -> Node {
+  Node { kind: "StringSegment", loc: loc, name: "interp", text: text, ival: 1, fval: 0.0, items: [] }
+}
+
+// === Numeric parsing helpers ===
+fn intHex(s: string) -> int {
+  let mut v = 0;
+  let mut i = 0;
+  let n = len(s);
+  while i < n {
+    let c = charCode(s, i);
+    v = v * 16 + hexDigit(c);
+    i = i + 1;
+  }
+  v
+}
+
+fn hexDigit(c: int) -> int {
+  if c >= 48 && c <= 57 { return c - 48; };
+  if c >= 65 && c <= 70 { return c - 65 + 10; };
+  if c >= 97 && c <= 102 { return c - 97 + 10; };
+  0
+}
+
+fn intBin(s: string) -> int {
+  let mut v = 0;
+  let mut i = 0;
+  let n = len(s);
+  while i < n {
+    let c = charCode(s, i);
+    v = v * 2 + (c - 48);
+    i = i + 1;
+  }
+  v
+}
+
+fn intOct(s: string) -> int {
+  let mut v = 0;
+  let mut i = 0;
+  let n = len(s);
+  while i < n {
+    let c = charCode(s, i);
+    v = v * 8 + (c - 48);
+    i = i + 1;
+  }
+  v
+}
+
+// === Mock token builders for tests ===
+pub fn tok(kind: string, text: string, line: int, col: int) -> Token {
+  Token { kind: kind, text: text, line: line, col: col, offset: 0 }
+}
+
+pub fn toks(parts: [string]) -> [Token] {
+  let out = [];
+  let mut i = 0;
+  let mut line = 1;
+  let mut col = 1;
+  while i + 1 < len(parts) {
+    let k = parts[i];
+    let txt = parts[i + 1];
+    push(out, Token { kind: k, text: txt, line: line, col: col, offset: i });
+    col = col + len(txt) + 1;
+    i = i + 2;
+  }
+  push(out, Token { kind: "Eof", text: "", line: line, col: col, offset: i });
+  out
+}

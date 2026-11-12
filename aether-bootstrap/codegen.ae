@@ -1,0 +1,1063 @@
+// =====================================================================
+// aether-bootstrap/codegen.ae — IR → bytecode (bootstrap part 6/7)
+// =====================================================================
+// Mirrors aether/vm/codegen/codegen.ts (595 LOC). Pure Aether; runs on
+// the host tree-walker.
+//
+// Public surface
+// --------------
+//   pub fn compileToBytecode(ir: IrProgram) -> BytecodeModule
+//   pub fn opNameToInt(name: string) -> int
+//   pub fn emptyInstr() -> Instr
+//   pub fn mkInstr(op: int, a: int, b: int, c: int, imm: int, regs: int, fields: int) -> Instr
+//
+// Design notes
+// ------------
+// - Register allocation is identity: IR vreg i → bytecode register i.
+//   nlocals is copied verbatim from IrFunc.nlocals.
+// - Each IrBlock becomes a contiguous run of Instrs in id order. Jump
+//   targets (block ids) are patched to absolute instr offsets after
+//   all blocks are emitted.
+// - Match tables: each IrFunc.matchTables[i] (a MatchTable with entries
+//   + defaultTarget) becomes a [[BcMatchEntry]] entry. The defaultTarget
+//   becomes a trailing Wildcard entry. Match table entry targets are
+//   patched to instr offsets.
+// - Break/Continue: pre-pass detects loops via back-edges (block whose
+//   terminator is Jmp(target) with target <= block id). The loop's
+//   condBlock = target; breakBlock = the JmpIfNot imm in condBlock.
+//   At codegen, Break → Jmp(breakOffset); Continue → Jmp(condOffset),
+//   resolved via the innermost-enclosing loop for the current block.
+// - String interning: field names, variant tags, builtin names go into
+//   fn.strings. LoadString uses the string index as imm.
+// - Float constants: interned into fn.constants; LoadFloat uses the
+//   constant index as imm. (Integers fit in imm directly.)
+// =====================================================================
+
+// -----------------------------------------------------------------------------
+// Opcode enum — 74 opcodes (mirror of bytecode.ts Op)
+// -----------------------------------------------------------------------------
+
+let OP_LOAD_INT = 1;
+let OP_LOAD_FLOAT = 2;
+let OP_LOAD_STRING = 3;
+let OP_LOAD_BOOL = 4;
+let OP_LOAD_UNIT = 5;
+let OP_LOAD_NULL = 6;
+let OP_ADD = 7;
+let OP_SUB = 8;
+let OP_MUL = 9;
+let OP_DIV = 10;
+let OP_IDIV = 11;
+let OP_MOD = 12;
+let OP_NEG = 13;
+let OP_NOT = 14;
+let OP_BITAND = 15;
+let OP_BITOR = 16;
+let OP_BITXOR = 17;
+let OP_BITNOT = 18;
+let OP_SHL = 19;
+let OP_SHR = 20;
+let OP_EQ = 21;
+let OP_NEQ = 22;
+let OP_LT = 23;
+let OP_LE = 24;
+let OP_GT = 25;
+let OP_GE = 26;
+let OP_JMP = 27;
+let OP_JMPIF = 28;
+let OP_JMPIFNOT = 29;
+let OP_RETURN = 30;
+let OP_RETURNUNIT = 31;
+let OP_BR = 32;
+let OP_POP = 33;
+let OP_DUP = 34;
+let OP_CALL = 35;
+let OP_CALLBUILTIN = 36;
+let OP_CALLCLOSURE = 37;
+let OP_CALLNAMED = 38;
+let OP_TAILCALL = 39;
+let OP_ALLOCSTRUCT = 40;
+let OP_ALLOCVARIANT = 41;
+let OP_ALLOCARRAY = 42;
+let OP_ALLOCMAP = 43;
+let OP_ALLOCTUPLE = 44;
+let OP_ALLOCRANGE = 45;
+let OP_LOADFIELD = 46;
+let OP_STOREFIELD = 47;
+let OP_INDEXGET = 48;
+let OP_INDEXSET = 49;
+let OP_TUPLEGET = 50;
+let OP_LEN = 51;
+let OP_PUSH = 52;
+let OP_POPARR = 53;
+let OP_MAKECLOSURE = 54;
+let OP_GETUPVALUE = 55;
+let OP_SETUPVALUE = 56;
+let OP_MAKEBOX = 57;
+let OP_UNBOX = 58;
+let OP_SETBOX = 59;
+let OP_MATCH = 60;
+let OP_PRINT = 61;
+let OP_CASTINT = 62;
+let OP_CASTFLOAT = 63;
+let OP_CASTBOOL = 64;
+let OP_CASTSTRING = 65;
+let OP_PANIC = 66;
+let OP_UNWRAPORPROP = 67;
+let OP_NOP = 68;
+let OP_BREAK = 69;
+let OP_CONTINUE = 70;
+let OP_SELFREF = 71;
+let OP_LOADGLOBAL = 72;
+let OP_TRACE = 73;
+let OP_BREAKPOINT = 74;
+
+// -----------------------------------------------------------------------------
+// Bytecode data shapes (mirror bytecode.ts)
+// -----------------------------------------------------------------------------
+
+struct Instr {
+  op: int,
+  a: int,
+  b: int,
+  c: int,
+  imm: int,
+  regs: int,        // index into fn.regLists; -1 = none
+  fields: int,      // index into fn.fieldLists; -1 = none
+}
+
+pub fn emptyInstr() -> Instr {
+  Instr { op: OP_NOP, a: 0, b: 0, c: 0, imm: 0, regs: -1, fields: -1 }
+}
+
+pub fn mkInstr(op: int, a: int, b: int, c: int, imm: int, regs: int, fields: int) -> Instr {
+  Instr { op: op, a: a, b: b, c: c, imm: imm, regs: regs, fields: fields }
+}
+
+struct BcField { name: string, reg: int }
+
+struct BcMatchEntry {
+  patternKind: string,    // "Wildcard" | "Bind" | "Lit" | "Tuple" | "Array" | "Struct" | "Enum" | "Or"
+  bindName: string,
+  litValue: Value,
+  structName: string,
+  enumName: string,
+  variant: string,
+  fieldBindings: [BcMatchEntry],   // for Struct: list of (name, subpattern)
+  fieldNames: [string],           // parallel: field names for Struct
+  subregs: [BcMatchEntry],        // for Tuple/Array/Enum: list of subpatterns
+  orPatterns: [BcMatchEntry],     // for Or
+  hasRest: int,
+  target: int,                    // instr index (patched)
+}
+
+struct BcMatchBinding { tableIdx: int, name: string, reg: int }
+
+struct BytecodeFunc {
+  name: string,
+  nparams: int,
+  nlocals: int,
+  code: [Instr],
+  constants: [Value],            // per-function: floats, big ints, strings (via constants)
+  matchTables: [[BcMatchEntry]], // per-function match tables (each = list of entries)
+  regLists: [[int]],            // side table of variadic register lists
+  fieldLists: [[BcField]],      // side table of field lists (for AllocStruct)
+  captures: [string],           // upvalue names (in capture order)
+  selfReg: int,                 // -1 if none
+  strings: [string],           // interned strings
+  isMain: int,                  // 1 for <main>
+  matchBindings: [BcMatchBinding], // (tableIdx, name) -> reg
+}
+
+struct BytecodeModule {
+  funcs: [BytecodeFunc],
+  constants: [Value],          // module-level (unused in v1)
+  entry: int,
+}
+
+// -----------------------------------------------------------------------------
+// Op name → opcode int
+// -----------------------------------------------------------------------------
+
+pub fn opNameToInt(name: string) -> int {
+  // Constants
+  if name == "LoadInt" { return OP_LOAD_INT; };
+  if name == "LoadFloat" { return OP_LOAD_FLOAT; };
+  if name == "LoadString" { return OP_LOAD_STRING; };
+  if name == "LoadBool" { return OP_LOAD_BOOL; };
+  if name == "LoadUnit" { return OP_LOAD_UNIT; };
+  if name == "LoadNull" { return OP_LOAD_NULL; };
+  // Arithmetic binary
+  if name == "Add" { return OP_ADD; };
+  if name == "Sub" { return OP_SUB; };
+  if name == "Mul" { return OP_MUL; };
+  if name == "Div" { return OP_DIV; };
+  if name == "IDiv" { return OP_IDIV; };
+  if name == "Mod" { return OP_MOD; };
+  if name == "Neg" { return OP_NEG; };
+  if name == "Not" { return OP_NOT; };
+  if name == "BitAnd" { return OP_BITAND; };
+  if name == "BitOr" { return OP_BITOR; };
+  if name == "BitXor" { return OP_BITXOR; };
+  if name == "BitNot" { return OP_BITNOT; };
+  if name == "Shl" { return OP_SHL; };
+  if name == "Shr" { return OP_SHR; };
+  // Comparison
+  if name == "Eq" { return OP_EQ; };
+  if name == "Neq" { return OP_NEQ; };
+  if name == "Lt" { return OP_LT; };
+  if name == "Le" { return OP_LE; };
+  if name == "Gt" { return OP_GT; };
+  if name == "Ge" { return OP_GE; };
+  // Control flow
+  if name == "Jmp" { return OP_JMP; };
+  if name == "JmpIf" { return OP_JMPIF; };
+  if name == "JmpIfNot" { return OP_JMPIFNOT; };
+  if name == "Return" { return OP_RETURN; };
+  if name == "ReturnUnit" { return OP_RETURNUNIT; };
+  if name == "Br" { return OP_BR; };
+  if name == "Pop" { return OP_POP; };
+  if name == "Move" { return OP_DUP; };     // Move(dest, src) → Dup a=src, b=dest
+  if name == "Dup" { return OP_DUP; };
+  // Calls
+  if name == "Call" { return OP_CALL; };
+  if name == "CallBuiltin" { return OP_CALLBUILTIN; };
+  if name == "CallClosure" { return OP_CALLCLOSURE; };
+  if name == "CallNamed" { return OP_CALLNAMED; };
+  if name == "TailCall" { return OP_TAILCALL; };
+  // Memory / data
+  if name == "AllocStruct" { return OP_ALLOCSTRUCT; };
+  if name == "AllocVariant" { return OP_ALLOCVARIANT; };
+  if name == "AllocArray" { return OP_ALLOCARRAY; };
+  if name == "AllocTuple" { return OP_ALLOCTUPLE; };
+  if name == "AllocMap" { return OP_ALLOCMAP; };
+  if name == "AllocRange" { return OP_ALLOCRANGE; };
+  if name == "LoadField" { return OP_LOADFIELD; };
+  if name == "StoreField" { return OP_STOREFIELD; };
+  if name == "IndexGet" { return OP_INDEXGET; };
+  if name == "IndexSet" { return OP_INDEXSET; };
+  if name == "TupleGet" { return OP_TUPLEGET; };
+  if name == "Len" { return OP_LEN; };
+  if name == "Push" { return OP_PUSH; };
+  if name == "PopArr" { return OP_POPARR; };
+  // Closures / boxes
+  if name == "MakeClosure" { return OP_MAKECLOSURE; };
+  if name == "GetUpvalue" { return OP_GETUPVALUE; };
+  if name == "SetUpvalue" { return OP_SETUPVALUE; };
+  if name == "MakeBox" { return OP_MAKEBOX; };
+  if name == "Unbox" { return OP_UNBOX; };
+  if name == "SetBox" { return OP_SETBOX; };
+  // Match
+  if name == "Match" { return OP_MATCH; };
+  // Print / cast / panic
+  if name == "Print" { return OP_PRINT; };
+  if name == "CastInt" { return OP_CASTINT; };
+  if name == "CastFloat" { return OP_CASTFLOAT; };
+  if name == "CastBool" { return OP_CASTBOOL; };
+  if name == "CastString" { return OP_CASTSTRING; };
+  if name == "Panic" { return OP_PANIC; };
+  if name == "UnwrapOrProp" { return OP_UNWRAPORPROP; };
+  // Misc
+  if name == "Nop" { return OP_NOP; };
+  if name == "Break" { return OP_BREAK; };
+  if name == "Continue" { return OP_CONTINUE; };
+  if name == "SelfRef" { return OP_SELFREF; };
+  if name == "LoadGlobal" { return OP_LOADGLOBAL; };
+  if name == "Trace" { return OP_TRACE; };
+  if name == "Breakpoint" { return OP_BREAKPOINT; };
+  OP_NOP
+}
+
+// -----------------------------------------------------------------------------
+// Intern helpers (per-function)
+// -----------------------------------------------------------------------------
+
+fn internString(f: BytecodeFunc, s: string) -> int {
+  let mut i = 0;
+  while i < len(f.strings) {
+    if f.strings[i] == s { return i; };
+    i = i + 1;
+  }
+  push(f.strings, s);
+  len(f.strings) - 1
+}
+
+fn internRegList(f: BytecodeFunc, regs: [int]) -> int {
+  let mut i = 0;
+  while i < len(f.regLists) {
+    let r = f.regLists[i];
+    if len(r) != len(regs) {
+      i = i + 1;
+      continue;
+    };
+    let mut eq = 1;
+    let mut j = 0;
+    while j < len(r) {
+      if r[j] != regs[j] { eq = 0; j = len(r); };
+      j = j + 1;
+    }
+    if eq == 1 { return i; };
+    i = i + 1;
+  }
+  push(f.regLists, regs);
+  len(f.regLists) - 1
+}
+
+fn internFieldList(f: BytecodeFunc, fields: [BcField]) -> int {
+  let mut i = 0;
+  while i < len(f.fieldLists) {
+    let fl = f.fieldLists[i];
+    if len(fl) != len(fields) {
+      i = i + 1;
+      continue;
+    };
+    let mut eq = 1;
+    let mut j = 0;
+    while j < len(fl) {
+      if fl[j].name != fields[j].name { eq = 0; j = len(fl); };
+      if fl[j].reg != fields[j].reg { eq = 0; j = len(fl); };
+      j = j + 1;
+    }
+    if eq == 1 { return i; };
+    i = i + 1;
+  }
+  push(f.fieldLists, fields);
+  len(f.fieldLists) - 1
+}
+
+// Intern a float constant into the function's constants pool.
+fn internFloatConst(f: BytecodeFunc, v: float) -> int {
+  let mut i = 0;
+  while i < len(f.constants) {
+    let c = f.constants[i];
+    if c.tag == "float" {
+      if c.fval == v { return i; };
+    };
+    i = i + 1;
+  }
+  push(f.constants, mkFloat(v));
+  len(f.constants) - 1
+}
+
+// Intern an int constant (for big ints that don't fit in 16-bit imm).
+fn internIntConst(f: BytecodeFunc, v: int) -> int {
+  let mut i = 0;
+  while i < len(f.constants) {
+    let c = f.constants[i];
+    if c.tag == "int" {
+      if c.ival == v { return i; };
+    };
+    i = i + 1;
+  }
+  push(f.constants, mkInt(v));
+  len(f.constants) - 1
+}
+
+// Intern a string into constants (rarely used; mostly strings go into strings[]).
+fn internStringConst(f: BytecodeFunc, s: string) -> int {
+  let mut i = 0;
+  while i < len(f.constants) {
+    let c = f.constants[i];
+    if c.tag == "string" {
+      if c.sval == s { return i; };
+    };
+    i = i + 1;
+  }
+  push(f.constants, mkStr(s));
+  len(f.constants) - 1
+}
+
+// -----------------------------------------------------------------------------
+// Loop detection (pre-pass): identify loops via back-edges.
+//
+// For each block B, examine its terminator. If terminator is `Jmp(target)`
+// with target <= B.id (back-edge), B is a loop body. The loop's condBlock
+// is `target`. Find condBlock's terminator: it should be `JmpIfNot(_, X)`.
+// X is the breakBlock. Record the loop: {condBlock, breakBlock}.
+// -----------------------------------------------------------------------------
+
+struct LoopInfo { condBlock: int, breakBlock: int }
+
+fn detectLoops(irFn: IrFunc) -> [LoopInfo] {
+  let loops = [];
+  let blocks = irFn.blocks;
+  let mut i = 0;
+  while i < len(blocks) {
+    let b = blocks[i];
+    let n = len(b.instrs);
+    if n > 0 {
+      let term = b.instrs[n - 1];
+      if term.op == "Jmp" {
+        if term.imm <= b.id {
+          // Back-edge: B is a loop body, condBlock = term.imm.
+          let condBlock = term.imm;
+          let breakBlock = findBreakBlock(irFn, condBlock);
+          push(loops, LoopInfo { condBlock: condBlock, breakBlock: breakBlock });
+        };
+      };
+    };
+    i = i + 1;
+  }
+  loops
+}
+
+// Find the breakBlock for a loop with the given condBlock.
+// The condBlock's terminator should be JmpIfNot(cond, breakBlock).
+// If we can't find it, return -1.
+fn findBreakBlock(irFn: IrFunc, condBlock: int) -> int {
+  let blocks = irFn.blocks;
+  let mut i = 0;
+  while i < len(blocks) {
+    if blocks[i].id == condBlock {
+      let b = blocks[i];
+      let n = len(b.instrs);
+      if n > 0 {
+        let term = b.instrs[n - 1];
+        if term.op == "JmpIfNot" { return term.imm; };
+      };
+      return -1;
+    };
+    i = i + 1;
+  }
+  -1
+}
+
+// Find the innermost loop enclosing block `blockId`.
+// A block B is enclosed by loop L if L.condBlock <= B.id < L.breakBlock.
+// The innermost is the one with the smallest (breakBlock - condBlock) range.
+fn findEnclosingLoop(loops: [LoopInfo], blockId: int) -> LoopInfo {
+  let mut best: LoopInfo = LoopInfo { condBlock: -1, breakBlock: -1 };
+  let mut bestRange = 0;
+  let mut found = 0;
+  let mut i = 0;
+  while i < len(loops) {
+    let L = loops[i];
+    if L.condBlock >= 0 && L.breakBlock >= 0 {
+      if L.condBlock <= blockId && blockId < L.breakBlock {
+        let span = L.breakBlock - L.condBlock;
+        if found == 0 || span < bestRange {
+          best = L;
+          bestRange = span;
+          found = 1;
+        };
+      };
+    };
+    i = i + 1;
+  }
+  best
+}
+
+// -----------------------------------------------------------------------------
+// Block layout: compute block-id → instr offset
+// -----------------------------------------------------------------------------
+
+struct BlockLayout { id: int, instrs: [Instr], offset: int }
+
+fn layoutBlocks(irFn: IrFunc, loops: [LoopInfo]) -> [BlockLayout] {
+  let layouts = [];
+  let mut cur = 0;
+  let mut i = 0;
+  while i < len(irFn.blocks) {
+    let b = irFn.blocks[i];
+    let instrs = emitBlockInstrs(irFn, b, loops);
+    push(layouts, BlockLayout { id: b.id, instrs: instrs, offset: cur });
+    cur = cur + len(instrs);
+    i = i + 1;
+  }
+  // Patch jump targets (block id → instr offset).
+  let mut j = 0;
+  while j < len(layouts) {
+    let layout = layouts[j];
+    let mut k = 0;
+    while k < len(layout.instrs) {
+      patchJumpTarget(layout.instrs[k], layouts);
+      k = k + 1;
+    }
+    j = j + 1;
+  }
+  layouts
+}
+
+fn patchJumpTarget(instr: Instr, layouts: [BlockLayout]) -> int {
+  if instr.op == OP_JMP || instr.op == OP_JMPIF || instr.op == OP_JMPIFNOT
+     || instr.op == OP_BREAK || instr.op == OP_CONTINUE {
+    if instr.imm >= 0 {
+      let off = findOffset(layouts, instr.imm);
+      if off >= 0 { instr.imm = off; };
+    };
+  };
+  0
+}
+
+fn findOffset(layouts: [BlockLayout], blockId: int) -> int {
+  let mut i = 0;
+  while i < len(layouts) {
+    if layouts[i].id == blockId { return layouts[i].offset; };
+    i = i + 1;
+  }
+  -1
+}
+
+// -----------------------------------------------------------------------------
+// Emit instrs for a block
+// -----------------------------------------------------------------------------
+
+fn emitBlockInstrs(irFn: IrFunc, block: IrBlock, loops: [LoopInfo]) -> [Instr] {
+  let out = [];
+  let enclosing = findEnclosingLoop(loops, block.id);
+  let mut i = 0;
+  while i < len(block.instrs) {
+    emitOp(irFn, out, block.instrs[i], enclosing, loops);
+    i = i + 1;
+  }
+  out
+}
+
+// Note: `f` is captured via the global `CURRENT_FN` to avoid threading it
+// through every emit function. This is set in compileFunc before emitting.
+
+fn emptyBcFn() -> BytecodeFunc {
+  BytecodeFunc {
+    name: "",
+    nparams: 0,
+    nlocals: 0,
+    code: [],
+    constants: [],
+    matchTables: [],
+    regLists: [],
+    fieldLists: [],
+    captures: [],
+    selfReg: -1,
+    strings: [],
+    isMain: 0,
+    matchBindings: [],
+  }
+}
+
+let mut CURRENT_FN = emptyBcFn();
+
+fn emitOp(irFn: IrFunc, out: [Instr], op: IrOp, enclosing: LoopInfo, loops: [LoopInfo]) -> int {
+  let f = CURRENT_FN;
+
+  if op.op == "LoadInt" {
+    push(out, mkInstr(OP_LOAD_INT, op.a, 0, 0, op.imm, -1, -1));
+    return 0;
+  };
+  if op.op == "LoadFloat" {
+    let ci = internFloatConst(f, op.fval);
+    push(out, mkInstr(OP_LOAD_FLOAT, op.a, 0, 0, ci, -1, -1));
+    return 0;
+  };
+  if op.op == "LoadString" {
+    let si = internString(f, op.sval);
+    push(out, mkInstr(OP_LOAD_STRING, op.a, 0, 0, si, -1, -1));
+    return 0;
+  };
+  if op.op == "LoadBool" {
+    push(out, mkInstr(OP_LOAD_BOOL, op.a, 0, 0, op.bval, -1, -1));
+    return 0;
+  };
+  if op.op == "LoadUnit" {
+    push(out, mkInstr(OP_LOAD_UNIT, op.a, 0, 0, 0, -1, -1));
+    return 0;
+  };
+  if op.op == "LoadNull" {
+    push(out, mkInstr(OP_LOAD_NULL, op.a, 0, 0, 0, -1, -1));
+    return 0;
+  };
+  if op.op == "Move" {
+    push(out, mkInstr(OP_DUP, op.b, op.a, 0, 0, -1, -1));  // Dup a=src, b=dest
+    return 0;
+  };
+  // Arithmetic / comparison binary ops
+  if op.op == "Add" || op.op == "Sub" || op.op == "Mul" || op.op == "Div"
+     || op.op == "IDiv" || op.op == "Mod" || op.op == "BitAnd"
+     || op.op == "BitOr" || op.op == "BitXor" || op.op == "Shl" || op.op == "Shr"
+     || op.op == "Eq" || op.op == "Neq" || op.op == "Lt" || op.op == "Le"
+     || op.op == "Gt" || op.op == "Ge" {
+    let opc = opNameToInt(op.op);
+    push(out, mkInstr(opc, op.a, op.b, op.c, 0, -1, -1));
+    return 0;
+  };
+  // Unary ops
+  if op.op == "Neg" || op.op == "Not" || op.op == "BitNot" {
+    let opc = opNameToInt(op.op);
+    push(out, mkInstr(opc, op.a, op.b, 0, 0, -1, -1));
+    return 0;
+  };
+  // Control flow
+  if op.op == "Jmp" {
+    push(out, mkInstr(OP_JMP, 0, 0, 0, op.imm, -1, -1));
+    return 0;
+  };
+  if op.op == "JmpIf" {
+    push(out, mkInstr(OP_JMPIF, op.a, 0, 0, op.imm, -1, -1));
+    return 0;
+  };
+  if op.op == "JmpIfNot" {
+    push(out, mkInstr(OP_JMPIFNOT, op.a, 0, 0, op.imm, -1, -1));
+    return 0;
+  };
+  if op.op == "Return" {
+    push(out, mkInstr(OP_RETURN, op.a, 0, 0, 0, -1, -1));
+    return 0;
+  };
+  if op.op == "ReturnUnit" {
+    push(out, mkInstr(OP_RETURNUNIT, 0, 0, 0, 0, -1, -1));
+    return 0;
+  };
+  if op.op == "Pop" {
+    push(out, mkInstr(OP_POP, op.a, 0, 0, 0, -1, -1));
+    return 0;
+  };
+  // Calls
+  if op.op == "Call" {
+    let ri = internRegList(f, op.regs);
+    push(out, mkInstr(OP_CALL, op.a, op.b, 0, 0, ri, -1));
+    return 0;
+  };
+  if op.op == "CallBuiltin" {
+    let ni = internString(f, op.sval);
+    let ri = internRegList(f, op.regs);
+    push(out, mkInstr(OP_CALLBUILTIN, op.a, 0, 0, ni, ri, -1));
+    return 0;
+  };
+  if op.op == "CallClosure" {
+    let ri = internRegList(f, op.regs);
+    push(out, mkInstr(OP_CALLCLOSURE, op.a, op.b, 0, 0, ri, -1));
+    return 0;
+  };
+  if op.op == "CallNamed" {
+    let ni = internString(f, op.sval);
+    let ri = internRegList(f, op.regs);
+    push(out, mkInstr(OP_CALLNAMED, op.a, 0, 0, ni, ri, -1));
+    return 0;
+  };
+  // Memory / data
+  if op.op == "AllocStruct" {
+    let ni = internString(f, op.sval);
+    // Convert IrField list to BcField list.
+    let bcflds = [];
+    let mut i = 0;
+    while i < len(op.fields) {
+      push(bcflds, BcField { name: op.fields[i].name, reg: op.fields[i].reg });
+      i = i + 1;
+    }
+    let fi = internFieldList(f, bcflds);
+    push(out, mkInstr(OP_ALLOCSTRUCT, op.a, 0, 0, ni, -1, fi));
+    return 0;
+  };
+  if op.op == "AllocVariant" {
+    let tag = op.sval + "::" + op.vname;
+    let ti = internString(f, tag);
+    let ri = internRegList(f, op.regs);
+    push(out, mkInstr(OP_ALLOCVARIANT, op.a, 0, 0, ti, ri, -1));
+    return 0;
+  };
+  if op.op == "AllocArray" || op.op == "AllocTuple" {
+    let opc = OP_ALLOCARRAY;
+    if op.op == "AllocTuple" { }; // alias
+    let ri = internRegList(f, op.regs);
+    push(out, mkInstr(opc, op.a, 0, 0, 0, ri, -1));
+    return 0;
+  };
+  if op.op == "AllocMap" {
+    let ri = internRegList(f, op.regs);
+    push(out, mkInstr(OP_ALLOCMAP, op.a, 0, 0, 0, ri, -1));
+    return 0;
+  };
+  if op.op == "AllocRange" {
+    push(out, mkInstr(OP_ALLOCRANGE, op.a, op.b, op.c, op.imm, -1, -1));
+    return 0;
+  };
+  if op.op == "LoadField" {
+    let ni = internString(f, op.sval);
+    push(out, mkInstr(OP_LOADFIELD, op.a, op.b, 0, ni, -1, -1));
+    return 0;
+  };
+  if op.op == "StoreField" {
+    let ni = internString(f, op.sval);
+    push(out, mkInstr(OP_STOREFIELD, op.a, op.b, 0, ni, -1, -1));
+    return 0;
+  };
+  if op.op == "IndexGet" {
+    push(out, mkInstr(OP_INDEXGET, op.a, op.b, op.c, 0, -1, -1));
+    return 0;
+  };
+  if op.op == "IndexSet" {
+    push(out, mkInstr(OP_INDEXSET, op.a, op.b, op.c, 0, -1, -1));
+    return 0;
+  };
+  if op.op == "TupleGet" {
+    push(out, mkInstr(OP_TUPLEGET, op.a, op.b, 0, op.imm, -1, -1));
+    return 0;
+  };
+  if op.op == "Len" {
+    push(out, mkInstr(OP_LEN, op.a, op.b, 0, 0, -1, -1));
+    return 0;
+  };
+  if op.op == "Push" {
+    push(out, mkInstr(OP_PUSH, op.a, op.b, 0, 0, -1, -1));
+    return 0;
+  };
+  if op.op == "PopArr" {
+    push(out, mkInstr(OP_POPARR, op.a, op.b, 0, 0, -1, -1));
+    return 0;
+  };
+  // Closures / boxes
+  if op.op == "MakeClosure" {
+    let ri = internRegList(f, op.regs);
+    push(out, mkInstr(OP_MAKECLOSURE, op.a, 0, 0, op.imm, ri, -1));
+    return 0;
+  };
+  if op.op == "GetUpvalue" {
+    push(out, mkInstr(OP_GETUPVALUE, op.a, 0, 0, op.imm, -1, -1));
+    return 0;
+  };
+  if op.op == "SetUpvalue" {
+    push(out, mkInstr(OP_SETUPVALUE, 0, op.b, 0, op.imm, -1, -1));
+    return 0;
+  };
+  if op.op == "MakeBox" {
+    push(out, mkInstr(OP_MAKEBOX, op.a, op.b, 0, 0, -1, -1));
+    return 0;
+  };
+  if op.op == "Unbox" {
+    push(out, mkInstr(OP_UNBOX, op.a, op.b, 0, 0, -1, -1));
+    return 0;
+  };
+  if op.op == "SetBox" {
+    push(out, mkInstr(OP_SETBOX, op.a, op.b, 0, 0, -1, -1));
+    return 0;
+  };
+  // Match: build the match table.
+  if op.op == "Match" {
+    let tableIdx = op.imm;
+    push(out, mkInstr(OP_MATCH, op.a, 0, 0, tableIdx, -1, -1));
+    return 0;
+  };
+  // Print / cast / panic
+  if op.op == "Print" {
+    push(out, mkInstr(OP_PRINT, op.a, 0, 0, 0, -1, -1));
+    return 0;
+  };
+  if op.op == "CastInt" || op.op == "CastFloat" || op.op == "CastBool" || op.op == "CastString" {
+    let opc = opNameToInt(op.op);
+    push(out, mkInstr(opc, op.a, op.b, 0, 0, -1, -1));
+    return 0;
+  };
+  if op.op == "Panic" {
+    push(out, mkInstr(OP_PANIC, op.a, 0, 0, 0, -1, -1));
+    return 0;
+  };
+  if op.op == "UnwrapOrProp" {
+    push(out, mkInstr(OP_UNWRAPORPROP, op.a, op.b, 0, 0, -1, -1));
+    return 0;
+  };
+  // Break / Continue: emit a Jmp to the enclosing loop's break/cond block.
+  if op.op == "Break" {
+    if enclosing.breakBlock >= 0 {
+      push(out, mkInstr(OP_JMP, 0, 0, 0, enclosing.breakBlock, -1, -1));
+    } else {
+      push(out, mkInstr(OP_BREAK, 0, 0, 0, 0, -1, -1));
+    };
+    return 0;
+  };
+  if op.op == "Continue" {
+    if enclosing.condBlock >= 0 {
+      push(out, mkInstr(OP_JMP, 0, 0, 0, enclosing.condBlock, -1, -1));
+    } else {
+      push(out, mkInstr(OP_CONTINUE, 0, 0, 0, 0, -1, -1));
+    };
+    return 0;
+  };
+  if op.op == "LoadGlobal" {
+    let ni = internString(f, op.sval);
+    push(out, mkInstr(OP_LOADGLOBAL, op.a, 0, 0, ni, -1, -1));
+    return 0;
+  };
+  if op.op == "SelfRef" {
+    push(out, mkInstr(OP_SELFREF, op.a, 0, 0, 0, -1, -1));
+    return 0;
+  };
+  if op.op == "Nop" {
+    push(out, mkInstr(OP_NOP, 0, 0, 0, 0, -1, -1));
+    return 0;
+  };
+  // Unknown op: emit a Nop (so the code array length is preserved).
+  push(out, mkInstr(OP_NOP, 0, 0, 0, 0, -1, -1));
+  0
+}
+
+// -----------------------------------------------------------------------------
+// Match table conversion (IrFunc.matchTables → BytecodeFunc.matchTables)
+// -----------------------------------------------------------------------------
+
+fn convertMatchTables(irFn: IrFunc, layouts: [BlockLayout]) -> [[BcMatchEntry]] {
+  let tables = [];
+  let mut i = 0;
+  while i < len(irFn.matchTables) {
+    let t = irFn.matchTables[i];
+    let entries = [];
+    let mut j = 0;
+    while j < len(t.entries) {
+      push(entries, convertMatchEntry(t.entries[j], layouts));
+      j = j + 1;
+    }
+    // Append the default target as a Wildcard entry.
+    let defOff = findOffset(layouts, t.defaultTarget);
+    push(entries, mkWildcardEntry(defOff));
+    push(tables, entries);
+    i = i + 1;
+  }
+  tables
+}
+
+fn mkWildcardEntry(target: int) -> BcMatchEntry {
+  BcMatchEntry {
+    patternKind: "Wildcard",
+    bindName: "",
+    litValue: mkUnit(),
+    structName: "",
+    enumName: "",
+    variant: "",
+    fieldBindings: [],
+    fieldNames: [],
+    subregs: [],
+    orPatterns: [],
+    hasRest: 0,
+    target: target,
+  }
+}
+
+fn convertMatchEntry(e: MatchEntry, layouts: [BlockLayout]) -> BcMatchEntry {
+  let target = findOffset(layouts, e.target);
+  let bcb = [];
+  let bcn = [];
+  let mut i = 0;
+  while i < len(e.fieldBindings) {
+    push(bcb, convertMatchEntry(e.fieldBindings[i].pattern, layouts));
+    push(bcn, e.fieldBindings[i].name);
+    i = i + 1;
+  }
+  let subs = [];
+  i = 0;
+  while i < len(e.subregs) {
+    push(subs, convertMatchEntry(e.subregs[i].pattern, layouts));
+    i = i + 1;
+  }
+  let ors = [];
+  i = 0;
+  while i < len(e.orPatterns) {
+    push(ors, convertMatchEntry(e.orPatterns[i].pattern, layouts));
+    i = i + 1;
+  }
+  BcMatchEntry {
+    patternKind: e.patternKind,
+    bindName: e.bindName,
+    litValue: e.litValue,
+    structName: e.structName,
+    enumName: e.enumName,
+    variant: e.variant,
+    fieldBindings: bcb,
+    fieldNames: bcn,
+    subregs: subs,
+    orPatterns: ors,
+    hasRest: e.hasRest,
+    target: target,
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Match bindings conversion (IrFunc.matchBindings → BytecodeFunc.matchBindings)
+// -----------------------------------------------------------------------------
+
+fn convertMatchBindings(irFn: IrFunc) -> [BcMatchBinding] {
+  let out = [];
+  let mut i = 0;
+  while i < len(irFn.matchBindings) {
+    let b = irFn.matchBindings[i];
+    push(out, BcMatchBinding { tableIdx: b.tableIdx, name: b.name, reg: b.reg });
+    i = i + 1;
+  }
+  out
+}
+
+// -----------------------------------------------------------------------------
+// Per-function compilation
+// -----------------------------------------------------------------------------
+
+fn compileFunc(ir: IrProgram, funcIdx: int) -> BytecodeFunc {
+  let irFn = ir.funcs[funcIdx];
+  let bcf = emptyBcFn();
+  bcf.name = irFn.name;
+  bcf.nparams = irFn.nparams;
+  bcf.nlocals = irFn.nlocals;
+  bcf.captures = irFn.captures;
+  bcf.selfReg = irFn.selfReg;
+  bcf.isMain = irFn.isMain;
+
+  // Set the global CURRENT_FN so emitOp can access it.
+  CURRENT_FN = bcf;
+
+  // Pre-pass: detect loops.
+  let loops = detectLoops(irFn);
+
+  // Lay out blocks and emit instrs.
+  let layouts = layoutBlocks(irFn, loops);
+
+  // Concat instrs into bcf.code.
+  let mut i = 0;
+  while i < len(layouts) {
+    let layout = layouts[i];
+    let mut j = 0;
+    while j < len(layout.instrs) {
+      push(bcf.code, layout.instrs[j]);
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+
+  // Build match tables.
+  bcf.matchTables = convertMatchTables(irFn, layouts);
+
+  // Build match bindings.
+  bcf.matchBindings = convertMatchBindings(irFn);
+
+  bcf
+}
+
+// -----------------------------------------------------------------------------
+// Public entry: compileToBytecode
+// -----------------------------------------------------------------------------
+
+pub fn compileToBytecode(ir: IrProgram) -> BytecodeModule {
+  let funcs = [];
+  let mut i = 0;
+  while i < len(ir.funcs) {
+    push(funcs, compileFunc(ir, i));
+    i = i + 1;
+  }
+  // Find the main function (the one with isMain=1).
+  let mut entry = 0;
+  let mut found = 0;
+  i = 0;
+  while i < len(ir.funcs) {
+    if ir.funcs[i].isMain == 1 { entry = i; found = 1; i = len(ir.funcs); };
+    i = i + 1;
+  }
+  if found == 0 { entry = 0; };
+  BytecodeModule { funcs: funcs, constants: [], entry: entry }
+}
+
+// -----------------------------------------------------------------------------
+// Disassembler (for debugging)
+// -----------------------------------------------------------------------------
+
+pub fn opNameFromInt(op: int) -> string {
+  if op == OP_LOAD_INT { return "LoadInt"; };
+  if op == OP_LOAD_FLOAT { return "LoadFloat"; };
+  if op == OP_LOAD_STRING { return "LoadString"; };
+  if op == OP_LOAD_BOOL { return "LoadBool"; };
+  if op == OP_LOAD_UNIT { return "LoadUnit"; };
+  if op == OP_LOAD_NULL { return "LoadNull"; };
+  if op == OP_ADD { return "Add"; };
+  if op == OP_SUB { return "Sub"; };
+  if op == OP_MUL { return "Mul"; };
+  if op == OP_DIV { return "Div"; };
+  if op == OP_IDIV { return "IDiv"; };
+  if op == OP_MOD { return "Mod"; };
+  if op == OP_NEG { return "Neg"; };
+  if op == OP_NOT { return "Not"; };
+  if op == OP_BITAND { return "BitAnd"; };
+  if op == OP_BITOR { return "BitOr"; };
+  if op == OP_BITXOR { return "BitXor"; };
+  if op == OP_BITNOT { return "BitNot"; };
+  if op == OP_SHL { return "Shl"; };
+  if op == OP_SHR { return "Shr"; };
+  if op == OP_EQ { return "Eq"; };
+  if op == OP_NEQ { return "Neq"; };
+  if op == OP_LT { return "Lt"; };
+  if op == OP_LE { return "Le"; };
+  if op == OP_GT { return "Gt"; };
+  if op == OP_GE { return "Ge"; };
+  if op == OP_JMP { return "Jmp"; };
+  if op == OP_JMPIF { return "JmpIf"; };
+  if op == OP_JMPIFNOT { return "JmpIfNot"; };
+  if op == OP_RETURN { return "Return"; };
+  if op == OP_RETURNUNIT { return "ReturnUnit"; };
+  if op == OP_BR { return "Br"; };
+  if op == OP_POP { return "Pop"; };
+  if op == OP_DUP { return "Dup"; };
+  if op == OP_CALL { return "Call"; };
+  if op == OP_CALLBUILTIN { return "CallBuiltin"; };
+  if op == OP_CALLCLOSURE { return "CallClosure"; };
+  if op == OP_CALLNAMED { return "CallNamed"; };
+  if op == OP_TAILCALL { return "TailCall"; };
+  if op == OP_ALLOCSTRUCT { return "AllocStruct"; };
+  if op == OP_ALLOCVARIANT { return "AllocVariant"; };
+  if op == OP_ALLOCARRAY { return "AllocArray"; };
+  if op == OP_ALLOCMAP { return "AllocMap"; };
+  if op == OP_ALLOCTUPLE { return "AllocTuple"; };
+  if op == OP_ALLOCRANGE { return "AllocRange"; };
+  if op == OP_LOADFIELD { return "LoadField"; };
+  if op == OP_STOREFIELD { return "StoreField"; };
+  if op == OP_INDEXGET { return "IndexGet"; };
+  if op == OP_INDEXSET { return "IndexSet"; };
+  if op == OP_TUPLEGET { return "TupleGet"; };
+  if op == OP_LEN { return "Len"; };
+  if op == OP_PUSH { return "Push"; };
+  if op == OP_POPARR { return "PopArr"; };
+  if op == OP_MAKECLOSURE { return "MakeClosure"; };
+  if op == OP_GETUPVALUE { return "GetUpvalue"; };
+  if op == OP_SETUPVALUE { return "SetUpvalue"; };
+  if op == OP_MAKEBOX { return "MakeBox"; };
+  if op == OP_UNBOX { return "Unbox"; };
+  if op == OP_SETBOX { return "SetBox"; };
+  if op == OP_MATCH { return "Match"; };
+  if op == OP_PRINT { return "Print"; };
+  if op == OP_CASTINT { return "CastInt"; };
+  if op == OP_CASTFLOAT { return "CastFloat"; };
+  if op == OP_CASTBOOL { return "CastBool"; };
+  if op == OP_CASTSTRING { return "CastString"; };
+  if op == OP_PANIC { return "Panic"; };
+  if op == OP_UNWRAPORPROP { return "UnwrapOrProp"; };
+  if op == OP_NOP { return "Nop"; };
+  if op == OP_BREAK { return "Break"; };
+  if op == OP_CONTINUE { return "Continue"; };
+  if op == OP_SELFREF { return "SelfRef"; };
+  if op == OP_LOADGLOBAL { return "LoadGlobal"; };
+  if op == OP_TRACE { return "Trace"; };
+  if op == OP_BREAKPOINT { return "Breakpoint"; };
+  "<unknown>"
+}
+
+pub fn disasmInstr(instr: Instr, f: BytecodeFunc) -> string {
+  let name = opNameFromInt(instr.op);
+  let s = name + " a=" + str(instr.a) + " b=" + str(instr.b) + " c=" + str(instr.c) + " imm=" + str(instr.imm);
+  if instr.regs >= 0 { s + " regs=" + str(instr.regs); }
+  else if instr.fields >= 0 { s + " fields=" + str(instr.fields); }
+  else { s }
+}
+
+pub fn disasmFunc(f: BytecodeFunc) -> string {
+  let out = "=== function " + f.name + " (nparams=" + str(f.nparams) + " nlocals=" + str(f.nlocals) + " selfReg=" + str(f.selfReg) + ") ===";
+  print(out);
+  let mut i = 0;
+  while i < len(f.code) {
+    print("  " + str(i) + ": " + disasmInstr(f.code[i], f));
+    i = i + 1;
+  }
+  out
+}
+
+pub fn disasmModule(m: BytecodeModule) -> int {
+  let mut i = 0;
+  while i < len(m.funcs) {
+    disasmFunc(m.funcs[i]);
+    i = i + 1;
+  }
+  0
+}
+
+print("== aether-bootstrap/codegen.ae loaded ==");
