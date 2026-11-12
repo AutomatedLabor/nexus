@@ -32,27 +32,27 @@ Plus the v3 language features: **trait system** (Ord/Eq/Show/Iterator +
 semantics, double-borrow, NLL), **async coroutines** (spawn/await/yield/
 channels/select/join/race/timeout — real suspend/resume, not just Promises).
 
-## Final metrics (real counts, 43 git commits)
+## Final metrics (real counts, 46 git commits)
 
 | Metric | v2 (start of v3) | v3 (final) |
 |---|---|---|
-| Aether TS files | 100 | **150** |
-| Aether TS LOC | 40,329 | **62,911** |
-| Aether `.ae` files | 0 | **231** (41,973 LOC) |
+| Aether TS files | 100 | **166** |
+| Aether TS LOC | 40,329 | **66,661** |
+| Aether `.ae` files | 0 | **278** (50,255 LOC) |
 | Go port | 0 | **5,630 LOC** (229 tests pass) |
 | Python port | 0 | **4,363 LOC** (tokenizes Aether) |
-| **Total LOC** | ~40K | **~115K** |
-| Test cases | 1,964 | **2,855 passing** |
+| **Total LOC** | ~40K | **~127K** |
+| Test cases | 1,964 | **2,781 passing** |
 | Runtimes | 2 (tree + VM) | **5** (+ WASM, x86, JIT) |
 | Trait system | no | **yes** (691 LOC) |
 | Borrow checker | no | **yes** (942 LOC, NLL) |
 | Async coroutines | no | **yes** (1,091 LOC, real suspend/resume) |
 | AI code assistant | no | **yes** (z-ai-web-dev-sdk, server-side, verified answers) |
-| Stdlib modules | 24 | **45** |
-| Stdlib functions | 510 | **731** |
-| Aether packages | 0 | **32** (written in Aether) |
-| Real apps in Aether | 0 | **5** (database, web-framework, regex-engine, chess-engine, 2048-game) |
-| Example programs | 72 | **158** |
+| Stdlib modules | 24 | **53** |
+| Stdlib functions | 510 | **806** |
+| Aether packages | 0 | **37** (written in Aether) |
+| Real apps in Aether | 0 | **6** (database, web-framework, regex-engine, chess-engine, 2048-game, markdown-engine) |
+| Example programs | 72 | **187** |
 | Compiler ports | 0 | **2** (Python lexer+parser; Go lexer+parser, 229 Go tests) |
 | Native codegen backends | 0 | **2** (WASM, x86-64; ARM64/RISC-V are RFC-009/010) |
 | JIT compiler | 0 | **1** (tier-2; tier-3 in-memory x86 is RFC-011) |
@@ -62,7 +62,7 @@ channels/select/join/race/timeout — real suspend/resume, not just Promises).
 | Book chapters | 16 | **26** (ch11–ch20 new) |
 | ADRs | 15 | **25** (adr-16–25 new) |
 | RFCs | 7 | **12** (rfc-009–013 new) |
-| Git commits | 23 | **43** |
+| Git commits | 23 | **46** |
 | Live deploy | yes | yes (https://nexus-aip-roj-builder.vercel.app) |
 
 ## Wave completion (honest status)
