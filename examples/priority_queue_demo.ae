@@ -1,0 +1,131 @@
+// priority_queue_demo.ae
+// ========================
+// A binary min-heap priority queue. We store entries as (priority, value)
+// 2-tuples.  push() appends and sifts up; pop() swaps the root with the
+// last element, removes it, and sifts the new root down.  Lower
+// priority value = higher urgency (popped first).
+//
+// This demonstrates the heap property: the smallest priority is always
+// at the root, so pop() is O(log n) and peek() is O(1).
+//
+// We avoid the for-loop-scope quirk by using `while` and recursion.
+
+// Make an empty heap.
+fn make_heap() -> [[int]] { [] }
+
+// Number of entries.
+fn size(h: [[int]]) -> int { len(h) }
+
+// Sift the entry at index i up toward the root while it is smaller
+// than its parent.  Indices are 0-based; parent of i is (i-1)/2.
+// Returns the same heap (mutated in place) for chaining.
+fn sift_up(h: [[int]], i: int) -> [[int]] {
+  let mut idx = i;
+  let mut keep_going = idx > 0;
+  while keep_going {
+    let parent = int((idx - 1) / 2);
+    let p_cur = h[idx].0;
+    let p_par = h[parent].0;
+    if p_cur < p_par {
+      let tmp = h[idx];
+      h[idx] = h[parent];
+      h[parent] = tmp;
+      idx = parent;
+      keep_going = idx > 0;
+    } else {
+      keep_going = false;
+    }
+  }
+  h
+}
+
+// Sift the entry at index i down toward the leaves while it is bigger
+// than its smallest child.  Children of i are 2i+1 and 2i+2.
+fn sift_down(h: [[int]], i: int) -> [[int]] {
+  let n = len(h);
+  let mut idx = i;
+  let mut keep_going = true;
+  while keep_going {
+    let l = 2 * idx + 1;
+    let r = 2 * idx + 2;
+    let mut smallest = idx;
+    let mut updated = false;
+    if l < n {
+      if h[l].0 < h[smallest].0 {
+        smallest = l;
+        updated = true;
+      };
+    };
+    if r < n {
+      if h[r].0 < h[smallest].0 {
+        smallest = r;
+        updated = true;
+      };
+    };
+    if smallest == idx {
+      keep_going = false;
+    } else {
+      let tmp = h[idx];
+      h[idx] = h[smallest];
+      h[smallest] = tmp;
+      idx = smallest;
+      keep_going = updated;
+    }
+  }
+  h
+}
+
+// Insert (priority, value).  Returns the heap.
+fn push_entry(h: [[int]], priority: int, value: int) -> [[int]] {
+  push(h, [priority, value]);
+  sift_up(h, len(h) - 1);
+  h
+}
+
+// Peek at the smallest-priority entry without removing it.
+fn peek(h: [[int]]) -> [int] { h[0] }
+
+// Remove and return the smallest-priority entry.  Panics on empty.
+// Returns the (popped_entry, new_heap) tuple.
+fn pop_entry(h: [[int]]) -> ([int], [[int]]) {
+  if len(h) == 0 {
+    panic("pop: empty heap")
+  };
+  let top = h[0];
+  let last = h[len(h) - 1];
+  h[0] = last;
+  let _ = pop(h);
+  if len(h) > 0 {
+    sift_down(h, 0)
+  };
+  (top, h)
+}
+
+print("== Priority queue demo (binary min-heap) ==");
+print("");
+
+let heap = make_heap();
+let _ = push_entry(heap, 5, 100);
+let _ = push_entry(heap, 1, 200);
+let _ = push_entry(heap, 3, 300);
+let _ = push_entry(heap, 2, 400);
+let _ = push_entry(heap, 4, 500);
+
+print("inserted 5 tasks with priorities [5, 1, 3, 2, 4] (values 100..500)");
+print(f"heap size after inserts: {size(heap)}");
+print("");
+
+print("pop order (priority, value):");
+let mut i = 0;
+while i < 5 {
+  let r = pop_entry(heap);
+  let entry = r.0;
+  let p = entry.0;
+  let v = entry.1;
+  print(f"  pop #{i + 1}: priority = {p}, value = {v}");
+  i = i + 1;
+}
+print("");
+
+assert_eq(size(heap), 0);
+print("All assertions passed.");

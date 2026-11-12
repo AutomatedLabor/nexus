@@ -1,0 +1,122 @@
+// intervals_merge.ae
+// ==================
+// An interval tree (sorted by start) with overlap queries. We insert
+// 5 intervals, then query overlaps with the query interval [3, 7].
+//
+// The "tree" is actually a sorted array of (lo, hi) pairs; insert
+// keeps it sorted by `lo`; query walks the array and reports every
+// interval that overlaps [q_lo, q_hi] (i.e. interval.lo <= q_hi AND
+// interval.hi >= q_lo).
+
+// Insert an interval [lo, hi] into the sorted array, keeping it
+// sorted by `lo`.  Mutates the array in place.
+fn insert_interval(arr: [[int]], lo: int, hi: int) -> [[int]] {
+  let mut i = 0;
+  let mut placed = false;
+  while i < len(arr) {
+    if (arr[i].0 > lo) && !placed {
+      // Insert before position i.
+      push(arr, [lo, hi]);
+      // Shift the tail right by one.
+      let mut j = len(arr) - 1;
+      while j > i {
+        arr[j] = arr[j - 1];
+        j = j - 1;
+      }
+      arr[i] = [lo, hi];
+      placed = true;
+    };
+    i = i + 1;
+  }
+  if !placed {
+    push(arr, [lo, hi]);
+  };
+  arr
+}
+
+// Find all intervals in `arr` that overlap [q_lo, q_hi].
+// Returns an array of (lo, hi) pairs.
+fn query_overlaps(arr: [[int]], q_lo: int, q_hi: int) -> [[int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(arr) {
+    let lo = arr[i].0;
+    let hi = arr[i].1;
+    if (lo <= q_hi) && (hi >= q_lo) {
+      push(out, [lo, hi]);
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// Merge overlapping intervals in `arr` (sorted by `lo`).
+// Returns a NEW array of disjoint intervals.
+fn merge_intervals(arr: [[int]]) -> [[int]] {
+  if len(arr) == 0 {
+    []
+  } else {
+    let mut out = [];
+    push(out, [arr[0].0, arr[0].1]);
+    let mut i = 1;
+    while i < len(arr) {
+      let cur = arr[i];
+      let last = out[len(out) - 1];
+      if cur.0 <= last.1 {
+        // Overlap: extend last.
+        let new_hi = if cur.1 > last.1 { cur.1 } else { last.1 };
+        out[len(out) - 1] = [last.0, new_hi];
+      } else {
+        push(out, [cur.0, cur.1]);
+      };
+      i = i + 1;
+    }
+    out
+  }
+}
+
+// Render an array of (lo, hi) pairs as a comma-separated list.
+fn show_intervals(arr: [[int]]) -> string {
+  let mut out = "[";
+  let mut i = 0;
+  while i < len(arr) {
+    if i > 0 { out = out + ", " };
+    out = out + "[" + str(arr[i].0) + ", " + str(arr[i].1) + "]";
+    i = i + 1;
+  }
+  out + "]"
+}
+
+print("== Interval tree demo ==");
+print("");
+
+let mut tree = [];
+let _ = insert_interval(tree, 1, 4);
+let _ = insert_interval(tree, 6, 8);
+let _ = insert_interval(tree, 5, 7);
+let _ = insert_interval(tree, 10, 12);
+let _ = insert_interval(tree, 2, 6);
+
+print(f"inserted 5 intervals: {show_intervals(tree)}");
+print("");
+
+let query_lo = 3;
+let query_hi = 7;
+let overlaps = query_overlaps(tree, query_lo, query_hi);
+print(f"query overlaps with [{query_lo}, {query_hi}]:");
+let mut i = 0;
+while i < len(overlaps) {
+  print(f"  [{overlaps[i].0}, {overlaps[i].1}]");
+  i = i + 1;
+}
+print("");
+
+let merged = merge_intervals(tree);
+print(f"merged disjoint intervals: {show_intervals(merged)}");
+print("");
+
+// Sanity assertions.
+assert_eq(tree, [[1, 4], [2, 6], [5, 7], [6, 8], [10, 12]]);
+assert_eq(overlaps, [[1, 4], [2, 6], [5, 7], [6, 8]]);
+assert_eq(merged, [[1, 8], [10, 12]]);
+print("All assertions passed.");

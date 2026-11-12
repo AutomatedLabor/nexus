@@ -66,6 +66,7 @@ import {
 } from "@aether/core";
 import { disassemble } from "@aether/vm/bytecode/bytecode";
 import { format } from "@aether/tools/formatter/formatter";
+import { AssistantPanel } from "../assistant-panel";
 import { lint, type LintDiagnostic, type Severity } from "@aether/tools/linter/linter";
 import { CodeEditor } from "../code-editor";
 import { RunStatus } from "../header";
@@ -810,7 +811,7 @@ export function PlaygroundView() {
           />
         </div>
 
-        <OutputPanel run={run} lint={lintState} />
+        <OutputPanel run={run} lint={lintState} code={editorCode} />
       </div>
 
       <AsyncDemoDialog
@@ -970,6 +971,8 @@ function Toolbar({
 interface OutputPanelProps {
   run: RunState;
   lint: LintState;
+  /** Current playground source code (forwarded to the AI Assistant panel). */
+  code: string;
 }
 
 const MODE_LABELS: Record<RuntimeMode, string> = {
@@ -979,7 +982,7 @@ const MODE_LABELS: Record<RuntimeMode, string> = {
   x86: "x86-64 backend",
 };
 
-function OutputPanel({ run, lint }: OutputPanelProps) {
+function OutputPanel({ run, lint, code }: OutputPanelProps) {
   // The disassembly tabs only make sense in their respective modes.
   const showBytecode = run.mode === "bytecode";
   const showWasm = run.mode === "wasm";
@@ -1025,6 +1028,9 @@ function OutputPanel({ run, lint }: OutputPanelProps) {
           <TabsTrigger value="stats" className="gap-1.5">
             <Clock className="size-3.5" /> Stats
           </TabsTrigger>
+          <TabsTrigger value="assistant" className="gap-1.5">
+            <Sparkles className="size-3.5" /> AI Assistant
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="output" className="min-h-0 flex-1">
           <OutputTab run={run} />
@@ -1058,6 +1064,9 @@ function OutputPanel({ run, lint }: OutputPanelProps) {
         </TabsContent>
         <TabsContent value="stats" className="min-h-0 flex-1">
           <StatsTab run={run} />
+        </TabsContent>
+        <TabsContent value="assistant" className="min-h-0 flex-1">
+          <AssistantPanel code={code} defaultOpen={true} />
         </TabsContent>
       </Tabs>
     </div>

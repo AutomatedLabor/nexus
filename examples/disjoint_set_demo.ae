@@ -1,0 +1,124 @@
+// disjoint_set_demo.ae
+// =====================
+// A disjoint-set (union-find) with path compression and union-by-rank.
+// We create 5 singletons {0}, {1}, {2}, {3}, {4}, then union them
+// into 2 sets: {0, 1, 2} and {3, 4}.  Then we run `find` on every
+// node and report which component it belongs to.
+//
+// The disjoint-set is stored as two parallel arrays:
+//   parent[i] : parent of node i (root's parent is itself)
+//   rank[i]   : upper bound on the depth of the subtree rooted at i
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+// Create a disjoint-set with `n` singletons.
+fn make_dset(n: int) -> ([int], [int]) {
+  let mut parent = repeat(n, 0);
+  let mut i = 0;
+  while i < n { parent[i] = i; i = i + 1; }
+  let rank = repeat(n, 0);
+  (parent, rank)
+}
+
+// Find the root of `x`'s component, with path compression.
+// Mutates `parent` in place.
+fn find(parent: [int], x: int) -> int {
+  let mut root = x;
+  while parent[root] != root {
+    root = parent[root];
+  }
+  // Path compression: point every node on the path directly at root.
+  let mut cur = x;
+  while parent[cur] != root {
+    let next = parent[cur];
+    parent[cur] = root;
+    cur = next;
+  }
+  root
+}
+
+// Union the components containing `x` and `y` using union-by-rank.
+// Returns the new (parent, rank) tuple (mutated in place).
+fn union(parent: [int], rank: [int], x: int, y: int) -> ([int], [int]) {
+  let rx = find(parent, x);
+  let ry = find(parent, y);
+  if rx == ry {
+    (parent, rank)
+  } else {
+    if rank[rx] < rank[ry] {
+      parent[rx] = ry;
+    } else {
+      if rank[rx] > rank[ry] {
+        parent[ry] = rx;
+      } else {
+        parent[ry] = rx;
+        rank[rx] = rank[rx] + 1;
+      }
+    };
+    (parent, rank)
+  }
+}
+
+// Return the number of distinct components.
+fn count_components(parent: [int]) -> int {
+  let mut n = 0;
+  let mut i = 0;
+  while i < len(parent) {
+    if find(parent, i) == i {
+      n = n + 1;
+    };
+    i = i + 1;
+  }
+  n
+}
+
+print("== Disjoint-set (union-find) demo ==");
+print("");
+
+let n = 5;
+let dset = make_dset(n);
+let parent = dset.0;
+let rank = dset.1;
+
+print(f"created {n} singletons: {{0}}, {{1}}, {{2}}, {{3}}, {{4}}");
+print(f"initial components: {count_components(parent)}");
+print("");
+
+print("union(0, 1):");
+let _ = union(parent, rank, 0, 1);
+print(f"  components: {count_components(parent)}");
+
+print("union(1, 2):");
+let _ = union(parent, rank, 1, 2);
+print(f"  components: {count_components(parent)}");
+
+print("union(3, 4):");
+let _ = union(parent, rank, 3, 4);
+print(f"  components: {count_components(parent)}");
+print("");
+
+print("find each node, report its root:");
+let mut i = 0;
+while i < n {
+  let r = find(parent, i);
+  print(f"  find({i}) = {r}");
+  i = i + 1;
+}
+print("");
+
+print(f"final component count: {count_components(parent)}");
+print("");
+
+// Sanity assertions.
+assert_eq(count_components(parent), 2);
+assert_eq(find(parent, 0), find(parent, 1));
+assert_eq(find(parent, 1), find(parent, 2));
+assert_eq(find(parent, 3), find(parent, 4));
+assert_eq(find(parent, 0) == find(parent, 3), false);  // different components
+print("All assertions passed.");

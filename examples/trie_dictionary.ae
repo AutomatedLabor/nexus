@@ -1,0 +1,156 @@
+// trie_dictionary.ae
+// ===================
+// A trie (prefix tree) used as a dictionary with autocomplete. We
+// insert 10 words, then autocomplete the prefixes "ap" and "ba" to
+// demonstrate the prefix lookup: walk the trie to the prefix node,
+// then DFS to collect every complete word below it.
+//
+// The trie is stored as 4 parallel arrays indexed by node id:
+//   is_word[id]   : 1 if this node marks the end of a word
+//   letters[id]   : list of edge labels (single chars)
+//   nexts[id]     : list of child node ids (parallel to letters)
+//   parent[id]    : parent id, or -1 for root
+//
+// This avoids needing a hash map — children are searched linearly,
+// which is fine for alphabets of ~26 letters.
+
+// Make an empty trie: one root node (id 0).
+fn new_trie() -> ([int], [[string]], [[int]], [int]) {
+  ([0], [[]], [[]], [-1])
+}
+
+// Find (or create) the child of node `u` with edge label `c`.
+fn step(is_word: [int], letters: [[string]], nexts: [[int]], parent: [int],
+       u: int, c: string) -> int {
+  let ls = letters[u];
+  let mut i = 0;
+  let mut found = -1;
+  while i < len(ls) {
+    if ls[i] == c { found = nexts[u][i] };
+    i = i + 1;
+  }
+  if found != -1 {
+    found
+  } else {
+    // allocate a new node
+    let id = len(is_word);
+    push(is_word, 0);
+    push(letters, []);
+    push(nexts, []);
+    push(parent, u);
+    push(letters[u], c);
+    push(nexts[u], id);
+    id
+  }
+}
+
+// Insert a word into the trie. Walks the trie from the root, calling
+// step() for each character, then marks the final node as is_word.
+fn insert(trie: ([int], [[string]], [[int]], [int]), word: string) -> int {
+  let is_word = trie.0;
+  let letters = trie.1;
+  let nexts = trie.2;
+  let parent = trie.3;
+  let mut u = 0;
+  let mut i = 0;
+  while i < len(word) {
+    u = step(is_word, letters, nexts, parent, u, str(word[i]));
+    i = i + 1;
+  }
+  is_word[u] = 1;
+  0
+}
+
+// DFS: collect all complete words below node `start` (which is at
+// the end of `prefix` in the trie).
+fn collect(is_word: [int], letters: [[string]], nexts: [[int]],
+           start: int, prefix: string) -> [string] {
+  let mut out = [];
+  if is_word[start] == 1 { push(out, prefix) };
+  let ls = letters[start];
+  let mut i = 0;
+  while i < len(ls) {
+    let sub = collect(is_word, letters, nexts, nexts[start][i], prefix + ls[i]);
+    let mut j = 0;
+    while j < len(sub) { push(out, sub[j]); j = j + 1; }
+    i = i + 1;
+  }
+  out
+}
+
+// Find the node id matching `prefix`, or -1 if not present.
+fn find_node(trie: ([int], [[string]], [[int]], [int]), prefix: string) -> int {
+  let letters = trie.1;
+  let nexts = trie.2;
+  let mut u = 0;
+  let mut i = 0;
+  let mut ok = true;
+  while (i < len(prefix)) && ok {
+    let c = str(prefix[i]);
+    let ls = letters[u];
+    let mut j = 0;
+    let mut next_id = -1;
+    while j < len(ls) {
+      if ls[j] == c { next_id = nexts[u][j] };
+      j = j + 1;
+    }
+    if next_id == -1 { ok = false } else { u = next_id };
+    i = i + 1;
+  }
+  if ok { u } else { -1 }
+}
+
+// Autocomplete: return all words in the trie that start with `prefix`.
+fn autocomplete(trie: ([int], [[string]], [[int]], [int]), prefix: string) -> [string] {
+  let u = find_node(trie, prefix);
+  if u == -1 {
+    []
+  } else {
+    collect(trie.0, trie.1, trie.2, u, prefix)
+  }
+}
+
+// Render a [string] array as a quoted comma-separated list.
+fn show_words(arr: [string]) -> string {
+  let mut out = "[";
+  let mut i = 0;
+  while i < len(arr) {
+    if i > 0 { out = out + ", " };
+    out = out + "\"" + arr[i] + "\"";
+    i = i + 1;
+  }
+  out + "]"
+}
+
+print("== Trie dictionary + autocomplete ==");
+print("");
+
+let t = new_trie();
+let words = ["apple", "app", "apply", "apricot", "apex",
+             "banana", "band", "bandana", "bank", "bat"];
+print("inserted 10 words:");
+let mut i = 0;
+while i < len(words) {
+  let _ = insert(t, words[i]);
+  print("  " + words[i]);
+  i = i + 1;
+}
+print("");
+
+let prefixes = ["ap", "ba", "x"];
+let mut k = 0;
+while k < len(prefixes) {
+  let p = prefixes[k];
+  let matches = autocomplete(t, p);
+  print(f"autocomplete(\"{p}\") -> {show_words(matches)}");
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(autocomplete(t, "ap"), ["app", "apple", "apply", "apricot", "apex"]);
+assert_eq(autocomplete(t, "ba"), ["banana", "band", "bandana", "bank", "bat"]);
+assert_eq(autocomplete(t, "x"), []);
+assert_eq(autocomplete(t, "apple"), ["apple"]);
+assert_eq(autocomplete(t, "app"), ["app", "apple", "apply"]);
+print("All assertions passed.");

@@ -1,0 +1,124 @@
+// bloom_filter_demo.ae
+// =====================
+// A Bloom filter using k independent hash functions and a bit
+// array of size m.  We add 100 items (the strings "item0" .. "item99"),
+// then check 10 of them and report the false-positive rate for 10
+// items NOT in the set.
+//
+// We implement the bit array as a plain int array of 0/1 values,
+// because Aether has no native bitset. We use the integer-to-string
+// conversion `i -> "item" + str(i)` to make keys, and a string-
+// hash built from `charCode` mixing.
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+// FNV-1a-flavoured hash with a seed offset; result mod m.
+fn hash_str(s: string, seed: int, m: int) -> int {
+  let mut h = seed;
+  let mut i = 0;
+  while i < len(s) {
+    let c = charCode(s, i);
+    h = ((h * 16777619) ^ c) & 0x7fffffff;
+    i = i + 1;
+  }
+  h % m
+}
+
+// Make an empty Bloom filter with `m` bits and `k` hashes.
+fn make_filter(m: int, k: int) -> ([int], int, int) {
+  (repeat(m, 0), m, k)
+}
+
+// Compute the i-th hash of `s` for i in [0, k).
+fn bit_index(s: string, i: int, m: int) -> int {
+  hash_str(s, 0x811c9dc5 + i * 2654435761, m)
+}
+
+// Add an item: set all k hashed bits.
+fn add(f: ([int], int, int), s: string) -> int {
+  let bits = f.0;
+  let m = f.1;
+  let k = f.2;
+  let mut i = 0;
+  while i < k {
+    let idx = bit_index(s, i, m);
+    bits[idx] = 1;
+    i = i + 1;
+  }
+  0
+}
+
+// Test membership: every one of the k hashed bits must be 1.
+fn contains(f: ([int], int, int), s: string) -> bool {
+  let bits = f.0;
+  let m = f.1;
+  let k = f.2;
+  let mut i = 0;
+  let mut all_set = true;
+  while (i < k) && all_set {
+    let idx = bit_index(s, i, m);
+    if bits[idx] == 0 { all_set = false };
+    i = i + 1;
+  }
+  all_set
+}
+
+print("== Bloom filter demo (100 items, 10 probes) ==");
+print("");
+
+// A bigger filter than bloom_filter.ae uses: 2048 bits, 6 hashes.
+// With n=100 items the expected FP rate is ~(1 - e^(-6*100/2048))^6
+// ~ 0.0008 — so we should see very few false positives on the 10
+// not-in-set probes.
+let m = 2048;
+let k = 6;
+let f = make_filter(m, k);
+
+// Add 100 items: "item0" .. "item99".
+let mut j = 0;
+while j < 100 {
+  let _ = add(f, "item" + str(j));
+  j = j + 1;
+}
+print(f"added 100 items (item0 .. item99) to a {m}-bit / {k}-hash filter");
+print("");
+
+// Probe 10 items that ARE in the set: should all return true.
+print("probe 10 in-set items (should all be true):");
+let mut in_count = 0;
+let mut p = 0;
+while p < 10 {
+  let s = "item" + str(p * 9);
+  let r = contains(f, s);
+  if r { in_count = in_count + 1 };
+  print(f"  contains({s}) -> {str(r)}");
+  p = p + 1;
+}
+print(f"in-set hit count: {in_count}/10 (must be 10 — no false negatives)");
+assert_eq(in_count, 10);
+print("");
+
+// Probe 10 items NOT in the set: "missing0" .. "missing9".
+print("probe 10 not-in-set items (false positives possible):");
+let mut fp_count = 0;
+let mut q = 0;
+while q < 10 {
+  let s = "missing" + str(q);
+  let r = contains(f, s);
+  if r { fp_count = fp_count + 1 };
+  let tag = if r { "  (FALSE POSITIVE)" } else { "" };
+  print(f"  contains({s}) -> {str(r)}{tag}");
+  q = q + 1;
+}
+print(f"false positives: {fp_count}/10");
+print("");
+
+// Sanity: a Bloom filter MUST have no false negatives.
+assert_eq(in_count, 10);
+print("All assertions passed.");

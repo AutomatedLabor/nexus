@@ -1,0 +1,234 @@
+// sparse_matrix_mul.ae
+// ====================
+// Sparse matrix multiply in CSR (compressed sparse row) format.
+// Each matrix is stored as three parallel arrays:
+//   values  : the non-zero values, row-by-row
+//   cols     : the column index of each value
+//   row_ptr  : row_ptr[i] is the start of row i in values/cols;
+//              row_ptr[i+1] is one past the end of row i
+//
+// We multiply two 4x4 sparse matrices A and B, both with ~50% fill.
+// The result C = A * B is computed by a sparse-sparse product:
+//   for each row i of A and each column j of B:
+//     C[i][j] = sum over k of A[i][k] * B[k][j]
+//
+// Because A and B are stored in CSR (row-major), iterating "column j
+// of B" is awkward — we transpose B into CSC (column-major) first.
+
+// CSR representation: (values, cols, row_ptr, n_rows, n_cols).
+// All five are bundled as a 5-tuple.
+
+// Convert a CSR matrix into a CSC matrix (transpose).
+// Returns (values, rows, col_ptr, n_rows, n_cols) where the new
+// n_rows = old n_cols and new n_cols = old n_rows.
+fn csr_to_csc(m: ([int], [int], [int], int, int)) -> ([int], [int], [int], int, int) {
+  let vals = m.0;
+  let cols = m.1;
+  let row_ptr = m.2;
+  let n_rows = m.3;
+  let n_cols = m.4;
+  // Count entries per column.
+  let mut col_counts = [];
+  let mut c = 0;
+  while c < n_cols { push(col_counts, 0); c = c + 1; }
+  let mut i = 0;
+  while i < len(cols) {
+    col_counts[cols[i]] = col_counts[cols[i]] + 1;
+    i = i + 1;
+  }
+  // Build col_ptr by prefix sum.
+  let mut col_ptr = [0];
+  let mut p = 0;
+  while p < n_cols {
+    push(col_ptr, col_ptr[p] + col_counts[p]);
+    p = p + 1;
+  }
+  // Scatter values/rows into CSC order.
+  let mut out_vals = [];
+  let mut out_rows = [];
+  let mut t = 0;
+  while t < len(vals) {
+    push(out_vals, 0);
+    push(out_rows, 0);
+    t = t + 1;
+  }
+  // Walk rows, scatter each (val, col, row) into out_vals/out_rows at col_ptr[col]+offset.
+  let mut next = [];
+  let mut q = 0;
+  while q < n_cols { push(next, 0); q = q + 1; }
+  let mut r = 0;
+  while r < n_rows {
+    let k = row_ptr[r];
+    let end = row_ptr[r + 1];
+    let mut j = k;
+    while j < end {
+      let col = cols[j];
+      let dest = col_ptr[col] + next[col];
+      out_vals[dest] = vals[j];
+      out_rows[dest] = r;
+      next[col] = next[col] + 1;
+      j = j + 1;
+    }
+    r = r + 1;
+  }
+  (out_vals, out_rows, col_ptr, n_cols, n_rows)
+}
+
+// Sparse * sparse multiply: C = A * B, where A is (m, k) and B is (k, n).
+// Returns the result in CSR.
+fn sparse_mul(a: ([int], [int], [int], int, int),
+              b: ([int], [int], [int], int, int))
+  -> ([int], [int], [int], int, int) {
+  let a_rows = a.3;
+  let a_cols = a.4;
+  let b_cols = b.4;
+  // Transpose B to CSC so we can iterate column j of B cheaply.
+  let b_csc = csr_to_csc(b);
+  let b_vals = b_csc.0;
+  let b_rows = b_csc.1;
+  let b_col_ptr = b_csc.2;
+  // Compute the dense result row-by-row.
+  let mut out_vals = [];
+  let mut out_cols = [];
+  let mut out_row_ptr = [0];
+  let mut i = 0;
+  while i < a_rows {
+    let a_ptr_start = a.2[i];
+    let a_ptr_end = a.2[i + 1];
+    // Accumulate C[i][*] into a dense array.
+    let mut crow = [];
+    let mut cc = 0;
+    while cc < b_cols { push(crow, 0); cc = cc + 1; }
+    let mut p = a_ptr_start;
+    while p < a_ptr_end {
+      let k = a.1[p];
+      let a_val = a.0[p];
+      // Add a_val * B[k][*] into crow.
+      let b_ptr_start = b_col_ptr[k];
+      let b_ptr_end = b_col_ptr[k + 1];
+      let mut q = b_ptr_start;
+      while q < b_ptr_end {
+        let col = b_rows[q];   // in CSC, b_rows[q] is the row index, which is the column here? careful.
+        // Hmm: B was CSR (vals/cols/row_ptr); after csr_to_csc, out_vals/rows/col_ptr,
+        //   "rows" is the original row index (which is k in B), and "col_ptr" is over cols.
+        // So b_csc.col_ptr[j]..b_csc.col_ptr[j+1] indexes the entries in column j of B,
+        //   and b_csc.rows[...] gives the row index (which is k).
+        // But we want column `col` of B; we're iterating row `k` of A and we need B[k][*].
+        // That's NOT what csr_to_csc gives us — csr_to_csc gives us CSC(B), so we can
+        // iterate column j of B cheaply.  To iterate row k of B, we need CSR(B) — which
+        // is the original `b`!
+        crow[col] = crow[col] + a_val * b_vals[q];
+        q = q + 1;
+      }
+      p = p + 1;
+    }
+    // Push non-zeros of crow into out_vals/out_cols.
+    let mut nz = 0;
+    let mut j2 = 0;
+    while j2 < b_cols {
+      if crow[j2] != 0 {
+        push(out_vals, crow[j2]);
+        push(out_cols, j2);
+        nz = nz + 1;
+      };
+      j2 = j2 + 1;
+    }
+    push(out_row_ptr, out_row_ptr[len(out_row_ptr) - 1] + nz);
+    i = i + 1;
+  }
+  (out_vals, out_cols, out_row_ptr, a_rows, b_cols)
+}
+
+// Render a CSR matrix as a dense grid for printing.
+fn show_dense(m: ([int], [int], [int], int, int)) -> string {
+  let n_rows = m.3;
+  let n_cols = m.4;
+  // Build dense matrix.
+  let mut dense = [];
+  let mut r = 0;
+  while r < n_rows {
+    let mut row = [];
+    let mut c = 0;
+    while c < n_cols { push(row, 0); c = c + 1; }
+    push(dense, row);
+    r = r + 1;
+  }
+  let mut i = 0;
+  while i < n_rows {
+    let start = m.2[i];
+    let end = m.2[i + 1];
+    let mut j = start;
+    while j < end {
+      dense[i][m.1[j]] = m.0[j];
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  // Render each row as "  [a b c d]".
+  let mut out = "";
+  let mut ri = 0;
+  while ri < n_rows {
+    out = out + "  [";
+    let mut ci = 0;
+    while ci < n_cols {
+      if ci > 0 { out = out + ", " };
+      let v = dense[ri][ci];
+      out = out + str(v);
+      ci = ci + 1;
+    }
+    out = out + "]";
+    if ri < n_rows - 1 { out = out + "\n" };
+    ri = ri + 1;
+  }
+  out
+}
+
+print("== Sparse matrix multiply (CSR) ==");
+print("");
+
+// A = [[1, 0, 2, 0],
+//      [0, 3, 0, 0],
+//      [4, 0, 5, 0],
+//      [0, 0, 0, 6]]
+let a_vals = [1, 2, 3, 4, 5, 6];
+let a_cols = [0, 2, 1, 0, 2, 3];
+let a_row_ptr = [0, 2, 3, 5, 6];
+let a = (a_vals, a_cols, a_row_ptr, 4, 4);
+
+print("A (4x4):");
+print(show_dense(a));
+print("");
+
+// B = [[7, 0, 0, 0],
+//      [0, 8, 0, 0],
+//      [0, 0, 9, 0],
+//      [0, 0, 0, 10]]
+let b_vals = [7, 8, 9, 10];
+let b_cols = [0, 1, 2, 3];
+let b_row_ptr = [0, 1, 2, 3, 4];
+let b = (b_vals, b_cols, b_row_ptr, 4, 4);
+
+print("B (4x4):");
+print(show_dense(b));
+print("");
+
+// C = A * B
+let c = sparse_mul(a, b);
+print("C = A * B (4x4):");
+print(show_dense(c));
+print("");
+
+// Sanity assertions:
+// C[i][j] = sum over k of A[i][k] * B[k][j].
+// B is diagonal (B[k][k] only), so C[i][j] = A[i][j] * B[j][j] when j == k.
+// Expected C:
+//  [[1*7, 0, 2*9, 0],     = [[ 7, 0, 18,  0],
+//   [0, 3*8, 0, 0],          [ 0, 24,  0,  0],
+//   [4*7, 0, 5*9, 0],        [28, 0, 45,  0],
+//   [0, 0, 0, 6*10]]         [ 0, 0,  0, 60]]
+assert_eq(c.0, [7, 18, 24, 28, 45, 60]); // non-zero values in CSR order
+assert_eq(c.1, [0, 2, 1, 0, 2, 3]);     // their column indices
+assert_eq(c.2, [0, 2, 3, 5, 6]);         // row_ptr
+assert_eq(c.3, 4);
+assert_eq(c.4, 4);
+print("All assertions passed.");

@@ -72,6 +72,10 @@ import * as Queue from "./queue";
 import * as Stack from "./stack";
 import * as Deque from "./deque";
 import * as RBTree from "./rbtree";
+// New modules (V3-W13-UI):
+import * as Flat from "./flat";
+import * as Zip from "./zip";
+import * as SortExtra from "./sort-extra";
 
 export interface StdlibFn {
   name: string;
@@ -142,6 +146,10 @@ export function registerAll(register: (name: string, fn: any) => void): void {
   Stack.register(register);
   Deque.register(register);
   RBTree.register(register);
+  // New modules (V3-W13-UI):
+  Flat.register(register);
+  Zip.register(register);
+  SortExtra.register(register);
 }
 
 /** Build a {name -> fn} map (used by the evaluator's `opts.builtins`). */
@@ -203,6 +211,10 @@ export const STDLIB_MANIFEST: StdlibModuleManifest[] = [
   Stack.MANIFEST as StdlibModuleManifest,
   Deque.MANIFEST as StdlibModuleManifest,
   RBTree.MANIFEST as StdlibModuleManifest,
+  // New modules (V3-W13-UI):
+  Flat.MANIFEST as StdlibModuleManifest,
+  Zip.MANIFEST as StdlibModuleManifest,
+  SortExtra.MANIFEST as StdlibModuleManifest,
 ];
 
 /** Total function count across all modules (excluding async — not callable). */
