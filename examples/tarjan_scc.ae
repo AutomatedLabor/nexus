@@ -1,0 +1,185 @@
+// tarjan_scc.ae
+// =============
+// Tarjan's algorithm for strongly connected components (SCCs) in a
+// directed graph. A single DFS assigns each node an index and a
+// `lowlink`; when the DFS returns to a node whose index equals its
+// lowlink, that node is the root of an SCC. We use an explicit
+// recursion stack so the v1 evaluator doesn't hit any recursion
+// limit on tiny graphs.
+//
+// Graph (8 nodes 0..7):
+//   0 -> 1
+//   1 -> 2, 1 -> 4, 1 -> 5
+//   2 -> 3, 2 -> 6
+//   3 -> 2, 3 -> 7
+//   4 -> 0, 4 -> 5
+//   5 -> 6
+//   6 -> 5
+//   7 -> 3, 7 -> 6
+//
+// Expected SCCs:
+//   {0, 1, 4}
+//   {2, 3, 7}
+//   {5, 6}
+
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+// We use iterative Tarjan with an explicit stack of "frames" so
+// we don't rely on the runtime recursion limit.
+// Each frame: [node, neighbor_index, lowlink_so_far].
+// Global state we mutate during traversal:
+//   index[]   - discovery index of each node, -1 = unvisited
+//   lowlink[] - Tarjan lowlink value
+//   onstack[] - 1 if the node is currently on the SCC stack
+//   stack     - SCC root stack (used to pop an SCC at a root)
+//   sccs      - list of SCCs found so far (each SCC is an int array)
+
+fn tarjan_scc(adj: [[int]], n: int) -> [[int]] {
+  let mut index    = repeat(n, -1);
+  let mut lowlink  = repeat(n, 0);
+  let mut onstack  = repeat(n, 0);
+  let mut stack    = [];
+  let mut sccs     = [];
+  let mut counter  = 0;
+
+  let mut root = 0;
+  while root < n {
+    if index[root] == -1 {
+      // Iterative DFS from `root`.
+      // Frame layout: [node, child_idx, lowlink_for_frame]
+      let mut frames = [];
+      push(frames, [root, 0, 0]);
+      index[root] = counter;
+      lowlink[root] = counter;
+      counter = counter + 1;
+      onstack[root] = 1;
+      push(stack, root);
+
+      while len(frames) > 0 {
+        let top = frames[len(frames) - 1];
+        let v   = top[0];
+        let i   = top[1];
+        if i < len(adj[v]) {
+          let w = adj[v][i];
+          // advance the frame's child cursor
+          frames[len(frames) - 1][1] = i + 1;
+          if index[w] == -1 {
+            index[w] = counter;
+            lowlink[w] = counter;
+            counter = counter + 1;
+            onstack[w] = 1;
+            push(stack, w);
+            push(frames, [w, 0, 0]);
+          } else {
+            if onstack[w] == 1 {
+              if index[w] < lowlink[v] {
+                lowlink[v] = index[w];
+                frames[len(frames) - 1][2] = lowlink[v];
+              };
+            };
+          };
+        } else {
+          // all neighbors processed; pop frame
+          if lowlink[v] == index[v] {
+            // root of an SCC; pop stack until v
+            let mut comp = [];
+            let mut keep = true;
+            while keep {
+              let w = stack[len(stack) - 1];
+              pop(stack);
+              onstack[w] = 0;
+              push(comp, w);
+              if w == v { keep = false; };
+            }
+            push(sccs, comp);
+          };
+          // propagate lowlink back to the parent frame
+          pop(frames);
+          if len(frames) > 0 {
+            let p = frames[len(frames) - 1][0];
+            if lowlink[v] < lowlink[p] {
+              lowlink[p] = lowlink[v];
+            };
+          };
+        };
+      }
+    };
+    root = root + 1;
+  }
+  sccs
+}
+
+fn show_scc(c: [int]) -> string {
+  let mut out = "{";
+  let mut i = 0;
+  while i < len(c) {
+    if i > 0 {
+      out = out + ", ";
+    };
+    out = out + str(c[i]);
+    i = i + 1;
+  }
+  out + "}"
+}
+
+print("== Tarjan's SCC ==");
+print("");
+
+let adj = [
+  [1],       // 0
+  [2, 4, 5], // 1
+  [3, 6],    // 2
+  [2, 7],    // 3
+  [0, 5],    // 4
+  [6],       // 5
+  [5],       // 6
+  [3, 6]     // 7
+];
+let n = 8;
+
+print("graph (adjacency list):");
+let mut i = 0;
+while i < n {
+  print(f"  {i}: {adj[i]}");
+  i = i + 1;
+}
+print("");
+
+let sccs = tarjan_scc(adj, n);
+print(f"strongly connected components ({len(sccs)}):");
+let mut j = 0;
+while j < len(sccs) {
+  print(f"  {show_scc(sccs[j])}");
+  j = j + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(len(sccs), 3);
+
+// Find SCC sizes and contents; exact contents depend on order but
+// root nodes (0, 2, 5) must each be in a different SCC.
+let mut s0 = -1;
+let mut s2 = -1;
+let mut s5 = -1;
+let mut k = 0;
+while k < len(sccs) {
+  let c = sccs[k];
+  let mut m = 0;
+  while m < len(c) {
+    if c[m] == 0 { s0 = k; };
+    if c[m] == 2 { s2 = k; };
+    if c[m] == 5 { s5 = k; };
+    m = m + 1;
+  }
+  k = k + 1;
+}
+assert_eq(s0 != s2, true);
+assert_eq(s0 != s5, true);
+assert_eq(s2 != s5, true);
+print("All assertions passed.");

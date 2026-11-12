@@ -1,0 +1,103 @@
+// subset_sum.ae
+// =============
+// Subset sum via DP. Given a set of non-negative integers and a
+// target T, decide whether some subset sums to T. We build a
+// boolean table dp[i][s] meaning "can the first i numbers sum to
+// s?" Then we reconstruct the chosen subset if possible.
+
+fn make2d_bool(rows: int, cols: int) -> [[int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < rows {
+    let mut row = [];
+    let mut j = 0;
+    while j < cols { push(row, 0); j = j + 1; }
+    push(out, row);
+    i = i + 1;
+  }
+  out
+}
+
+fn subset_sum(nums: [int], target: int) -> [[int]] {
+  let n = len(nums);
+  let mut dp = make2d_bool(n + 1, target + 1);
+  dp[0][0] = 1;
+  let mut i = 1;
+  while i <= n {
+    let mut s = 0;
+    while s <= target {
+      if dp[i - 1][s] == 1 {
+        dp[i][s] = 1;
+        if s + nums[i - 1] <= target {
+          dp[i][s + nums[i - 1]] = 1;
+        };
+      };
+      s = s + 1;
+    }
+    i = i + 1;
+  }
+  dp
+}
+
+fn reconstruct(dp: [[int]], nums: [int], target: int) -> [int] {
+  let mut chosen = [];
+  let mut s = target;
+  let mut i = len(nums);
+  let mut safety = 0;
+  while (i > 0) && (s > 0) && (safety < 10000) {
+    // If we can reach sum `s` without using item i, skip it.
+    if dp[i - 1][s] == 1 {
+      i = i - 1;
+    } else {
+      // Otherwise, item i was used to reach sum `s`.
+      push(chosen, i - 1);
+      s = s - nums[i - 1];
+      i = i - 1;
+    };
+    safety = safety + 1;
+  }
+  // reverse
+  let mut out = [];
+  let mut k = len(chosen) - 1;
+  while k >= 0 {
+    push(out, chosen[k]);
+    k = k - 1;
+  }
+  out
+}
+
+print("== Subset sum ==");
+print("");
+
+let cases = [
+  ([3, 34, 4, 12, 5, 2], 9),
+  ([1, 2, 3, 7], 6),
+  ([1, 2, 3, 7], 13),
+  ([1, 2, 5], 4),
+  ([], 0)
+];
+let mut k = 0;
+while k < len(cases) {
+  let c = cases[k];
+  let nums = c.0;
+  let t = c.1;
+  let dp = subset_sum(nums, t);
+  let yes = dp[len(nums)][t] == 1;
+  if yes {
+    let chosen = reconstruct(dp, nums, t);
+    print(f"  nums={nums} target={t} -> yes, subset={chosen}");
+  } else {
+    print(f"  nums={nums} target={t} -> no");
+  };
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+let dp1 = subset_sum([3, 34, 4, 12, 5, 2], 9);
+assert_eq(dp1[6][9], 1);
+let rec1 = reconstruct(dp1, [3, 34, 4, 12, 5, 2], 9);
+print(f"  rec1: {rec1}");
+assert_eq(dp1[6][0], 1);  // empty subset
+assert_eq(subset_sum([1, 2, 5], 4)[3][4], 0);  // no
+print("All assertions passed.");

@@ -1,0 +1,181 @@
+// bellman_ford_neg.ae
+// ===================
+// Bellman-Ford single-source shortest paths with negative cycle
+// detection. We relax every edge V-1 times, then make one extra
+// pass; any edge that still relaxes is on a negative cycle. We
+// then walk that edge's tail repeatedly (up to V steps) to find
+// a node *on* the cycle.
+//
+// Graph (5 nodes 0..4):
+//   0 -> 1 w=1
+//   1 -> 2 w=2
+//   2 -> 3 w=3
+//   3 -> 1 w=-7   (this forms 1->2->3->1 with total weight -2)
+//   0 -> 4 w=5
+//
+// Negative cycle: 1 -> 2 -> 3 -> 1, weight = 2 + 3 - 7 = -2.
+
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+let INF = 1000000;
+
+fn bellman_ford(n: int, edges: [[int]], src: int) -> [[int]] {
+  let mut dist = repeat(n, INF);
+  let mut prev = repeat(n, -1);
+  dist[src] = 0;
+  let mut i = 0;
+  while i < n - 1 {
+    let mut changed = false;
+    let mut j = 0;
+    while j < len(edges) {
+      let e = edges[j];
+      let u = e[0];
+      let v = e[1];
+      let w = e[2];
+      if (dist[u] != INF) && (dist[u] + w < dist[v]) {
+        dist[v] = dist[u] + w;
+        prev[v] = u;
+        changed = true;
+      };
+      j = j + 1;
+    }
+    if !changed {
+      i = n;
+    } else {
+      i = i + 1;
+    }
+  }
+  // Detect a node on a negative cycle.
+  let mut cycle_node = -1;
+  let mut j = 0;
+  while j < len(edges) && cycle_node == -1 {
+    let e = edges[j];
+    let u = e[0];
+    let v = e[1];
+    let w = e[2];
+    if (dist[u] != INF) && (dist[u] + w < dist[v]) {
+      cycle_node = v;
+    };
+    j = j + 1;
+  }
+  // Walk prev `n` times to guarantee `cycle_node` is on the cycle.
+  if cycle_node != -1 {
+    let mut k = 0;
+    while k < n {
+      cycle_node = prev[cycle_node];
+      k = k + 1;
+    }
+  };
+  [dist, prev, [cycle_node]]
+}
+
+fn show(arr: [int]) -> string {
+  let mut out = "[";
+  let mut i = 0;
+  while i < len(arr) {
+    if i > 0 {
+      out = out + ", ";
+    };
+    let v = arr[i];
+    if v == INF {
+      out = out + "INF";
+    } else {
+      out = out + str(v);
+    };
+    i = i + 1;
+  }
+  out + "]"
+}
+
+print("== Bellman-Ford with negative cycle detection ==");
+print("");
+
+let edges = [
+  [0, 1, 1],
+  [1, 2, 2],
+  [2, 3, 3],
+  [3, 1, -7],
+  [0, 4, 5]
+];
+let n = 5;
+let src = 0;
+
+print("edges:");
+let mut i = 0;
+while i < len(edges) {
+  let e = edges[i];
+  print(f"  {e[0]} -> {e[1]}  w = {e[2]}");
+  i = i + 1;
+}
+print("");
+
+let r = bellman_ford(n, edges, src);
+let dist = r[0];
+let prev = r[1];
+let cn = r[2][0];
+print(f"dist: {show(dist)}");
+print(f"prev: {show(prev)}");
+print(f"negative-cycle node: {cn}");
+print("");
+
+// Reconstruct the cycle starting from cn: walk prev until we come
+// back to cn. We push each node, then advance. The cycle's forward
+// order is the reverse of the prev chain.
+let mut cycle = [];
+let mut cur = cn;
+let mut guard = 0;
+while guard < n + 1 {
+  push(cycle, cur);
+  cur = prev[cur];
+  if cur == cn {
+    guard = n + 1;
+  } else {
+    guard = guard + 1;
+  }
+}
+// reverse so it reads in forward order
+let mut cyc = [];
+let mut k = len(cycle) - 1;
+while k >= 0 { push(cyc, cycle[k]); k = k - 1; }
+
+if cn != -1 {
+  let mut s = "";
+  let mut m = 0;
+  while m < len(cyc) {
+    if m > 0 {
+      s = s + " -> ";
+    };
+    s = s + str(cyc[m]);
+    m = m + 1;
+  }
+  // close the cycle: show the first node again
+  print(f"cycle: {s} -> {cyc[0]}  (closes back on {cyc[0]})");
+};
+print("");
+
+// A second graph with no negative cycle.
+let edges2 = [
+  [0, 1, 4],
+  [0, 2, 5],
+  [1, 2, -3],
+  [2, 3, 2],
+  [3, 1, 1]
+];
+let r2 = bellman_ford(4, edges2, 0);
+let cn2 = r2[2][0];
+print(f"second graph cycle node: {cn2}  (-1 = no negative cycle)");
+print("");
+
+// Sanity assertions.
+// The cycle is 1 -> 2 -> 3 -> 1; after the n-step walk we land on
+// one of those nodes (any of them is a valid answer).
+assert_eq(cn != -1, true);
+assert_eq(cn != 0, true);
+assert_eq(cn != 4, true);
+assert_eq(cn2, -1);
+print("All assertions passed.");

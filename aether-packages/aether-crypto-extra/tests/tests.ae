@@ -1,0 +1,86 @@
+// aether-crypto-extra/tests/tests.ae
+// ===================================
+// 25+ assertions covering every pub function.
+import {
+  xorCipher, xorCipherDecode,
+  caesarCipher, rot13, atbash,
+  vigenere, vigenereDecrypt,
+  frequencyAnalysis, printTopN,
+  simpleHash, hashCombine, bytesToString,
+} from "../src/lib.ae";
+
+// --- xorCipher / xorCipherDecode (round-trip) ---
+let enc = xorCipher("HELLO", 42);
+assert_eq(enc, [98, 111, 102, 102, 101]);
+let dec = xorCipherDecode(enc, 42);
+assert_eq(dec, "HELLO");
+// XOR with key 0 is identity
+assert_eq(xorCipher("abc", 0), [97, 98, 99]);
+// XOR with key 255 flips all bits (only low 8 bits kept)
+assert_eq(xorCipher("A", 255), [190]);
+
+// --- caesarCipher ---
+assert_eq(caesarCipher("abc", 1), "bcd");
+assert_eq(caesarCipher("xyz", 3), "abc");
+assert_eq(caesarCipher("Hello, World!", 3), "Khoor, Zruog!");
+assert_eq(caesarCipher("abc", 26), "abc");    // shift by alphabet size
+assert_eq(caesarCipher("abc", -1), "zab");    // negative shift
+
+// --- rot13 (self-inverse on letters) ---
+assert_eq(rot13("hello"), "uryyb");
+assert_eq(rot13("uryyb"), "hello");
+assert_eq(rot13(rot13("The Quick Brown Fox")), "The Quick Brown Fox");
+
+// --- atbash (self-inverse) ---
+assert_eq(atbash("abc"), "zyx");
+assert_eq(atbash("zyx"), "abc");
+assert_eq(atbash("Hello"), "Svool");
+assert_eq(atbash(atbash("MixedCase123")), "MixedCase123");
+
+// --- vigenere / vigenereDecrypt (round-trip) ---
+let vig_enc = vigenere("ATTACKATDAWN", "LEMON");
+assert_eq(vig_enc, "LXFOPVEFRNHR");
+let vig_dec = vigenereDecrypt(vig_enc, "LEMON");
+assert_eq(vig_dec, "ATTACKATDAWN");
+// vigenere with non-letters preserved
+let vig2 = vigenere("Hello, World!", "key");
+let vig2_dec = vigenereDecrypt(vig2, "key");
+assert_eq(vig2_dec, "Hello, World!");
+// vigenere with single-char key == caesar with that letter's offset
+assert_eq(vigenere("abc", "a"), "abc");    // shift 0
+assert_eq(vigenere("abc", "b"), "bcd");    // shift 1
+
+// --- frequencyAnalysis / printTopN ---
+let counts = frequencyAnalysis("aaabbbcc");
+assert_eq(counts[97], 3);    // 'a'
+assert_eq(counts[98], 3);    // 'b'
+assert_eq(counts[99], 2);    // 'c'
+let top = printTopN(counts, 2);
+assert_eq(len(top), 2);
+// both top entries should have count 3
+assert_eq(top[0][1], 3);
+assert_eq(top[1][1], 3);
+// empty text -> empty top
+assert_eq(len(printTopN(frequencyAnalysis(""), 5)), 0);
+
+// --- simpleHash ---
+let h1 = simpleHash("hello");
+let h2 = simpleHash("world");
+let h3 = simpleHash("hello");
+assert_eq(h1, h3);                  // deterministic
+assert_eq(h1 != h2, true);          // different inputs -> different hash
+let h_empty = simpleHash("");
+assert_eq(h_empty, 5381);          // initial state
+
+// --- hashCombine ---
+let c1 = hashCombine(h1, h2);
+let c2 = hashCombine(h2, h1);
+assert_eq(c1 != c2, true);         // order matters
+let c3 = hashCombine(h1, 0);
+assert_eq(c3 != h1, true);          // combining changes the hash
+
+// --- bytesToString ---
+assert_eq(bytesToString([72, 73]), "HI");
+assert_eq(bytesToString([97, 98, 99]), "abc");
+
+print("aether-crypto-extra: all 30+ assertions passed");

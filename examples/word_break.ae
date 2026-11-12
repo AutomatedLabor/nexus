@@ -1,0 +1,118 @@
+// word_break.ae
+// =============
+// Word break DP. Given a string `s` and a dictionary of valid
+// words, decide whether `s` can be segmented into a sequence of
+// dictionary words. We build a boolean DP table:
+//   dp[i] = true if s[0..i] can be segmented.
+//   dp[0] = true (empty prefix).
+//   dp[i] = OR over j < i of dp[j] && s[j..i] in dictionary.
+// We also reconstruct the word sequence when possible.
+
+fn repeat_bool(n: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, 0); i = i + 1; }
+  out
+}
+
+// Check if `s[start..end]` (start inclusive, end exclusive) is in
+// the dictionary by linear scan.
+fn in_dict(dict: [string], word: string) -> int {
+  let mut found = 0;
+  let mut i = 0;
+  while i < len(dict) {
+    if dict[i] == word {
+      found = 1;
+    };
+    i = i + 1;
+  }
+  found
+}
+
+fn substr(s: string, start: int, end: int) -> string {
+  strSlice(s, start, end)
+}
+
+fn word_break(s: string, dict: [string]) -> [int] {
+  let n = len(s);
+  let mut dp = repeat_bool(n + 1);
+  let mut prev = repeat_bool(n + 1);
+  dp[0] = 1;
+  let mut i = 1;
+  while i <= n {
+    let mut j = 0;
+    while j < i {
+      if dp[j] == 1 {
+        let word = substr(s, j, i);
+        if in_dict(dict, word) == 1 {
+          dp[i] = 1;
+          prev[i] = j;
+          j = i;  // break out of the inner loop
+        };
+      };
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  [dp, prev]
+}
+
+fn reconstruct(s: string, prev: [int], n: int) -> [string] {
+  if prev[n] == 0 && n > 0 {
+    return [];
+  };
+  let mut words = [];
+  let mut end = n;
+  let mut safety = 0;
+  while (end > 0) && (safety < 10000) {
+    let start = prev[end];
+    push(words, substr(s, start, end));
+    end = start;
+    safety = safety + 1;
+  }
+  // reverse
+  let mut out = [];
+  let mut k = len(words) - 1;
+  while k >= 0 {
+    push(out, words[k]);
+    k = k - 1;
+  }
+  out
+}
+
+print("== Word break ==");
+print("");
+
+let cases = [
+  ("leetcode", ["leet", "code"]),
+  ("applepenapple", ["apple", "pen"]),
+  ("catsandog", ["cats", "dog", "sand", "and", "cat"]),
+  ("aaaaaaa", ["aaaa", "aa"]),
+  ("abc", ["a", "b", "c"])
+];
+let mut k = 0;
+while k < len(cases) {
+  let c = cases[k];
+  let s = c.0;
+  let dict = c.1;
+  let r = word_break(s, dict);
+  let dp = r[0];
+  let prev = r[1];
+  let n = len(s);
+  if dp[n] == 1 {
+    let words = reconstruct(s, prev, n);
+    print(f"  \"{s}\" dict={dict} -> yes, segmentation={words}");
+  } else {
+    print(f"  \"{s}\" dict={dict} -> no");
+  };
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(word_break("leetcode", ["leet", "code"])[0][8], 1);
+assert_eq(word_break("applepenapple", ["apple", "pen"])[0][13], 1);
+assert_eq(word_break("catsandog", ["cats", "dog", "sand", "and", "cat"])[0][9], 0);
+assert_eq(word_break("aaaaaaa", ["aaaa", "aa", "a"])[0][7], 1);
+assert_eq(word_break("aaaaaaa", ["aaaa", "aa"])[0][7], 0);  // odd length, no length-1 word
+print("All assertions passed.");

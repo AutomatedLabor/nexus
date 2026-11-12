@@ -1,0 +1,140 @@
+// floyd_warshall.ae
+// =================
+// Floyd-Warshall all-pairs shortest paths. We initialize a `dist`
+// matrix from the edge list with `INF` everywhere except `dist[i][i]
+// = 0`, then relax through every intermediate vertex k.
+//
+// Graph (4 nodes 0..3):
+//   0 -> 1 w=3
+//   0 -> 2 w=8
+//   1 -> 2 w=1
+//   1 -> 3 w=4
+//   2 -> 3 w=2
+//   3 -> 0 w=7   (so 0 -> 1 -> 3 -> 0 is a cycle)
+
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+fn make2d(rows: int, cols: int, init: int) -> [[int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < rows {
+    let mut row = [];
+    let mut j = 0;
+    while j < cols { push(row, init); j = j + 1; }
+    push(out, row);
+    i = i + 1;
+  }
+  out
+}
+
+let INF = 1000000;
+
+fn floyd_warshall(n: int, edges: [[int]]) -> [[int]] {
+  let mut dist = make2d(n, n, INF);
+  let mut i = 0;
+  while i < n {
+    dist[i][i] = 0;
+    i = i + 1;
+  }
+  let mut k = 0;
+  while k < len(edges) {
+    let e = edges[k];
+    let u = e[0];
+    let v = e[1];
+    let w = e[2];
+    if w < dist[u][v] {
+      dist[u][v] = w;
+    };
+    k = k + 1;
+  }
+  let mut m = 0;
+  while m < n {
+    let mut a = 0;
+    while a < n {
+      let mut b = 0;
+      while b < n {
+        if (dist[a][m] != INF) && (dist[m][b] != INF) {
+          let nd = dist[a][m] + dist[m][b];
+          if nd < dist[a][b] {
+            dist[a][b] = nd;
+          };
+        };
+        b = b + 1;
+      }
+      a = a + 1;
+    }
+    m = m + 1;
+  }
+  dist
+}
+
+fn show_matrix(m: [[int]]) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(m) {
+    if i > 0 {
+      out = out + "\n";
+    };
+    let row = m[i];
+    let mut s = "[";
+    let mut j = 0;
+    while j < len(row) {
+      if j > 0 {
+        s = s + ", ";
+      };
+      let v = row[j];
+      if v == INF {
+        s = s + "INF";
+      } else {
+        s = s + str(v);
+      };
+      j = j + 1;
+    }
+    out = out + s + "]";
+    i = i + 1;
+  }
+  out
+}
+
+print("== Floyd-Warshall all-pairs shortest paths ==");
+print("");
+
+let edges = [
+  [0, 1, 3],
+  [0, 2, 8],
+  [1, 2, 1],
+  [1, 3, 4],
+  [2, 3, 2],
+  [3, 0, 7]
+];
+let n = 4;
+
+print("edges:");
+let mut i = 0;
+while i < len(edges) {
+  let e = edges[i];
+  print(f"  {e[0]} -> {e[1]}  w = {e[2]}");
+  i = i + 1;
+}
+print("");
+
+let dist = floyd_warshall(n, edges);
+print("dist matrix (row = from, col = to):");
+print(show_matrix(dist));
+print("");
+
+// Sanity assertions.
+assert_eq(dist[0][0], 0);
+assert_eq(dist[0][1], 3);   // 0->1 direct
+assert_eq(dist[0][2], 4);   // 0->1->2 = 3+1
+assert_eq(dist[0][3], 6);   // 0->1->2->3 = 3+1+2
+assert_eq(dist[1][0], 10);  // 1->2->3->0 = 1+2+7 = 10
+assert_eq(dist[1][3], 3);   // 1->2->3 = 1+2
+assert_eq(dist[2][3], 2);   // 2->3 direct
+assert_eq(dist[3][2], 11);  // 3->0->1->2 = 7+3+1 = 11
+print("All assertions passed.");

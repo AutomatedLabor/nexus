@@ -1,0 +1,107 @@
+// 0_1_knapsack_full.ae
+// ====================
+// 0/1 knapsack via DP. Given weights `w`, values `v`, and capacity
+// `W`, find the subset of items maximizing total value while
+// total weight does not exceed W. We build a 2D table and
+// reconstruct the chosen items by walking back.
+//
+// We use the standard recurrence:
+//   dp[i][c] = max(dp[i-1][c], dp[i-1][c - w[i-1]] + v[i-1])
+// where dp[i][c] is the best value using the first i items with
+// capacity c.
+
+fn make2d(rows: int, cols: int, init: int) -> [[int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < rows {
+    let mut row = [];
+    let mut j = 0;
+    while j < cols { push(row, init); j = j + 1; }
+    push(out, row);
+    i = i + 1;
+  }
+  out
+}
+
+fn knapsack(w: [int], v: [int], n: int, cap: int) -> [[int]] {
+  let mut dp = make2d(n + 1, cap + 1, 0);
+  let mut i = 1;
+  while i <= n {
+    let mut c = 0;
+    while c <= cap {
+      let prev = dp[i - 1][c];
+      if w[i - 1] <= c {
+        let take = dp[i - 1][c - w[i - 1]] + v[i - 1];
+        dp[i][c] = if take > prev { take } else { prev };
+      } else {
+        dp[i][c] = prev;
+      };
+      c = c + 1;
+    }
+    i = i + 1;
+  }
+  dp
+}
+
+// Walk the table to find which items were taken. Returns the list
+// of 1-indexed positions of items in the chosen subset.
+fn reconstruct(dp: [[int]], w: [int], n: int, cap: int) -> [int] {
+  let mut chosen = [];
+  let mut c = cap;
+  let mut i = n;
+  while i > 0 {
+    if dp[i][c] != dp[i - 1][c] {
+      // Item i was taken.
+      push(chosen, i - 1);  // 0-indexed
+      c = c - w[i - 1];
+    };
+    i = i - 1;
+  }
+  // reverse
+  let mut out = [];
+  let mut k = len(chosen) - 1;
+  while k >= 0 {
+    push(out, chosen[k]);
+    k = k - 1;
+  }
+  out
+}
+
+print("== 0/1 knapsack (with item reconstruction) ==");
+print("");
+
+let weights = [2, 3, 4, 5];
+let values  = [3, 4, 5, 6];
+let n = 4;
+let cap = 5;
+
+print(f"  items:    {n}");
+print(f"  weights:  {weights}");
+print(f"  values:   {values}");
+print(f"  capacity: {cap}");
+print("");
+
+let dp = knapsack(weights, values, n, cap);
+let best = dp[n][cap];
+let chosen = reconstruct(dp, weights, n, cap);
+print(f"  best value: {best}");
+print(f"  chosen items (0-indexed): {chosen}");
+let mut total_w = 0;
+let mut total_v = 0;
+let mut k = 0;
+while k < len(chosen) {
+  let idx = chosen[k];
+  total_w = total_w + weights[idx];
+  total_v = total_v + values[idx];
+  k = k + 1;
+}
+print(f"  total weight of chosen: {total_w}");
+print(f"  total value of chosen:  {total_v}");
+print("");
+
+// Sanity assertions.
+assert_eq(best, 7);   // items 0 and 1 -> weight 5, value 7
+assert_eq(total_v, 7);
+assert_eq(total_w, 5);
+assert_eq(chosen, [0, 1]);
+print("All assertions passed.");

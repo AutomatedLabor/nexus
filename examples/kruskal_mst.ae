@@ -1,0 +1,159 @@
+// kruskal_mst.ae
+// ==============
+// Kruskal's Minimum Spanning Tree algorithm with a union-find
+// (disjoint-set) data structure. We sort edges by weight, then
+// accept each edge whose endpoints are in different sets, unioning
+// them.
+//
+// Graph (6 nodes A..F as 0..5), 9 undirected edges:
+//   A-B 7, A-D 5, B-C 8, B-D 9, B-E 7, C-E 5,
+//   D-E 15, D-F 6, E-F 8, F-C 11
+//
+// We store each edge as [w, u, v] and sort by w using a
+// simple insertion sort (in-place on a mutable copy of the
+// edge list). For an MST we only need each edge once (undirected
+// is represented as a single entry).
+
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+fn name_of(i: int) -> string {
+  if i == 0 { "A" } else {
+  if i == 1 { "B" } else {
+  if i == 2 { "C" } else {
+  if i == 3 { "D" } else {
+  if i == 4 { "E" } else {
+  if i == 5 { "F" } else { "?" } } } } } }
+}
+
+fn insert_sort_edges(edges: [[int]]) -> [[int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(edges) { push(out, edges[i]); i = i + 1; }
+  let mut j = 1;
+  while j < len(out) {
+    let key = out[j];
+    let mut k = j - 1;
+    let mut keep = true;
+    while (k >= 0) && keep {
+      if out[k][0] > key[0] {
+        out[k + 1] = out[k];
+        k = k - 1;
+      } else {
+        keep = false;
+      };
+    }
+    out[k + 1] = key;
+    j = j + 1;
+  }
+  out
+}
+
+// Union-find via parent array and union-by-rank.
+fn uf_new(n: int) -> [[int]] {
+  let mut parent = repeat(n, 0);
+  let mut rank_  = repeat(n, 0);
+  let mut i = 0;
+  while i < n { parent[i] = i; i = i + 1; }
+  [parent, rank_]
+}
+
+fn uf_find(uf: [[int]], x: int) -> int {
+  let mut cur = x;
+  let mut safety = 0;
+  while (uf[0][cur] != cur) && (safety < 100000) {
+    // path compression: point to grandparent
+    uf[0][cur] = uf[0][uf[0][cur]];
+    cur = uf[0][cur];
+    safety = safety + 1;
+  }
+  cur
+}
+
+fn uf_union(uf: [[int]], a: int, b: int) -> bool {
+  let ra = uf_find(uf, a);
+  let rb = uf_find(uf, b);
+  if ra == rb { return false; };
+  if uf[1][ra] < uf[1][rb] {
+    uf[0][ra] = rb;
+  } else {
+    if uf[1][ra] > uf[1][rb] {
+      uf[0][rb] = ra;
+    } else {
+      uf[0][rb] = ra;
+      uf[1][ra] = uf[1][ra] + 1;
+    };
+  };
+  true
+}
+
+fn kruskal(edges: [[int]], n: int) -> [[int]] {
+  let sorted = insert_sort_edges(edges);
+  let uf = uf_new(n);
+  let mut mst = [];
+  let mut i = 0;
+  while i < len(sorted) {
+    let e = sorted[i];
+    let w = e[0];
+    let u = e[1];
+    let v = e[2];
+    if uf_union(uf, u, v) {
+      push(mst, [w, u, v]);
+    };
+    i = i + 1;
+  }
+  mst
+}
+
+fn total_weight(mst: [[int]]) -> int {
+  let mut s = 0;
+  let mut i = 0;
+  while i < len(mst) { s = s + mst[i][0]; i = i + 1; }
+  s
+}
+
+print("== Kruskal's MST ==");
+print("");
+
+let edges = [
+  [7, 0, 1],
+  [5, 0, 3],
+  [8, 1, 2],
+  [9, 1, 3],
+  [7, 1, 4],
+  [5, 2, 4],
+  [15, 3, 4],
+  [6, 3, 5],
+  [8, 4, 5],
+  [11, 2, 5]
+];
+let n = 6;
+
+print("edges:");
+let mut i = 0;
+while i < len(edges) {
+  let e = edges[i];
+  print(f"  {name_of(e[1])} -- {name_of(e[2])}  w = {e[0]}");
+  i = i + 1;
+}
+print("");
+
+let mst = kruskal(edges, n);
+print(f"MST ({len(mst)} edges):");
+let mut j = 0;
+while j < len(mst) {
+  let e = mst[j];
+  print(f"  {name_of(e[1])} -- {name_of(e[2])}  w = {e[0]}");
+  j = j + 1;
+}
+print(f"total weight: {total_weight(mst)}");
+print("");
+
+// Sanity assertions.
+assert_eq(len(mst), 5);  // n - 1
+assert_eq(total_weight(mst), 30);
+print("All assertions passed.");

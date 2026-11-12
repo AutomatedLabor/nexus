@@ -1,0 +1,107 @@
+// bfs_shortest_path.ae
+// ====================
+// Breadth-first search for the shortest unweighted path in a
+// directed graph. We use an adjacency-list representation (an
+// array of neighbor-index arrays) and a FIFO queue (an array
+// with a moving `head` cursor). The `parent` array records each
+// node's predecessor so we can reconstruct the path from src to
+// dst after BFS completes.
+//
+// Graph: 6 nodes 0..5
+//   0 -> 1, 0 -> 2
+//   1 -> 3
+//   2 -> 1, 2 -> 4
+//   3 -> 5
+//   4 -> 5
+//   5 -> (none)
+//
+// Shortest path 0 -> 5: 0 -> 1 -> 3 -> 5 (3 edges).
+// Note: 0 -> 2 -> 4 -> 5 also reaches 5 but in BFS the first
+// discovered path wins; neighbor 1 is enqueued before 2 so
+// 3 is found first, then 5 is found from 3.
+
+// Build a fresh array of `n` copies of `v`.
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+fn show_path(path: [int]) -> string {
+  reduce(path, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + " -> " + str(x) }
+  }, "")
+}
+
+fn bfs_path(adj: [[int]], n: int, src: int, dst: int) -> [int] {
+  let mut visited = repeat(n, 0);
+  let mut parent  = repeat(n, -1);
+  let mut queue   = [src];
+  visited[src] = 1;
+  let mut head = 0;
+  let mut found = false;
+  while (head < len(queue)) && (!found) {
+    let cur = queue[head];
+    head = head + 1;
+    if cur == dst {
+      found = true;
+    } else {
+      let neighbors = adj[cur];
+      let mut k = 0;
+      while k < len(neighbors) {
+        let nb = neighbors[k];
+        if visited[nb] == 0 {
+          visited[nb] = 1;
+          parent[nb] = cur;
+          push(queue, nb);
+        };
+        k = k + 1;
+      }
+    }
+  }
+  if !found { return []; };
+  let mut rev = [];
+  let mut cur = dst;
+  let mut safety = 0;
+  while (cur != -1) && (safety < n + 5) {
+    push(rev, cur);
+    cur = parent[cur];
+    safety = safety + 1;
+  }
+  let mut out = [];
+  let mut i = len(rev) - 1;
+  while i >= 0 { push(out, rev[i]); i = i - 1; }
+  out
+}
+
+print("== BFS shortest path ==");
+print("");
+
+let adj = [
+  [1, 2],      // 0
+  [3],         // 1
+  [1, 4],      // 2
+  [5],         // 3
+  [5],         // 4
+  []           // 5
+];
+let n = 6;
+
+print("graph (adjacency list):");
+let mut i = 0;
+while i < n {
+  print(f"  {i}: {adj[i]}");
+  i = i + 1;
+}
+print("");
+
+let path = bfs_path(adj, n, 0, 5);
+print(f"shortest path 0 -> 5: {show_path(path)}");
+print(f"length (edges): {len(path) - 1}");
+print("");
+
+assert_eq(path, [0, 1, 3, 5]);
+assert_eq(bfs_path(adj, n, 5, 0), []);  // 5 has no out-edges
+assert_eq(bfs_path(adj, n, 0, 0), [0]);
+print("All assertions passed.");

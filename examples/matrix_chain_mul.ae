@@ -1,0 +1,97 @@
+// matrix_chain_mul.ae
+// ===================
+// Matrix chain multiplication: find the optimal parenthesization
+// to minimize the number of scalar multiplications for chaining
+// A0 x A1 x ... x A(n-1), where each Ai has dims p[i] x p[i+1].
+// The DP recurrence:
+//   m[i][j] = 0                                  if i == j
+//           = min over k of m[i][k] + m[k+1][j] + p[i]*p[k+1]*p[j+1]
+// We also keep a `s[i][j]` table of the best split point to
+// reconstruct the parenthesization.
+
+fn make2d(rows: int, cols: int, init: int) -> [[int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < rows {
+    let mut row = [];
+    let mut j = 0;
+    while j < cols { push(row, init); j = j + 1; }
+    push(out, row);
+    i = i + 1;
+  }
+  out
+}
+
+fn matrix_chain(p: [int]) -> [[int]] {
+  let n = len(p) - 1;  // number of matrices
+  let mut m = make2d(n, n, 0);
+  let mut s = make2d(n, n, 0);
+  let mut len_chain = 2;
+  while len_chain <= n {
+    let mut i = 0;
+    while i + len_chain - 1 < n {
+      let j = i + len_chain - 1;
+      m[i][j] = 1000000000;
+      let mut k = i;
+      while k < j {
+        let q = m[i][k] + m[k + 1][j] + p[i] * p[k + 1] * p[j + 1];
+        if q < m[i][j] {
+          m[i][j] = q;
+          s[i][j] = k;
+        };
+        k = k + 1;
+      }
+      i = i + 1;
+    }
+    len_chain = len_chain + 1;
+  }
+  [m, s]
+}
+
+// Reconstruct the parenthesized expression as a string.
+fn parenthesize(s: [[int]], i: int, j: int) -> string {
+  if i == j {
+    "A" + str(i);
+  } else {
+    let k = s[i][j];
+    "(" + parenthesize(s, i, k) + " * " + parenthesize(s, k + 1, j) + ")"
+  }
+}
+
+print("== Matrix chain multiplication ==");
+print("");
+
+// 4 matrices with dimensions:
+//   A0: 10 x 30
+//   A1: 30 x 5
+//   A2: 5  x 60
+//   A3: 60 x 20
+let p = [10, 30, 5, 60, 20];
+let result = matrix_chain(p);
+let m = result[0];
+let s = result[1];
+let n = len(p) - 1;
+let cost = m[0][n - 1];
+let plan = parenthesize(s, 0, n - 1);
+
+print(f"  matrices: {n}");
+print(f"  dims:     {p}");
+print(f"  min cost: {cost} scalar multiplications");
+print(f"  plan:     {plan}");
+print("");
+
+// Sanity assertions: the optimal cost for the chain above is
+// ((A0 A1) (A2 A3)) = 10*30*5 + 5*60*20 + 10*5*20 = 1500 + 6000 + 1000 = 8500
+assert_eq(cost, 8500);
+assert_eq(plan, "((A0 * A1) * (A2 * A3))");
+
+// A second chain.
+let p2 = [40, 20, 30, 10, 30];
+let r2 = matrix_chain(p2);
+let cost2 = r2[0][0][len(p2) - 2];
+let plan2 = parenthesize(r2[1], 0, len(p2) - 2);
+print(f"  chain 2 cost: {cost2}");
+print(f"  chain 2 plan: {plan2}");
+print("");
+assert_eq(cost2, 26000);
+print("All assertions passed.");

@@ -1,0 +1,291 @@
+// aether-crypto-extra/src/lib.ae
+// ===============================
+// Extended (classical) ciphers and simple hashing for Aether.
+// 8 pub functions:
+//   xorCipher, caesarCipher, rot13, atbash, vigenere,
+//   frequencyAnalysis, simpleHash, hashCombine.
+//
+// All operations work on strings via `charCode(s, i)` (returns the
+// int code of the char at index i) and `fromCharCode(c)` (returns
+// a 1-char string). Ciphers that produce non-printable output
+// (e.g., XOR with large keys) return arrays of int byte values
+// so the caller can re-encode as desired; the inverse takes the
+// same array form.
+//
+// Caesar / Atbash / ROT13 / Vigenere all stay within the printable
+// ASCII range and return strings.
+//
+// `simpleHash` is a djb2-like hash: h = 5381; for each char,
+// h = (h * 33) XOR charCode. `hashCombine` mixes two hashes via
+// the FNV-1a `* 0x1000193 ^ b` pattern.
+//
+// No `for in` loops — all iteration uses `while` (avoids the v1
+// evaluator's for-loop-scope quirk). All `if` / `if-else` blocks
+// are followed by `;` when there's a subsequent statement.
+
+//----------------------------------------------------------------------------
+// XOR cipher
+//----------------------------------------------------------------------------
+
+// xorCipher(text, key) — XOR each char's code with `key` (mod 256).
+// Returns an array of int byte values. The same function applied
+// to the output (with the same key) decrypts.
+pub fn xorCipher(text: string, key: int) -> [int] {
+  let mut out = [];
+  let n = len(text);
+  let mut i = 0;
+  let k = key % 256;
+  while i < n {
+    let c = charCode(text, i);
+    push(out, c ^ k);
+    i = i + 1;
+  }
+  out
+}
+
+// xorCipherDecode(bytes, key) — inverse of xorCipher. Returns a string.
+pub fn xorCipherDecode(bytes: [int], key: int) -> string {
+  let mut out = "";
+  let k = key % 256;
+  let mut i = 0;
+  while i < len(bytes) {
+    let c = (bytes[i] ^ k) % 256;
+    out = out + fromCharCode(c);
+    i = i + 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// Caesar cipher
+//----------------------------------------------------------------------------
+
+// Shift a single alphabetic char by `shift` (mod 26), preserving case.
+// Non-alphabetic chars are returned unchanged.
+fn caesar_char(c: int, shift: int) -> int {
+  let s = ((shift % 26) + 26) % 26;
+  if c >= 65 && c <= 90 {
+    65 + ((c - 65 + s) % 26)
+  } else {
+    if c >= 97 && c <= 122 {
+      97 + ((c - 97 + s) % 26)
+    } else {
+      c
+    }
+  }
+}
+
+// caesarCipher(text, shift) — shift each letter by `shift` (mod 26).
+pub fn caesarCipher(text: string, shift: int) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(text) {
+    let c = charCode(text, i);
+    let s = caesar_char(c, shift);
+    out = out + fromCharCode(s);
+    i = i + 1;
+  }
+  out
+}
+
+// rot13(text) — Caesar with shift 13. Self-inverse for letters.
+pub fn rot13(text: string) -> string {
+  caesarCipher(text, 13)
+}
+
+//----------------------------------------------------------------------------
+// Atbash cipher (reverse alphabet)
+//----------------------------------------------------------------------------
+
+// atbashChar(c) — map a..z -> z..a (preserving case).
+fn atbashChar(c: int) -> int {
+  if c >= 65 && c <= 90 {
+    90 - (c - 65)
+  } else {
+    if c >= 97 && c <= 122 {
+      122 - (c - 97)
+    } else {
+      c
+    }
+  }
+}
+
+// atbash(text) — reverse-alphabet substitution.
+pub fn atbash(text: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(text) {
+    let c = charCode(text, i);
+    out = out + fromCharCode(atbashChar(c));
+    i = i + 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// Vigenere cipher
+//----------------------------------------------------------------------------
+
+// vigenere(text, key) — polyalphabetic Caesar: the per-character
+// shift is taken from the corresponding char of the key (mod 26),
+// cycling the key. Only letters in `text` are shifted; non-letters
+// pass through and don't advance the key cursor.
+pub fn vigenere(text: string, key: string) -> string {
+  let mut out = "";
+  let mut ki = 0;
+  let mut i = 0;
+  while i < len(text) {
+    let c = charCode(text, i);
+    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) {
+      // find the shift from the key
+      let kc = charCode(key, ki % len(key));
+      let shift = if kc >= 97 {
+        kc - 97
+      } else {
+        if kc >= 65 {
+          kc - 65
+        } else {
+          0
+        }
+      };
+      let s = caesar_char(c, shift);
+      out = out + fromCharCode(s);
+      ki = ki + 1;
+    } else {
+      out = out + fromCharCode(c);
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// vigenereDecrypt(text, key) — inverse of vigenere: negative shift.
+pub fn vigenereDecrypt(text: string, key: string) -> string {
+  let mut out = "";
+  let mut ki = 0;
+  let mut i = 0;
+  while i < len(text) {
+    let c = charCode(text, i);
+    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) {
+      let kc = charCode(key, ki % len(key));
+      let shift = if kc >= 97 {
+        kc - 97
+      } else {
+        if kc >= 65 {
+          kc - 65
+        } else {
+          0
+        }
+      };
+      let s = caesar_char(c, 26 - shift);
+      out = out + fromCharCode(s);
+      ki = ki + 1;
+    } else {
+      out = out + fromCharCode(c);
+    };
+    i = i + 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// Frequency analysis
+//----------------------------------------------------------------------------
+
+// frequencyAnalysis(text) — returns a 256-element array of counts,
+// indexed by char code. Useful for cracking simple substitution
+// ciphers (English text has a characteristic distribution).
+pub fn frequencyAnalysis(text: string) -> [int] {
+  let mut counts = [];
+  let mut i = 0;
+  while i < 256 { push(counts, 0); i = i + 1; }
+  let mut j = 0;
+  while j < len(text) {
+    let c = charCode(text, j);
+    counts[c] = counts[c] + 1;
+    j = j + 1;
+  }
+  counts
+}
+
+// printTopN(counts, n) — return a list of `[code, count]` pairs for
+// the top `n` codes by frequency, sorted by count descending.
+pub fn printTopN(counts: [int], n: int) -> [[int]] {
+  let mut pairs = [];
+  let mut i = 0;
+  while i < 256 {
+    if counts[i] > 0 {
+      push(pairs, [i, counts[i]]);
+    };
+    i = i + 1;
+  }
+  // sort by count descending (simple selection sort)
+  let m = len(pairs);
+  let mut a = 0;
+  while a < m {
+    let mut best = a;
+    let mut b = a + 1;
+    while b < m {
+      if pairs[b][1] > pairs[best][1] {
+        best = b;
+      };
+      b = b + 1;
+    }
+    if best != a {
+      let tmp = pairs[a];
+      pairs[a] = pairs[best];
+      pairs[best] = tmp;
+    };
+    a = a + 1;
+  }
+  // take first n
+  let mut out = [];
+  let mut k = 0;
+  while k < n && k < m {
+    push(out, pairs[k]);
+    k = k + 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// Simple hash (djb2-like)
+//----------------------------------------------------------------------------
+
+// simpleHash(text) — djb2-style hash: start at 5381, for each char
+// h = h * 33 XOR charCode. Keeps the hash within int32 range by
+// masking with 0xFFFFFFFF.
+pub fn simpleHash(text: string) -> int {
+  let mut h = 5381;
+  let mut i = 0;
+  while i < len(text) {
+    let c = charCode(text, i);
+    h = ((h * 33) & 0xFFFFFFFF) ^ c;
+    i = i + 1;
+  }
+  h & 0xFFFFFFFF
+}
+
+// hashCombine(a, b) — order-sensitive combine: h = (a * 16777619) XOR b.
+// Useful for hashing multiple fields together; combining a, b in
+// different orders yields different results.
+pub fn hashCombine(a: int, b: int) -> int {
+  let h = (a * 16777619) & 0xFFFFFFFF;
+  (h ^ b) & 0xFFFFFFFF
+}
+
+//----------------------------------------------------------------------------
+// Utility: byte-array-to-string (lossy for non-printable bytes)
+//----------------------------------------------------------------------------
+
+// bytesToString(bytes) — convert an int array (treated as ASCII
+// codes 0..255) to a string. Useful for printing XOR output.
+pub fn bytesToString(bytes: [int]) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(bytes) {
+    out = out + fromCharCode(bytes[i] % 256);
+    i = i + 1;
+  }
+  out
+}

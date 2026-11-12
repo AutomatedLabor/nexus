@@ -1,0 +1,83 @@
+// rod_cutting.ae
+// ==============
+// Rod cutting DP. We have a rod of length `n` and a price table
+// `prices[i]` (1-indexed price for a piece of length `i`). We
+// want to maximize revenue. The recurrence:
+//   r(n) = max over i in 1..n of prices[i] + r(n - i)
+// We also reconstruct the cut lengths.
+
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+fn rod_cut(prices: [int], n: int) -> [[int]] {
+  // r[i] = best revenue for a rod of length i.
+  // cut[i] = the length of the first piece to cut.
+  let mut r = repeat(n + 1, 0);
+  let mut cut = repeat(n + 1, 0);
+  let mut len_ = 1;
+  while len_ <= n {
+    let mut best = -1;
+    let mut best_len = 0;
+    let mut i = 1;
+    while i <= len_ {
+      let revenue = prices[i - 1] + r[len_ - i];
+      if revenue > best {
+        best = revenue;
+        best_len = i;
+      };
+      i = i + 1;
+    }
+    r[len_] = best;
+    cut[len_] = best_len;
+    len_ = len_ + 1;
+  }
+  [r, cut]
+}
+
+fn reconstruct_cuts(cut: [int], n: int) -> [int] {
+  let mut pieces = [];
+  let mut remaining = n;
+  let mut safety = 0;
+  while (remaining > 0) && (safety < 10000) {
+    push(pieces, cut[remaining]);
+    remaining = remaining - cut[remaining];
+    safety = safety + 1;
+  }
+  pieces
+}
+
+print("== Rod cutting ==");
+print("");
+
+// Prices for lengths 1..8 (1-indexed).
+let prices = [1, 5, 8, 9, 10, 17, 17, 20];
+
+print("  length | price | best revenue | cuts");
+let mut n = 1;
+while n <= 8 {
+  let r = rod_cut(prices, n);
+  let revenue = r[0][n];
+  let pieces = reconstruct_cuts(r[1], n);
+  print(f"    {n}   |   {prices[n - 1]}    |     {revenue}        | {pieces}");
+  n = n + 1;
+}
+print("");
+
+// Sanity assertions.
+let r = rod_cut(prices, 8);
+assert_eq(r[0][1], 1);
+assert_eq(r[0][2], 5);
+assert_eq(r[0][3], 8);
+assert_eq(r[0][4], 10);
+assert_eq(r[0][5], 13);
+assert_eq(r[0][6], 17);
+assert_eq(r[0][7], 18);
+assert_eq(r[0][8], 22);
+let pieces8 = reconstruct_cuts(r[1], 8);
+print(f"  optimal cuts for length 8: {pieces8}");
+print("");
+print("All assertions passed.");

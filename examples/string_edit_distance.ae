@@ -1,0 +1,147 @@
+// string_edit_distance.ae
+// ========================
+// Levenshtein edit distance via full DP table. We compute the
+// minimum number of single-character edits (insert, delete,
+// substitute) needed to transform `s1` into `s2`. We also
+// reconstruct the edit sequence from the DP table.
+//
+// We use `charCode(s, i)` to compare characters as integers and
+// a 2D table `dp[i][j]` where dp[i][j] is the distance between
+// s1[0..i] and s2[0..j].
+
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+fn make2d(rows: int, cols: int, init: int) -> [[int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < rows {
+    let mut row = [];
+    let mut j = 0;
+    while j < cols { push(row, init); j = j + 1; }
+    push(out, row);
+    i = i + 1;
+  }
+  out
+}
+
+fn edit_distance(s1: string, s2: string) -> [[int]] {
+  let m = len(s1);
+  let n = len(s2);
+  let mut dp = make2d(m + 1, n + 1, 0);
+  let mut i = 0;
+  while i <= m {
+    dp[i][0] = i;
+    i = i + 1;
+  }
+  let mut j = 0;
+  while j <= n {
+    dp[0][j] = j;
+    j = j + 1;
+  }
+  let mut a = 1;
+  while a <= m {
+    let mut b = 1;
+    while b <= n {
+      let c1 = charCode(s1, a - 1);
+      let c2 = charCode(s2, b - 1);
+      let cost = if c1 == c2 { 0 } else { 1 };
+      let del = dp[a - 1][b] + 1;
+      let ins = dp[a][b - 1] + 1;
+      let sub = dp[a - 1][b - 1] + cost;
+      let m1 = if del < ins { del } else { ins };
+      let m2 = if m1 < sub { m1 } else { sub };
+      dp[a][b] = m2;
+      b = b + 1;
+    }
+    a = a + 1;
+  }
+  dp
+}
+
+// Backtrack the DP table to reconstruct the edit sequence as a
+// list of operations: "match", "sub", "del", "ins".
+fn reconstruct(dp: [[int]], s1: string, s2: string) -> [string] {
+  let mut ops = [];
+  let mut i = len(s1);
+  let mut j = len(s2);
+  let mut safety = 0;
+  while (i > 0 || j > 0) && (safety < 10000) {
+    if (i > 0) && (j > 0) {
+      let c1 = charCode(s1, i - 1);
+      let c2 = charCode(s2, j - 1);
+      let cost = if c1 == c2 { 0 } else { 1 };
+      if dp[i][j] == dp[i - 1][j - 1] + cost {
+        if cost == 0 {
+          push(ops, "match");
+        } else {
+          push(ops, "sub");
+        };
+        i = i - 1;
+        j = j - 1;
+      } else {
+        if (i > 0) && (dp[i][j] == dp[i - 1][j] + 1) {
+          push(ops, "del");
+          i = i - 1;
+        } else {
+          push(ops, "ins");
+          j = j - 1;
+        };
+      };
+    } else {
+      if i > 0 {
+        push(ops, "del");
+        i = i - 1;
+      } else {
+        push(ops, "ins");
+        j = j - 1;
+      };
+    };
+    safety = safety + 1;
+  }
+  // reverse
+  let mut out = [];
+  let mut k = len(ops) - 1;
+  while k >= 0 {
+    push(out, ops[k]);
+    k = k - 1;
+  }
+  out
+}
+
+print("== Levenshtein edit distance ==");
+print("");
+
+let pairs = [
+  ("kitten", "sitting"),
+  ("flaw", "lawn"),
+  ("saturday", "sunday"),
+  ("abc", "abc"),
+  ("", "abc")
+];
+
+let mut p = 0;
+while p < len(pairs) {
+  let pair = pairs[p];
+  let s1 = pair.0;
+  let s2 = pair.1;
+  let dp = edit_distance(s1, s2);
+  let d = dp[len(s1)][len(s2)];
+  let ops = reconstruct(dp, s1, s2);
+  print(f"  {s1} -> {s2}: distance = {d}");
+  print(f"    ops: {ops}");
+  p = p + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(edit_distance("kitten", "sitting")[6][7], 3);
+assert_eq(edit_distance("flaw", "lawn")[4][4], 2);
+assert_eq(edit_distance("saturday", "sunday")[8][6], 3);
+assert_eq(edit_distance("abc", "abc")[3][3], 0);
+assert_eq(edit_distance("", "abc")[0][3], 3);
+print("All assertions passed.");

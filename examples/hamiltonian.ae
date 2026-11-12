@@ -1,0 +1,145 @@
+// hamiltonian.ae
+// ===============
+// Find a Hamiltonian path in a directed graph via backtracking.
+// A Hamiltonian path visits every node exactly once. We try each
+// unvisited neighbor recursively; if we reach depth `n` we have a
+// full path. Backtracking is implemented by marking visited[]
+// on entry and unmarking on exit.
+//
+// The v1 evaluator has a recursion limit; to stay below it we
+// drive the backtracking with an explicit stack of frames.
+//
+// Graph (5 nodes 0..4):
+//   0 -> 1, 0 -> 3
+//   1 -> 2, 1 -> 3
+//   2 -> 4
+//   3 -> 1, 3 -> 4
+//   4 -> 2
+
+fn repeat(n: int, v: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < n { push(out, v); i = i + 1; }
+  out
+}
+
+// Iterative backtracking. `frames` is a stack of [node, child_idx].
+// `path` accumulates the current partial path. When path length
+// equals n, we return path.
+fn hamiltonian(adj: [[int]], n: int, start: int) -> [int] {
+  let mut visited = repeat(n, 0);
+  visited[start] = 1;
+  let mut path = [start];
+  let mut frames = [[start, 0]];
+  let mut found = false;
+  let mut safety = 0;
+  let max_safety = 100000;
+  while (len(frames) > 0) && (!found) && (safety < max_safety) {
+    let top_idx = len(frames) - 1;
+    let v = frames[top_idx][0];
+    let ci = frames[top_idx][1];
+    if len(path) == n {
+      found = true;
+    } else {
+      // Try to advance to an unvisited child.
+      let mut advanced = false;
+      let mut k = ci;
+      while (k < len(adj[v])) && (!advanced) {
+        let w = adj[v][k];
+        if visited[w] == 0 {
+          // push child
+          frames[top_idx][1] = k + 1;
+          visited[w] = 1;
+          push(path, w);
+          push(frames, [w, 0]);
+          advanced = true;
+        };
+        k = k + 1;
+      };
+      if !advanced {
+        // Backtrack: pop the frame, un-visit its node.
+        visited[v] = 0;
+        pop(path);
+        pop(frames);
+      };
+    };
+    safety = safety + 1;
+  }
+  if found { path } else { [] }
+}
+
+fn show(arr: [int]) -> string {
+  let mut s = "";
+  let mut i = 0;
+  while i < len(arr) {
+    if i > 0 {
+      s = s + " -> ";
+    };
+    s = s + str(arr[i]);
+    i = i + 1;
+  }
+  s
+}
+
+print("== Hamiltonian path (backtracking) ==");
+print("");
+
+let adj = [
+  [1, 3],
+  [2, 3],
+  [4],
+  [1, 4],
+  [2]
+];
+let n = 5;
+
+print("graph (adjacency list):");
+let mut i = 0;
+while i < n {
+  print(f"  {i}: {adj[i]}");
+  i = i + 1;
+}
+print("");
+
+let path = hamiltonian(adj, n, 0);
+if len(path) == 0 {
+  print("no Hamiltonian path from 0");
+} else {
+  print(f"Hamiltonian path from 0: {show(path)}");
+};
+print("");
+
+// Try from every starting node to find one that works.
+print("starting from each node:");
+let mut k = 0;
+while k < n {
+  let p = hamiltonian(adj, n, k);
+  if len(p) == n {
+    print(f"  start {k}: {show(p)}");
+  } else {
+    print(f"  start {k}: no path");
+  };
+  k = k + 1;
+}
+print("");
+
+// Sanity assertions: a path from 0 exists and has 5 nodes.
+assert_eq(len(path), 5);
+assert_eq(path[0], 0);
+// All 5 distinct nodes 0..4 appear exactly once.
+let mut seen = repeat(n, 0);
+let mut m = 0;
+while m < n {
+  seen[path[m]] = 1;
+  m = m + 1;
+}
+let mut all_seen = true;
+let mut q = 0;
+while q < n {
+  if seen[q] == 0 {
+    all_seen = false;
+  };
+  q = q + 1;
+}
+assert_eq(all_seen, true);
+print("All assertions passed.");

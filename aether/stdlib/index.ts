@@ -61,6 +61,12 @@ import * as SkipList from "./skip-list";
 import * as Interval from "./interval";
 import * as DisjointSet from "./disjoint-set";
 import * as Bimap from "./bimap";
+// New modules (V3-W14-EXPAND2):
+import * as SymTab from "./symtab";
+import * as Sparse from "./sparse";
+import * as Memoize from "./memoize";
+import * as Cidr from "./cidr";
+import * as PQueue from "./pqueue";
 
 export interface StdlibFn {
   name: string;
@@ -120,6 +126,12 @@ export function registerAll(register: (name: string, fn: any) => void): void {
   Interval.register(register);
   DisjointSet.register(register);
   Bimap.register(register);
+  // New modules (V3-W14-EXPAND2):
+  SymTab.register(register);
+  Sparse.register(register);
+  Memoize.register(register);
+  Cidr.register(register);
+  PQueue.register(register);
 }
 
 /** Build a {name -> fn} map (used by the evaluator's `opts.builtins`). */
@@ -170,6 +182,12 @@ export const STDLIB_MANIFEST: StdlibModuleManifest[] = [
   Interval.MANIFEST as StdlibModuleManifest,
   DisjointSet.MANIFEST as StdlibModuleManifest,
   Bimap.MANIFEST as StdlibModuleManifest,
+  // New modules (V3-W14-EXPAND2):
+  SymTab.MANIFEST as StdlibModuleManifest,
+  Sparse.MANIFEST as StdlibModuleManifest,
+  Memoize.MANIFEST as StdlibModuleManifest,
+  Cidr.MANIFEST as StdlibModuleManifest,
+  PQueue.MANIFEST as StdlibModuleManifest,
 ];
 
 /** Total function count across all modules (excluding async — not callable). */

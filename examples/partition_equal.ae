@@ -1,0 +1,167 @@
+// partition_equal.ae
+// ===================
+// Partition a set of integers into two subsets of equal sum.
+// Classic NP-complete problem; we solve it via subset-sum DP:
+// the question reduces to "is there a subset summing to total/2?"
+//
+// We use the boolean DP table and reconstruct the actual split
+// into two subsets.
+
+fn make2d(rows: int, cols: int) -> [[int]] {
+  let mut out = [];
+  let mut i = 0;
+  while i < rows {
+    let mut row = [];
+    let mut j = 0;
+    while j < cols { push(row, 0); j = j + 1; }
+    push(out, row);
+    i = i + 1;
+  }
+  out
+}
+
+fn subset_sum_dp(nums: [int], target: int) -> [[int]] {
+  let n = len(nums);
+  let mut dp = make2d(n + 1, target + 1);
+  dp[0][0] = 1;
+  let mut i = 1;
+  while i <= n {
+    let mut s = 0;
+    while s <= target {
+      if dp[i - 1][s] == 1 {
+        dp[i][s] = 1;
+        if s + nums[i - 1] <= target {
+          dp[i][s + nums[i - 1]] = 1;
+        };
+      };
+      s = s + 1;
+    }
+    i = i + 1;
+  }
+  dp
+}
+
+fn can_partition(nums: [int]) -> int {
+  let mut total = 0;
+  let mut i = 0;
+  while i < len(nums) {
+    total = total + nums[i];
+    i = i + 1;
+  }
+  if total % 2 != 0 {
+    return 0;
+  };
+  let half = int(total / 2);
+  let dp = subset_sum_dp(nums, half);
+  dp[len(nums)][half]
+}
+
+fn partition_into_two(nums: [int]) -> [[int]] {
+  let mut total = 0;
+  let mut i = 0;
+  while i < len(nums) {
+    total = total + nums[i];
+    i = i + 1;
+  }
+  if total % 2 != 0 {
+    return [];
+  };
+  let half = int(total / 2);
+  let dp = subset_sum_dp(nums, half);
+  if dp[len(nums)][half] == 0 {
+    return [];
+  };
+  // Reconstruct the subset summing to half.
+  let mut chosen = [];
+  let mut s = half;
+  let mut j = len(nums);
+  let mut safety = 0;
+  while (j > 0) && (s > 0) && (safety < 10000) {
+    if dp[j - 1][s] == 1 {
+      j = j - 1;
+    } else {
+      push(chosen, j - 1);
+      s = s - nums[j - 1];
+      j = j - 1;
+    };
+    safety = safety + 1;
+  }
+  // chosen contains indices in subset A (sum = half)
+  let mut in_a = [];
+  let mut k = 0;
+  while k < len(nums) {
+    let mut is_chosen = 0;
+    let mut m = 0;
+    while m < len(chosen) {
+      if chosen[m] == k {
+        is_chosen = 1;
+      };
+      m = m + 1;
+    }
+    if is_chosen == 1 {
+      push(in_a, nums[k]);
+    };
+    k = k + 1;
+  }
+  // subset B = all not in A
+  let mut in_b = [];
+  let mut k2 = 0;
+  while k2 < len(nums) {
+    let mut is_chosen2 = 0;
+    let mut m2 = 0;
+    while m2 < len(chosen) {
+      if chosen[m2] == k2 {
+        is_chosen2 = 1;
+      };
+      m2 = m2 + 1;
+    }
+    if is_chosen2 == 0 {
+      push(in_b, nums[k2]);
+    };
+    k2 = k2 + 1;
+  }
+  [in_a, in_b]
+}
+
+print("== Partition equal subset sum ==");
+print("");
+
+let cases = [
+  [1, 5, 11, 5],
+  [1, 2, 3, 4, 5, 6, 7],
+  [2, 2, 3, 5],
+  [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+];
+let mut k = 0;
+while k < len(cases) {
+  let c = cases[k];
+  let ok = can_partition(c);
+  if ok == 1 {
+    let parts = partition_into_two(c);
+    print(f"  {c} -> yes");
+    print(f"    A: {parts[0]} (sum = {sum_of(parts[0])})");
+    print(f"    B: {parts[1]} (sum = {sum_of(parts[1])})");
+  } else {
+    print(f"  {c} -> no");
+  };
+  k = k + 1;
+}
+print("");
+
+// Helper for printing sums.
+fn sum_of(arr: [int]) -> int {
+  let mut s = 0;
+  let mut i = 0;
+  while i < len(arr) {
+    s = s + arr[i];
+    i = i + 1;
+  }
+  s
+}
+
+// Sanity assertions.
+assert_eq(can_partition([1, 5, 11, 5]), 1);
+assert_eq(can_partition([2, 2, 3, 5]), 0);
+assert_eq(can_partition([1, 1, 1, 1]), 1);
+assert_eq(can_partition([3, 3, 3]), 0);  // total 9, odd
+print("All assertions passed.");
