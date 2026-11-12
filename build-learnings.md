@@ -77,3 +77,19 @@ Every source file gets a test file + a doc file + (where applicable) a benchmark
 ## 15. Agent Browser is the only acceptable "done" for web UIs
 
 A passing `curl` and a clean build do NOT prove a web app works. Agent-browser actually renders the page, clicks buttons, checks the DOM, reads the console. For both ATLAS and Aether, agent-browser caught real bugs (Radix accessibility warnings, blank pages, broken toggles) that curl missed. Mandatory final step for any web deliverable.
+
+## v3 lessons (so far)
+
+16. **Bootstrap host builtins are legitimate** (Rust/LLVM precedent). The Aether-in-Aether lexer needs `charCode`/`fromCharCode`/`strSlice` — Aether's "libc" — registered as TS-side builtins in eval.ts. The bootstrap is "pure Aether" modulo these 3 host hooks (analogous to Rust depending on LLVM). Documenting which builtins are host-aid vs pure-Aether keeps the bootstrap honest.
+
+17. **Subagent "200 turns" is a capacity ceiling, not a failure**. When a subagent hits the 200-turn limit, it has usually written substantial real work (files on disk, tests passing) but hasn't finished wiring/reporting. Check the filesystem before assuming failure — often 80% of the work is done. Redispatch a smaller follow-up to wire/test the remainder.
+
+18. **GitHub Push Protection blocks tokens in committed files**. v3-prompt.md contained the literal GitHub PAT + Vercel token; push was rejected with `GH013`. Fix: redact from the file AND amend the commit (the secret stays in the rejected blob otherwise). Lesson: NEVER paste real tokens into files that will be committed; reference them as "provided in chat context".
+
+19. **Backend overloads cause `context deadline exceeded` on dispatch**. When many subagents run, the model backend refuses new dispatches. Mitigation: wait 20-30s, reduce parallelism from 3 to 2, or split large prompts. The work continues once load eases.
+
+20. **Concatenation is a valid module-loading fallback**. The bootstrap parser test was designed for `cat parser.ae parser.test.ae > /tmp/combined.ae` because the single-file `compileAndRun` doesn't resolve `import`. This works because Aether's scoping is file-global. Document when concatenation is used vs the real module system.
+
+21. **WASM and x86 backends can share a "host-call" model**. Native code can't easily do heap allocation/struct-field-access/pattern-match natively, so both backends import host functions (`__alloc_struct`, `__field_get`, `__match_variant`) from a TS runtime. The native code handles arithmetic + control flow natively (fast path); heap ops go through imports (slower but correct). This split is the pragmatic way to compile a high-level language to native without a full runtime.
+
+22. **A "structured interpreter" lets native codegen be verified without nasm/ld**. The x86 backend emits real assembly text, but actually executing it needs an assembler. Since the sandbox lacks `nasm`/`ld`, the backend ALSO produces a structured X86Module that a TS-side interpreter executes — proving the codegen is semantically correct without an assembler. The asm text is for inspection; the structured form is for execution.
