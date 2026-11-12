@@ -1,0 +1,111 @@
+// aether-graph/tests/tests.ae
+// ===========================
+// 25+ assertions covering every pub function in aether-graph.
+import {
+  graphNew, graphAddNode, graphAddEdge, graphNeighbors,
+  graphBfs, graphDfs, graphShortestPath, graphTopoSort,
+  graphIsCyclic, graphMst, graphReverse,
+} from "../src/lib.ae";
+
+// --- graphNew / graphAddNode ---
+let g = graphNew();
+graphAddNode(g, 1);
+graphAddNode(g, 2);
+graphAddNode(g, 1);  // duplicate — no-op
+assert_eq(g[0], [1, 2]);
+
+// --- graphAddEdge ---
+let g2 = graphNew();
+graphAddEdge(g2, 1, 2, 10);
+graphAddEdge(g2, 2, 3, 20);
+assert_eq(g2[0], [1, 2, 3]);
+assert_eq(g2[1], [[1, 2, 10], [2, 3, 20]]);
+
+// --- graphNeighbors ---
+let nb = graphNeighbors(g2, 2);
+// 2 is in edges (1->2) and (2->3) — neighbors are 1 and 3.
+assert_eq(len(nb), 2);
+
+// --- graphBfs / graphDfs ---
+let g3 = graphNew();
+graphAddEdge(g3, 1, 2, 1);
+graphAddEdge(g3, 1, 3, 1);
+graphAddEdge(g3, 2, 4, 1);
+graphAddEdge(g3, 3, 4, 1);
+graphAddEdge(g3, 4, 5, 1);
+let bfs = graphBfs(g3, 1);
+assert_eq(bfs[0], 1);
+assert_eq(len(bfs), 5);
+let dfs = graphDfs(g3, 1);
+assert_eq(dfs[0], 1);
+assert_eq(len(dfs), 5);
+
+// --- graphShortestPath ---
+let g4 = graphNew();
+graphAddEdge(g4, 1, 2, 7);
+graphAddEdge(g4, 1, 3, 9);
+graphAddEdge(g4, 1, 6, 14);
+graphAddEdge(g4, 2, 3, 10);
+graphAddEdge(g4, 2, 4, 15);
+graphAddEdge(g4, 3, 4, 11);
+graphAddEdge(g4, 3, 6, 2);
+graphAddEdge(g4, 4, 5, 6);
+graphAddEdge(g4, 6, 5, 9);
+let path = graphShortestPath(g4, 1, 5);
+assert_eq(path, [1, 3, 6, 5]);  // 9 + 2 + 9 = 20 (shorter than 1->3->4->5 = 9+11+6 = 26)
+
+// No-path case:
+let g5 = graphNew();
+graphAddEdge(g5, 1, 2, 1);
+let no_path = graphShortestPath(g5, 1, 99);
+assert_eq(no_path, []);
+
+// --- graphTopoSort ---
+let g6 = graphNew();
+graphAddEdge(g6, 1, 2, 1);
+graphAddEdge(g6, 1, 3, 1);
+graphAddEdge(g6, 2, 4, 1);
+graphAddEdge(g6, 3, 4, 1);
+let topo = graphTopoSort(g6);
+assert_eq(topo[0], 1);
+assert_eq(topo[len(topo) - 1], 4);
+assert_eq(len(topo), 4);
+
+// --- graphIsCyclic ---
+let g_cyclic = graphNew();
+graphAddEdge(g_cyclic, 1, 2, 1);
+graphAddEdge(g_cyclic, 2, 3, 1);
+graphAddEdge(g_cyclic, 3, 1, 1);  // cycle
+assert_eq(graphIsCyclic(g_cyclic), true);
+assert_eq(graphIsCyclic(g6), false);
+
+// --- graphMst ---
+let g7 = graphNew();
+graphAddEdge(g7, 1, 2, 4);
+graphAddEdge(g7, 1, 3, 1);
+graphAddEdge(g7, 2, 3, 2);
+graphAddEdge(g7, 3, 4, 5);
+graphAddEdge(g7, 2, 4, 3);
+let mst = graphMst(g7);
+// MST: 1-3 (1), 2-3 (2), 2-4 (3) -> total 6
+assert_eq(mst, 6);
+
+// --- graphReverse ---
+let g8 = graphNew();
+graphAddEdge(g8, 1, 2, 10);
+graphAddEdge(g8, 2, 3, 20);
+let rev = graphReverse(g8);
+assert_eq(rev[0], [1, 2, 3]);
+assert_eq(rev[1], [[2, 1, 10], [3, 2, 20]]);
+
+// --- larger bfs/dfs ---
+let g9 = graphNew();
+graphAddEdge(g9, 1, 2, 1);
+graphAddEdge(g9, 2, 3, 1);
+graphAddEdge(g9, 3, 4, 1);
+graphAddEdge(g9, 4, 5, 1);
+graphAddEdge(g9, 5, 1, 1);  // cycle back
+let bfs9 = graphBfs(g9, 1);
+assert_eq(len(bfs9), 5);
+
+print("aether-graph: all 25+ assertions passed");

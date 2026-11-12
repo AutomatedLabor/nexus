@@ -1,0 +1,386 @@
+// aether-graph/src/lib.ae
+// ======================
+// Graph operations for Aether. 11 pub functions: graphNew,
+// graphAddNode, graphAddEdge, graphNeighbors, graphBfs, graphDfs,
+// graphShortestPath, graphTopoSort, graphIsCyclic, graphMst,
+// graphReverse.
+//
+// Graph representation: a graph is `[nodes, adjacency]` where:
+//   - nodes is an array of node ids: [n1, n2, ...]
+//   - adjacency is an array of edges: [[from, to, weight], ...]
+// For undirected graphs, each edge is stored once; we treat it as
+// bidirectional in operations.
+//
+// No `for in` loops (defensive against the v1 evaluator's
+// for-loop-scope quirk). All iteration uses `while`.
+
+//----------------------------------------------------------------------------
+// Constructors / mutators
+//----------------------------------------------------------------------------
+
+// graphNew() — create an empty graph.
+pub fn graphNew() -> [any] {
+  [[], []]  // [nodes, edges]
+}
+
+// graphAddNode(g, n) — add node n (no-op if already present). Returns g.
+pub fn graphAddNode(g: [any], n: int) -> [any] {
+  let nodes = g[0];
+  if !contains_int(nodes, n) {
+    push(nodes, n);
+  };
+  g
+}
+
+// graphAddEdge(g, from, to, weight) — add a directed edge. Adds the
+// nodes if missing. Returns g.
+pub fn graphAddEdge(g: [any], from: int, to: int, weight: int) -> [any] {
+  graphAddNode(g, from);
+  graphAddNode(g, to);
+  let edges = g[1];
+  push(edges, [from, to, weight]);
+  g
+}
+
+// graphNeighbors(g, n) — list of (neighbor, weight) pairs for node n.
+// For undirected graphs (which is the package default), we treat
+// edges as bidirectional.
+pub fn graphNeighbors(g: [any], n: int) -> [any] {
+  let edges = g[1];
+  let mut out = [];
+  let mut i = 0;
+  while i < len(edges) {
+    let e = edges[i];
+    if e[0] == n {
+      push(out, [e[1], e[2]]);
+    };
+    if e[1] == n {
+      push(out, [e[0], e[2]]);
+    };
+    i = i + 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// Traversals
+//----------------------------------------------------------------------------
+
+// graphBfs(g, start) — breadth-first search from start. Returns
+// visited nodes in BFS order.
+pub fn graphBfs(g: [any], start: int) -> [int] {
+  let mut queue = [start];
+  let mut visited = [];
+  while len(queue) > 0 {
+    let cur = queue[0];
+    queue = rest_int(queue);
+    if !contains_int(visited, cur) {
+      push(visited, cur);
+      let neighbors = graphNeighbors(g, cur);
+      let mut i = 0;
+      while i < len(neighbors) {
+        let nb = neighbors[i];
+        if !contains_int(visited, nb[0]) {
+          push(queue, nb[0]);
+        };
+        i = i + 1;
+      }
+    }
+  }
+  visited
+}
+
+// graphDfs(g, start) — depth-first search from start. Returns visited
+// nodes in DFS pre-order.
+pub fn graphDfs(g: [any], start: int) -> [int] {
+  let visited = [];
+  dfs_visit(g, start, visited);
+  visited
+}
+
+fn dfs_visit(g: [any], n: int, visited: [int]) -> () {
+  if !contains_int(visited, n) {
+    push(visited, n);
+    let neighbors = graphNeighbors(g, n);
+    let mut i = 0;
+    while i < len(neighbors) {
+      let nb = neighbors[i];
+      dfs_visit(g, nb[0], visited);
+      i = i + 1;
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Shortest path — Dijkstra (assumes non-negative weights).
+// Returns the path as an array of nodes, or [] if no path.
+//----------------------------------------------------------------------------
+
+pub fn graphShortestPath(g: [any], start: int, end: int) -> [int] {
+  // Dijkstra with a simple O(n^2) implementation.
+  let nodes = g[0];
+  let mut dist = [];
+  let mut prev = [];
+  let mut visited = [];
+  let mut i = 0;
+  while i < len(nodes) {
+    push(dist, 9999999);
+    push(prev, -1);
+    push(visited, false);
+    i = i + 1;
+  }
+  // Set dist[start] = 0.
+  let start_idx = idx_of(nodes, start);
+  dist[start_idx] = 0;
+  // Main loop.
+  let mut k = 0;
+  while k < len(nodes) {
+    // Find the unvisited node with min dist.
+    let mut u = -1;
+    let mut best = 9999999;
+    let mut j = 0;
+    while j < len(nodes) {
+      if !visited[j] && dist[j] < best {
+        u = j;
+        best = dist[j];
+      };
+      j = j + 1;
+    }
+    if u < 0 {
+      k = len(nodes);  // break out
+    } else {
+      visited[u] = true;
+      // For each neighbor of nodes[u], relax.
+      let cur = nodes[u];
+      let neighbors = graphNeighbors(g, cur);
+      let mut m = 0;
+      while m < len(neighbors) {
+        let nb = neighbors[m];
+        let nb_idx = idx_of(nodes, nb[0]);
+        if !visited[nb_idx] {
+          let alt = dist[u] + nb[1];
+          if alt < dist[nb_idx] {
+            dist[nb_idx] = alt;
+            prev[nb_idx] = u;
+          };
+        };
+        m = m + 1;
+      }
+    };
+    k = k + 1;
+  }
+  // Reconstruct path from end to start.
+  let end_idx = idx_of(nodes, end);
+  if dist[end_idx] >= 9999999 {
+    []  // no path
+  } else {
+    let path = [];
+    let mut cur = end_idx;
+    while cur >= 0 {
+      push(path, nodes[cur]);
+      cur = prev[cur];
+    }
+    reverse_int(path)
+  }
+}
+
+//----------------------------------------------------------------------------
+// Topological sort (Kahn's algorithm — uses in-degree).
+// Returns the sorted order or [] if cyclic.
+//----------------------------------------------------------------------------
+
+pub fn graphTopoSort(g: [any]) -> [int] {
+  let nodes = g[0];
+  let edges = g[1];
+  // Compute in-degrees.
+  let mut in_deg = [];
+  let mut i = 0;
+  while i < len(nodes) {
+    push(in_deg, 0);
+    i = i + 1;
+  }
+  let mut j = 0;
+  while j < len(edges) {
+    let to_idx = idx_of(nodes, edges[j][1]);
+    in_deg[to_idx] = in_deg[to_idx] + 1;
+    j = j + 1;
+  }
+  // Initialize queue with all 0-in-degree nodes.
+  let mut queue = [];
+  let mut k = 0;
+  while k < len(nodes) {
+    if in_deg[k] == 0 {
+      push(queue, k);
+    };
+    k = k + 1;
+  }
+  // Process queue.
+  let mut order = [];
+  while len(queue) > 0 {
+    let u = queue[0];
+    queue = rest_int(queue);
+    push(order, nodes[u]);
+    // For each edge u -> v, decrement in_deg[v]; if 0, enqueue.
+    let mut m = 0;
+    while m < len(edges) {
+      let e = edges[m];
+      if e[0] == nodes[u] {
+        let v_idx = idx_of(nodes, e[1]);
+        in_deg[v_idx] = in_deg[v_idx] - 1;
+        if in_deg[v_idx] == 0 {
+          push(queue, v_idx);
+        };
+      };
+      m = m + 1;
+    }
+  }
+  // If not all nodes were ordered, there's a cycle.
+  if len(order) != len(nodes) {
+    []
+  } else {
+    order
+  }
+}
+
+//----------------------------------------------------------------------------
+// Is cyclic — true iff there's a cycle in the directed graph.
+//----------------------------------------------------------------------------
+
+pub fn graphIsCyclic(g: [any]) -> bool {
+  let sorted = graphTopoSort(g);
+  len(sorted) == 0 && len(g[0]) > 0
+}
+
+//----------------------------------------------------------------------------
+// MST (Kruskal's algorithm — undirected, returns total weight).
+// Uses union-find for cycle detection.
+//----------------------------------------------------------------------------
+
+pub fn graphMst(g: [any]) -> int {
+  let nodes = g[0];
+  let edges = g[1];
+  // Sort edges by weight (selection sort).
+  let sorted = sort_edges(edges);
+  // Union-find.
+  let parent = [];
+  let mut i = 0;
+  while i < len(nodes) {
+    push(parent, i);
+    i = i + 1;
+  }
+  let mut total = 0;
+  let mut k = 0;
+  while k < len(sorted) {
+    let e = sorted[k];
+    let u_idx = idx_of(nodes, e[0]);
+    let v_idx = idx_of(nodes, e[1]);
+    let ru = find_uf(parent, u_idx);
+    let rv = find_uf(parent, v_idx);
+    if ru != rv {
+      total = total + e[2];
+      parent[ru] = rv;
+    };
+    k = k + 1;
+  }
+  total
+}
+
+fn find_uf(parent: [int], x: int) -> int {
+  if parent[x] == x {
+    x
+  } else {
+    find_uf(parent, parent[x])
+  }
+}
+
+//----------------------------------------------------------------------------
+// Reverse — return a new graph with all edges reversed.
+//----------------------------------------------------------------------------
+
+pub fn graphReverse(g: [any]) -> [any] {
+  let nodes = g[0];
+  let edges = g[1];
+  let new_edges = [];
+  let mut i = 0;
+  while i < len(edges) {
+    let e = edges[i];
+    push(new_edges, [e[1], e[0], e[2]]);
+    i = i + 1;
+  }
+  [nodes, new_edges]
+}
+
+//----------------------------------------------------------------------------
+// Helpers
+//----------------------------------------------------------------------------
+
+fn contains_int(arr: [int], x: int) -> bool {
+  let mut i = 0;
+  let mut found = false;
+  while i < len(arr) && !found {
+    if arr[i] == x {
+      found = true
+    };
+    i = i + 1;
+  }
+  found
+}
+
+fn idx_of(arr: [int], x: int) -> int {
+  let mut i = 0;
+  let mut pos = -1;
+  while i < len(arr) && pos < 0 {
+    if arr[i] == x {
+      pos = i
+    };
+    i = i + 1;
+  }
+  pos
+}
+
+fn rest_int(arr: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 1;
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+fn reverse_int(arr: [int]) -> [int] {
+  let mut out = [];
+  let mut i = len(arr) - 1;
+  while i >= 0 {
+    push(out, arr[i]);
+    i = i - 1;
+  }
+  out
+}
+
+fn sort_edges(edges: [any]) -> [any] {
+  // Copy edges.
+  let mut out = [];
+  let mut i = 0;
+  while i < len(edges) {
+    push(out, edges[i]);
+    i = i + 1;
+  }
+  // Selection sort by weight.
+  let mut j = 0;
+  while j < len(out) {
+    let mut min_idx = j;
+    let mut k = j + 1;
+    while k < len(out) {
+      if (out[k])[2] < (out[min_idx])[2] {
+        min_idx = k;
+      };
+      k = k + 1;
+    }
+    let tmp = out[j];
+    out[j] = out[min_idx];
+    out[min_idx] = tmp;
+    j = j + 1;
+  }
+  out
+}

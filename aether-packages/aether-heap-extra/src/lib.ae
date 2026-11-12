@@ -1,0 +1,197 @@
+// aether-heap-extra/src/lib.ae
+// ============================
+// Priority queue (binary min-heap) extensions for Aether. 8 pub
+// functions covering a richer API than the stdlib heap: pqNew, pqPush,
+// pqPop, pqPeek, pqSize, pqMerge, pqUpdateKey, pqDelete.
+//
+// The heap stores `(priority, value)` pairs as `[priority, value]`.
+// It's a min-heap: pqPop returns the pair with the smallest priority.
+//
+// Representation: a mutable array of pairs. We use the standard
+// binary-heap array layout: parent at floor(i/2), children at 2i+1
+// and 2i+2.
+//
+// pqUpdateKey and pqDelete use a position map (an array of value ->
+// index) to find the pair to update or delete. This is a simple
+// linear scan — O(n) — but the API is the standard priority-queue API.
+// The stdlib heap doesn't have these operations; this package
+// complements it.
+//
+// No `for in` loops (defensive against the v1 evaluator's
+// for-loop-scope quirk). All iteration uses `while`.
+
+//----------------------------------------------------------------------------
+// Constructors
+//----------------------------------------------------------------------------
+
+// pqNew() — create an empty priority queue.
+pub fn pqNew() -> [any] {
+  []  // heap as array of [priority, value] pairs
+}
+
+//----------------------------------------------------------------------------
+// Basic operations
+//----------------------------------------------------------------------------
+
+// pqPush(pq, priority, value) — insert a pair. Returns pq (mutated).
+pub fn pqPush(pq: [any], priority: int, value: int) -> [any] {
+  push(pq, [priority, value]);
+  sift_up(pq, len(pq) - 1);
+  pq
+}
+
+// pqPop(pq) — remove and return the min-priority pair. Returns
+// [priority, value] or `[-1, -1]` if empty.
+pub fn pqPop(pq: [any]) -> [int] {
+  if len(pq) == 0 {
+    [-1, -1]
+  } else {
+    let top = pq[0];
+    let last = pq[len(pq) - 1];
+    pq[0] = last;
+    pop(pq);  // remove last
+    if len(pq) > 0 {
+      sift_down(pq, 0);
+    };
+    top
+  }
+}
+
+// pqPeek(pq) — return the min-priority pair without removing it.
+pub fn pqPeek(pq: [any]) -> [int] {
+  if len(pq) == 0 {
+    [-1, -1]
+  } else {
+    pq[0]
+  }
+}
+
+// pqSize(pq) — number of pairs.
+pub fn pqSize(pq: [any]) -> int {
+  len(pq)
+}
+
+//----------------------------------------------------------------------------
+// Merge — combine two heaps into one. Returns a new heap.
+//----------------------------------------------------------------------------
+
+pub fn pqMerge(a: [any], b: [any]) -> [any] {
+  let mut out = pqNew();
+  let mut i = 0;
+  while i < len(a) {
+    let pair = a[i];
+    pqPush(out, pair[0], pair[1]);
+    i = i + 1;
+  }
+  let mut j = 0;
+  while j < len(b) {
+    let pair = b[j];
+    pqPush(out, pair[0], pair[1]);
+    j = j + 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// UpdateKey / Delete — use linear scan to find the value, then
+// re-heapify.
+//----------------------------------------------------------------------------
+
+// pqUpdateKey(pq, value, new_priority) — find the pair with `value`
+// and update its priority. Re-heapifies. Returns true if found.
+pub fn pqUpdateKey(pq: [any], value: int, new_priority: int) -> bool {
+  let mut i = 0;
+  let mut found = false;
+  while i < len(pq) && !found {
+    let pair = pq[i];
+    if pair[1] == value {
+      pair[0] = new_priority;
+      found = true;
+    };
+    i = i + 1;
+  }
+  if found {
+    // Re-heapify from the updated index.
+    let idx = i - 1;
+    let parent = int((idx - 1) / 2);
+    if idx > 0 && (pq[idx])[0] < (pq[parent])[0] {
+      sift_up(pq, idx);
+    } else {
+      sift_down(pq, idx);
+    };
+  };
+  found
+}
+
+// pqDelete(pq, value) — find and remove the pair with `value`.
+// Re-heapifies. Returns true if found.
+pub fn pqDelete(pq: [any], value: int) -> bool {
+  let mut i = 0;
+  let mut found_idx = -1;
+  while i < len(pq) && found_idx < 0 {
+    let pair = pq[i];
+    if pair[1] == value {
+      found_idx = i;
+    };
+    i = i + 1;
+  }
+  if found_idx < 0 {
+    false
+  } else {
+    let last = pq[len(pq) - 1];
+    pq[found_idx] = last;
+    pop(pq);
+    if found_idx < len(pq) {
+      sift_down(pq, found_idx);
+      sift_up(pq, found_idx);
+    };
+    true
+  }
+}
+
+//----------------------------------------------------------------------------
+// Heap internals
+//----------------------------------------------------------------------------
+
+fn sift_up(pq: [any], i: int) -> () {
+  let mut idx = i;
+  let mut keep_going = idx > 0;
+  while keep_going {
+    let parent = int((idx - 1) / 2);
+    if (pq[idx])[0] < (pq[parent])[0] {
+      swap(pq, idx, parent);
+      idx = parent;
+    } else {
+      keep_going = false;
+    };
+  }
+}
+
+fn sift_down(pq: [any], i: int) -> () {
+  let n = len(pq);
+  let mut idx = i;
+  let mut keep_going = true;
+  while keep_going {
+    let left = 2 * idx + 1;
+    let right = 2 * idx + 2;
+    let mut smallest = idx;
+    if left < n && (pq[left])[0] < (pq[smallest])[0] {
+      smallest = left;
+    };
+    if right < n && (pq[right])[0] < (pq[smallest])[0] {
+      smallest = right;
+    };
+    if smallest != idx {
+      swap(pq, idx, smallest);
+      idx = smallest;
+    } else {
+      keep_going = false;
+    };
+  }
+}
+
+fn swap(pq: [any], i: int, j: int) -> () {
+  let tmp = pq[i];
+  pq[i] = pq[j];
+  pq[j] = tmp;
+}

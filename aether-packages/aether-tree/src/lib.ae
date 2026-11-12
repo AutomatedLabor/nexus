@@ -1,0 +1,332 @@
+// aether-tree/src/lib.ae
+// ======================
+// Tree operations for Aether. 15 pub functions covering the canonical
+// tree API: treeNew, treeAddChild, treeValue, treeDepth, treeSize,
+// treeMap, treeFilter, treeFind, treeFlatten, treeWalk, treeBfs,
+// treeDfs, treeEquals, treePrint, treeFromEdges.
+//
+// Trees are represented as 2-element arrays: [value, [child1, child2, ...]]
+// where each child is itself a tree (recursively).
+//
+// No `for in` loops (defensive against the v1 evaluator's
+// for-loop-scope quirk). All iteration uses `while` with explicit
+// index variables.
+
+//----------------------------------------------------------------------------
+// Constructors
+//----------------------------------------------------------------------------
+
+// treeNew(v) — create a leaf tree with value v and no children.
+pub fn treeNew(v: int) -> [int] {
+  [v, []]
+}
+
+// treeAddChild(parent, child) — append child to parent's children.
+// Mutates parent in place (builder pattern). Returns parent.
+pub fn treeAddChild(parent: [int], child: [int]) -> [int] {
+  let children = parent[1];
+  push(children, child);
+  parent
+}
+
+// treeValue(node) — extract the node's value.
+pub fn treeValue(node: [int]) -> int {
+  node[0]
+}
+
+//----------------------------------------------------------------------------
+// treeFromEdges — build a tree from a list of (parent, child) edges.
+//----------------------------------------------------------------------------
+
+pub fn treeFromEdges(edges: [[int]]) -> [int] {
+  if len(edges) == 0 {
+    panic("treeFromEdges: empty edge list")
+  } else {
+    let root_val = edges[0][0];
+    let root = treeNew(root_val);
+    let mut i = 0;
+    while i < len(edges) {
+      let p = edges[i][0];
+      let c = edges[i][1];
+      let parent_node = find_node_value(root, p);
+      if treeValue(parent_node) != p {
+        panic("treeFromEdges: parent not found")
+      } else {
+        treeAddChild(parent_node, treeNew(c));
+      };
+      i = i + 1;
+    }
+    root
+  }
+}
+
+fn find_node_value(root: [int], v: int) -> [int] {
+  if treeValue(root) == v {
+    root
+  } else {
+    find_in_children_value(root[1], v)
+  }
+}
+
+fn find_in_children_value(children: [int], v: int) -> [int] {
+  let mut i = 0;
+  let mut found = [-1, []];  // sentinel: not found has value -1
+  while i < len(children) && treeValue(found) == -1 {
+    let c = children[i];
+    let r = find_node_value(c, v);
+    if treeValue(r) == v {
+      found = r;
+    };
+    i = i + 1;
+  }
+  found
+}
+
+//----------------------------------------------------------------------------
+// treeDepth / treeSize
+//----------------------------------------------------------------------------
+
+pub fn treeDepth(node: [int]) -> int {
+  let children = node[1];
+  if len(children) == 0 {
+    1
+  } else {
+    1 + max_child_depth(children)
+  }
+}
+
+fn max_child_depth(children: [int]) -> int {
+  let mut i = 0;
+  let mut m = 0;
+  while i < len(children) {
+    let d = treeDepth(children[i]);
+    if d > m {
+      m = d;
+    };
+    i = i + 1;
+  }
+  m
+}
+
+pub fn treeSize(node: [int]) -> int {
+  let children = node[1];
+  let mut i = 0;
+  let mut sum = 1;
+  while i < len(children) {
+    sum = sum + treeSize(children[i]);
+    i = i + 1;
+  }
+  sum
+}
+
+//----------------------------------------------------------------------------
+// treeMap / treeFilter / treeFind
+//----------------------------------------------------------------------------
+
+pub fn treeMap(node: [int], f: fn(int) -> int) -> [int] {
+  let v = f(treeValue(node));
+  let children = node[1];
+  let new_children = map_children_arr(children, f);
+  [v, new_children]
+}
+
+fn map_children_arr(children: [int], f: fn(int) -> int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(children) {
+    push(out, treeMap(children[i], f));
+    i = i + 1;
+  }
+  out
+}
+
+// treeFilter(node, pred) — return a new tree containing only the nodes
+// for which pred(value) is true. A node whose value doesn't pass pred
+// but has passing descendants is kept (with its passing children).
+// A node that doesn't pass and has no passing descendants is dropped
+// (returned as [-1, []] — caller checks for value == -1).
+pub fn treeFilter(node: [int], pred: fn(int) -> bool) -> [int] {
+  let children = node[1];
+  let filtered = filter_children_arr(children, pred);
+  if pred(treeValue(node)) {
+    [treeValue(node), filtered]
+  } else {
+    if len(filtered) == 0 {
+      [-1, []]  // dropped
+    } else {
+      if len(filtered) == 1 {
+        filtered[0]
+      } else {
+        [treeValue(node), filtered]
+      }
+    }
+  }
+}
+
+fn filter_children_arr(children: [int], pred: fn(int) -> bool) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(children) {
+    let filtered = treeFilter(children[i], pred);
+    if treeValue(filtered) != -1 {
+      push(out, filtered);
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// treeFind(node, pred) — find the first node (DFS, pre-order) whose
+// value satisfies pred. Returns the node (or [-1, []] if none).
+pub fn treeFind(node: [int], pred: fn(int) -> bool) -> [int] {
+  if pred(treeValue(node)) {
+    node
+  } else {
+    find_in_children_pred(node[1], pred)
+  }
+}
+
+fn find_in_children_pred(children: [int], pred: fn(int) -> bool) -> [int] {
+  let mut i = 0;
+  let mut found = [-1, []];
+  while i < len(children) && treeValue(found) == -1 {
+    let r = treeFind(children[i], pred);
+    if treeValue(r) != -1 {
+      found = r;
+    };
+    i = i + 1;
+  }
+  found
+}
+
+//----------------------------------------------------------------------------
+// treeFlatten — DFS pre-order, returns the values as a flat array.
+//----------------------------------------------------------------------------
+
+pub fn treeFlatten(node: [int]) -> [int] {
+  let mut out = [treeValue(node)];
+  let children = node[1];
+  let mut i = 0;
+  while i < len(children) {
+    let sub = treeFlatten(children[i]);
+    out = append_arr(out, sub);
+    i = i + 1;
+  }
+  out
+}
+
+fn append_arr(a: [int], b: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(a) {
+    push(out, a[i]);
+    i = i + 1;
+  }
+  let mut j = 0;
+  while j < len(b) {
+    push(out, b[j]);
+    j = j + 1;
+  }
+  out
+}
+
+//----------------------------------------------------------------------------
+// treeWalk / treeBfs / treeDfs
+//----------------------------------------------------------------------------
+
+pub fn treeWalk(node: [int], f: fn(int) -> ()) -> () {
+  f(treeValue(node));
+  let children = node[1];
+  let mut i = 0;
+  while i < len(children) {
+    treeWalk(children[i], f);
+    i = i + 1;
+  }
+}
+
+pub fn treeBfs(node: [int]) -> [int] {
+  let mut queue = [node];
+  let mut out = [];
+  while len(queue) > 0 {
+    let cur = queue[0];
+    queue = rest_arr(queue);
+    push(out, treeValue(cur));
+    let children = cur[1];
+    let mut i = 0;
+    while i < len(children) {
+      push(queue, children[i]);
+      i = i + 1;
+    }
+  }
+  out
+}
+
+fn rest_arr(arr: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 1;
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+pub fn treeDfs(node: [int]) -> [int] {
+  treeFlatten(node)
+}
+
+//----------------------------------------------------------------------------
+// treeEquals — structural equality.
+//----------------------------------------------------------------------------
+
+pub fn treeEquals(a: [int], b: [int]) -> bool {
+  if treeValue(a) != treeValue(b) {
+    false
+  } else {
+    let ca = a[1];
+    let cb = b[1];
+    if len(ca) != len(cb) {
+      false
+    } else {
+      let mut i = 0;
+      let mut ok = true;
+      while i < len(ca) && ok {
+        if !treeEquals(ca[i], cb[i]) {
+          ok = false;
+        };
+        i = i + 1;
+      }
+      ok
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// treePrint — pretty-print as a nested array string.
+//----------------------------------------------------------------------------
+
+pub fn treePrint(node: [int]) -> string {
+  let v = treeValue(node);
+  let children = node[1];
+  if len(children) == 0 {
+    str(v)
+  } else {
+    let body = children_to_str(children);
+    str(v) + "(" + body + ")"
+  }
+}
+
+fn children_to_str(children: [int]) -> string {
+  let mut acc = "";
+  let mut i = 0;
+  while i < len(children) {
+    let s = treePrint(children[i]);
+    if acc == "" {
+      acc = s;
+    } else {
+      acc = acc + ", " + s;
+    };
+    i = i + 1;
+  }
+  acc
+}

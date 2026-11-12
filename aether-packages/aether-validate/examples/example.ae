@@ -1,0 +1,36 @@
+// aether-validate/examples/example.ae
+// ====================================
+// A demo of the aether-validate package: shows each validator with a
+// mix of valid and invalid inputs.
+import {
+  isEmail, isUrl, isIpv4, isUuid, isDate,
+  isAlpha, isNumeric, isAlnum, isLower, isUpper,
+  isInRange, isOneOf, isNonEmpty, isLength, isMaxLength, matches,
+} from "../src/lib.ae";
+
+print("== aether-validate example ==");
+print("");
+
+print(f"isEmail('alice@example.com')  = {isEmail("alice@example.com")}");
+print(f"isEmail('not-an-email')       = {isEmail("not-an-email")}");
+print(f"isUrl('https://example.com')  = {isUrl("https://example.com")}");
+print(f"isUrl('ftp://example.com')     = {isUrl("ftp://example.com")}");
+print(f"isIpv4('127.0.0.1')            = {isIpv4("127.0.0.1")}");
+print(f"isIpv4('256.1.1.1')            = {isIpv4("256.1.1.1")}");
+print(f"isUuid('8-4-4-4-12 hex')        = {isUuid("12345678-1234-1234-1234-123456789012")}");
+print(f"isDate('2023-01-15')           = {isDate("2023-01-15")}");
+print(f"isAlpha('hello')                = {isAlpha("hello")}");
+print(f"isAlpha('hello123')             = {isAlpha("hello123")}");
+print(f"isNumeric('12345')              = {isNumeric("12345")}");
+print(f"isAlnum('abc123')               = {isAlnum("abc123")}");
+print(f"isLower('hello')                = {isLower("hello")}");
+print(f"isUpper('HELLO')                = {isUpper("HELLO")}");
+print(f"isInRange(5, 1, 10)             = {isInRange(5, 1, 10)}");
+print(f"isOneOf(3, [1, 2, 3])           = {isOneOf(3, [1, 2, 3])}");
+print(f"isNonEmpty('hello')             = {isNonEmpty("hello")}");
+print(f"isLength('hello', 5)            = {isLength("hello", 5)}");
+print(f"isMaxLength('hello', 10)       = {isMaxLength("hello", 10)}");
+print(f"matches('abc', 'abc')           = {matches("abc", "abc")}");
+
+print("");
+print("All demos ran successfully.");

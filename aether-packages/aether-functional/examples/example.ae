@@ -1,0 +1,77 @@
+// aether-functional/examples/example.ae
+// ======================================
+// A demo of the aether-functional package: shows each combinator
+// with a small input/output snapshot.
+import {
+  identity, constant,
+  compose, pipe,
+  curry, partial, flip,
+  memoize, once,
+  debounce, throttle,
+  after, before,
+  wrap, tap,
+  when, unless, cond,
+} from "../src/lib.ae";
+
+fn inc(x: int) -> int { x + 1 }
+fn dbl(x: int) -> int { x * 2 }
+
+print("== aether-functional example ==");
+print("");
+
+print(f"identity(42)    = {identity(42)}");
+print(f"constant(99)()  = {constant(99)()}");
+
+let c = compose(dbl, inc);
+print(f"compose(dbl,inc)(5) = {c(5)}");
+let p = pipe(inc, dbl);
+print(f"pipe(inc,dbl)(5)     = {p(5)}");
+
+fn add(a: int, b: int) -> int { a + b }
+let g = curry(add);
+print(f"curry(add)(5)(3)    = {g(5)(3)}");
+let p10 = partial(add, 10);
+print(f"partial(add,10)(7)  = {p10(7)}");
+
+let sub_flip = flip(fn(a: int, b: int) -> int { a - b });
+print(f"flip(sub)(3,10)     = {sub_flip(3, 10)}");
+
+fn slow_sq(n: int) -> int { n * n }
+let m = memoize(slow_sq);
+print(f"memoize(slow_sq)(5) = {m(5)}");
+print(f"memoize(slow_sq)(5) = {m(5)}");
+
+let o = once(fn() -> int { 42 });
+print(f"once(...)()         = {o()}");
+print(f"once(...)() again   = {o()}");
+
+let t = throttle(fn(x: int) -> int { x * 100 }, 3);
+print(f"throttle(t,3)(1)    = {t(1)}");
+print(f"throttle(t,3)(2)    = {t(2)}");
+print(f"throttle(t,3)(3)    = {t(3)}");
+print(f"throttle(t,3)(4)    = {t(4)}");
+
+let is_pos = fn(x: int) -> bool { x > 0 };
+let w = when(is_pos, fn(x: int) -> int { x * 10 });
+print(f"when(>0, *10)(5)    = {w(5)}");
+print(f"when(>0, *10)(-3)   = {w(-3)}");
+
+let u = unless(is_pos, fn(x: int) -> int { x * 10 });
+print(f"unless(>0, *10)(5)  = {u(5)}");
+print(f"unless(>0, *10)(-3) = {u(-3)}");
+
+let cases = [
+  fn(x: int) -> bool { x < 0 },
+  fn(x: int) -> int { -1 },
+  fn(x: int) -> bool { x == 0 },
+  fn(x: int) -> int { 0 },
+  fn(x: int) -> bool { x > 0 },
+  fn(x: int) -> int { 1 },
+];
+let classify = cond(cases, 99);
+print(f"cond(classify)(-5)  = {classify(-5)}");
+print(f"cond(classify)(0)   = {classify(0)}");
+print(f"cond(classify)(42)  = {classify(42)}");
+
+print("");
+print("All demos ran successfully.");

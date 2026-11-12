@@ -1,0 +1,99 @@
+// aether-tree/tests/tests.ae
+// ==========================
+// 25+ assertions covering every pub function in aether-tree.
+import {
+  treeNew, treeAddChild, treeValue, treeDepth, treeSize,
+  treeMap, treeFilter, treeFind, treeFlatten, treeWalk,
+  treeBfs, treeDfs, treeEquals, treePrint, treeFromEdges,
+} from "../src/lib.ae";
+
+// --- treeNew / treeValue ---
+let leaf = treeNew(10);
+assert_eq(treeValue(leaf), 10);
+assert_eq(treeDepth(leaf), 1);
+assert_eq(treeSize(leaf), 1);
+assert_eq(treeFlatten(leaf), [10]);
+assert_eq(treeBfs(leaf), [10]);
+assert_eq(treeDfs(leaf), [10]);
+assert_eq(treePrint(leaf), "10");
+
+// --- treeAddChild (builder) ---
+let root = treeNew(1);
+let c1 = treeNew(2);
+let c2 = treeNew(3);
+treeAddChild(root, c1);
+treeAddChild(root, c2);
+assert_eq(treeSize(root), 3);
+assert_eq(treeDepth(root), 2);
+assert_eq(treeFlatten(root), [1, 2, 3]);
+assert_eq(treeBfs(root), [1, 2, 3]);
+assert_eq(treePrint(root), "1(2, 3)");
+
+// --- deeper tree ---
+let r2 = treeNew(1);
+let a = treeNew(2);
+let b = treeNew(3);
+let a1 = treeNew(4);
+let a2 = treeNew(5);
+let b1 = treeNew(6);
+treeAddChild(r2, a);
+treeAddChild(r2, b);
+treeAddChild(a, a1);
+treeAddChild(a, a2);
+treeAddChild(b, b1);
+assert_eq(treeSize(r2), 6);
+assert_eq(treeDepth(r2), 3);
+assert_eq(treeFlatten(r2), [1, 2, 4, 5, 3, 6]);
+assert_eq(treeBfs(r2), [1, 2, 3, 4, 5, 6]);
+assert_eq(treeDfs(r2), [1, 2, 4, 5, 3, 6]);
+assert_eq(treePrint(r2), "1(2(4, 5), 3(6))");
+
+// --- treeMap ---
+fn dbl(x: int) -> int { x * 2 }
+let mapped = treeMap(r2, dbl);
+assert_eq(treeFlatten(mapped), [2, 4, 8, 10, 6, 12]);
+assert_eq(treeValue(mapped), 2);
+
+// --- treeFind ---
+fn is_5(x: int) -> bool { x == 5 }
+let found = treeFind(r2, is_5);
+assert_eq(treeValue(found), 5);
+fn is_99(x: int) -> bool { x == 99 }
+let not_found = treeFind(r2, is_99);
+assert_eq(treeValue(not_found), -1);
+
+// --- treeFilter ---
+fn is_even(x: int) -> bool { x % 2 == 0 }
+let filtered = treeFilter(r2, is_even);
+// 1 doesn't pass but has passing descendants (2, 4, 6); kept with its
+// filtered children. 2 passes (kept, leaf with child 4). 3 doesn't pass
+// but has 6 which passes — 6 is promoted (3 dropped). 5 doesn't pass
+// and has no passing descendants — dropped.
+// Final tree: 1 with children [2 (with child 4), 6].
+assert_eq(treeFlatten(filtered), [1, 2, 4, 6]);
+
+// --- treeFromEdges ---
+let edges = [[1, 2], [1, 3], [2, 4], [2, 5], [3, 6]];
+let built = treeFromEdges(edges);
+assert_eq(treeSize(built), 6);
+assert_eq(treeFlatten(built), [1, 2, 4, 5, 3, 6]);
+assert_eq(treeBfs(built), [1, 2, 3, 4, 5, 6]);
+assert_eq(treePrint(built), "1(2(4, 5), 3(6))");
+
+// --- treeEquals ---
+let t1 = treeNew(1);
+let t2 = treeNew(1);
+assert_eq(treeEquals(t1, t2), true);
+let t3 = treeNew(2);
+assert_eq(treeEquals(t1, t3), false);
+treeAddChild(t1, treeNew(10));
+assert_eq(treeEquals(t1, t2), false);
+treeAddChild(t2, treeNew(10));
+assert_eq(treeEquals(t1, t2), true);
+
+// --- treeWalk (side effect) ---
+let visited = [];
+treeWalk(r2, fn(v: int) -> () { push(visited, v) });
+assert_eq(visited, [1, 2, 4, 5, 3, 6]);
+
+print("aether-tree: all 25+ assertions passed");

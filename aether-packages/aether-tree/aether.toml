@@ -1,0 +1,11 @@
+[package]
+name = "aether-tree"
+version = "0.1.0"
+description = "Tree operations for Aether — 15 pub functions: treeNew, treeAddChild, treeValue, treeDepth, treeSize, treeMap, treeFilter, treeFind, treeFlatten, treeWalk, treeBfs, treeDfs, treeEquals, treePrint, treeFromEdges."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — uses only Aether's core builtins (push, len, while, recursion).
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

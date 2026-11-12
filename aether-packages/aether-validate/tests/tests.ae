@@ -1,0 +1,99 @@
+// aether-validate/tests/tests.ae
+// ==============================
+// 30+ assertions covering every pub function in aether-validate.
+import {
+  isEmail, isUrl, isIpv4, isUuid, isDate,
+  isAlpha, isNumeric, isAlnum, isLower, isUpper,
+  isInRange, isOneOf, isNonEmpty, isLength, isMaxLength, matches,
+} from "../src/lib.ae";
+
+// --- isEmail ---
+assert_eq(isEmail("alice@example.com"), true);
+assert_eq(isEmail("a@b.org"), true);
+assert_eq(isEmail("not-an-email"), false);
+assert_eq(isEmail("no-at-sign.com"), false);
+assert_eq(isEmail("@no-local.com"), false);
+assert_eq(isEmail("a@.com"), false);  // no domain before dot
+assert_eq(isEmail("a@b.c"), false);    // tld too short
+assert_eq(isEmail("a@b.com"), true);
+assert_eq(isEmail("a.b-c@d.io"), true);
+
+// --- isUrl ---
+assert_eq(isUrl("http://example.com"), true);
+assert_eq(isUrl("https://example.com"), true);
+assert_eq(isUrl("https://a.b"), true);
+assert_eq(isUrl("ftp://example.com"), false);
+assert_eq(isUrl("example.com"), false);
+assert_eq(isUrl("https://"), false);
+
+// --- isIpv4 ---
+assert_eq(isIpv4("127.0.0.1"), true);
+assert_eq(isIpv4("255.255.255.255"), true);
+assert_eq(isIpv4("0.0.0.0"), true);
+assert_eq(isIpv4("256.1.1.1"), false);
+assert_eq(isIpv4("1.2.3"), false);
+assert_eq(isIpv4("a.b.c.d"), false);
+assert_eq(isIpv4("1.2.3.4.5"), false);
+
+// --- isUuid ---
+assert_eq(isUuid("12345678-1234-1234-1234-123456789012"), true);
+assert_eq(isUuid("abcdef12-3456-7890-abcd-ef1234567890"), true);
+assert_eq(isUuid("12345678-1234-1234-1234-12345678901"), false);  // too short last group
+assert_eq(isUuid("12345678123412341234123456789012"), false);  // no dashes
+assert_eq(isUuid("z2345678-1234-1234-1234-123456789012"), false);  // non-hex
+
+// --- isDate ---
+assert_eq(isDate("2023-01-15"), true);
+assert_eq(isDate("1999-12-31"), true);
+assert_eq(isDate("0000-00-00"), false);  // month 0 invalid
+assert_eq(isDate("2023-13-01"), false);  // month 13 invalid
+assert_eq(isDate("2023-1-1"), false);    // wrong format (single-digit)
+assert_eq(isDate("not-a-date"), false);
+
+// --- isAlpha / isNumeric / isAlnum / isLower / isUpper ---
+assert_eq(isAlpha("hello"), true);
+assert_eq(isAlpha("Hello"), true);
+assert_eq(isAlpha("hello123"), false);
+assert_eq(isAlpha(""), false);
+assert_eq(isNumeric("12345"), true);
+assert_eq(isNumeric("12.34"), false);
+assert_eq(isNumeric(""), false);
+assert_eq(isAlnum("hello123"), true);
+assert_eq(isAlnum("hello_123"), false);
+assert_eq(isAlnum(""), false);
+assert_eq(isLower("hello"), true);
+assert_eq(isLower("Hello"), false);
+assert_eq(isLower("123"), false);  // digits aren't lowercase
+assert_eq(isUpper("HELLO"), true);
+assert_eq(isUpper("Hello"), false);
+
+// --- isInRange ---
+assert_eq(isInRange(5, 1, 10), true);
+assert_eq(isInRange(1, 1, 10), true);
+assert_eq(isInRange(10, 1, 10), true);
+assert_eq(isInRange(0, 1, 10), false);
+assert_eq(isInRange(11, 1, 10), false);
+
+// --- isOneOf ---
+assert_eq(isOneOf(3, [1, 2, 3]), true);
+assert_eq(isOneOf(5, [1, 2, 3]), false);
+assert_eq(isOneOf(1, []), false);
+
+// --- isNonEmpty / isLength / isMaxLength ---
+assert_eq(isNonEmpty("hello"), true);
+assert_eq(isNonEmpty(""), false);
+assert_eq(isLength("hello", 5), true);
+assert_eq(isLength("hello", 4), false);
+assert_eq(isMaxLength("hello", 10), true);
+assert_eq(isMaxLength("hello", 4), false);
+assert_eq(isMaxLength("", 0), true);
+
+// --- matches ---
+assert_eq(matches("abc", "abc"), true);
+assert_eq(matches("abc", "abcdef"), true);
+assert_eq(matches("abc", "ab"), false);  // 'c' not in alphabet
+assert_eq(matches("", "abc"), true);     // empty matches anything
+assert_eq(matches("123", "0123456789"), true);
+assert_eq(matches("a1b2", "ab12"), true);
+
+print("aether-validate: all 30+ assertions passed");

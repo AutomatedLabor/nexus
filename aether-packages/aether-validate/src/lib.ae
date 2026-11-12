@@ -1,0 +1,433 @@
+// aether-validate/src/lib.ae
+// ==========================
+// Validation predicates for Aether. 15 pub functions covering common
+// string/number validators: isEmail, isUrl, isIpv4, isUuid, isDate,
+// isAlpha, isNumeric, isAlnum, isLower, isUpper, isInRange, isOneOf,
+// isNonEmpty, isLength, matches.
+//
+// All functions are pure: they return bool and never mutate inputs.
+// Built on top of Aether's `while`, `len`, `charCode`, `strSlice`,
+// recursion — no `for in` loops (defensive against the v1 evaluator's
+// for-loop-scope quirk).
+
+//----------------------------------------------------------------------------
+// Email validation — simple form: <local>@<domain>.<tld>
+// Doesn't accept all RFC-5322 forms; rejects the obvious bad cases.
+//----------------------------------------------------------------------------
+
+pub fn isEmail(s: string) -> bool {
+  let n = len(s);
+  let at_count = count_char(s, "@");
+  let ok = false;
+  if at_count != 1 {
+    false
+  } else {
+    let at_pos = find_char(s, "@");
+    if at_pos < 1 {
+      false
+    } else {
+      if at_pos > n - 5 {
+        false
+      } else {
+        let local = strSlice(s, 0, at_pos);
+        let domain = strSlice(s, at_pos + 1, n);
+        let domain_ok = is_alnum_dot_dash(local);
+        if !domain_ok {
+          false
+        } else {
+          let dot_pos = find_char(domain, ".");
+          if dot_pos < 1 {
+            false
+          } else {
+            let tld = strSlice(domain, dot_pos + 1, len(domain));
+            let tld_ok = is_alpha_only(tld);
+            tld_ok && len(tld) >= 2
+          }
+        }
+      }
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// URL validation — starts with http:// or https:// and has a non-empty host
+//----------------------------------------------------------------------------
+
+pub fn isUrl(s: string) -> bool {
+  let n = len(s);
+  let ok = false;
+  if starts_with(s, "https://") {
+    let host = strSlice(s, 8, n);
+    host_ok(host)
+  } else {
+    if starts_with(s, "http://") {
+      let host = strSlice(s, 7, n);
+      host_ok(host)
+    } else {
+      false
+    }
+  }
+}
+
+fn host_ok(s: string) -> bool {
+  let n = len(s);
+  let ok = false;
+  if n < 3 {
+    false
+  } else {
+    let dot_pos = find_char(s, ".");
+    if dot_pos < 1 {
+      false
+    } else {
+      dot_pos < n - 1
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// IPv4 — four dot-separated octets, each 0-255
+//----------------------------------------------------------------------------
+
+pub fn isIpv4(s: string) -> bool {
+  let parts = split_on(s, ".");
+  if len(parts) != 4 {
+    false
+  } else {
+    let mut i = 0;
+    let mut ok = true;
+    while i < 4 && ok {
+      let p = parts[i];
+      let p_ok = is_digit_only(p);
+      if !p_ok {
+        ok = false;
+      } else {
+        let v = parse_int(p);
+        if v < 0 {
+          ok = false;
+        } else {
+          if v > 255 { ok = false; };
+        };
+      };
+      i = i + 1;
+    }
+    ok
+  }
+}
+
+//----------------------------------------------------------------------------
+// UUID — 8-4-4-4-12 hex chars, dashes between
+//----------------------------------------------------------------------------
+
+pub fn isUuid(s: string) -> bool {
+  let parts = split_on(s, "-");
+  if len(parts) != 5 {
+    false
+  } else {
+    let lens = [8, 4, 4, 4, 12];
+    let mut i = 0;
+    let mut ok = true;
+    while i < 5 && ok {
+      let p = parts[i];
+      if len(p) != lens[i] {
+        ok = false;
+      } else {
+        if !is_hex_only(p) { ok = false; };
+      };
+      i = i + 1;
+    }
+    ok
+  }
+}
+
+//----------------------------------------------------------------------------
+// Date — YYYY-MM-DD (ISO 8601 short form)
+//----------------------------------------------------------------------------
+
+pub fn isDate(s: string) -> bool {
+  let n = len(s);
+  if n != 10 {
+    false
+  } else {
+    if charAt(s, 4) != "-" {
+      false
+    } else {
+      if charAt(s, 7) != "-" {
+        false
+      } else {
+        let y = strSlice(s, 0, 4);
+        let m = strSlice(s, 5, 7);
+        let d = strSlice(s, 8, 10);
+        let y_ok = is_digit_only(y);
+        let m_ok = is_digit_only(m);
+        let d_ok = is_digit_only(d);
+        if !y_ok {
+          false
+        } else {
+          if !m_ok {
+            false
+          } else {
+            if !d_ok {
+              false
+            } else {
+              let mi = parse_int(m);
+              let di = parse_int(d);
+              mi >= 1 && mi <= 12 && di >= 1 && di <= 31
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Alpha / numeric / alnum / lower / upper
+//----------------------------------------------------------------------------
+
+pub fn isAlpha(s: string) -> bool {
+  is_alpha_only(s) && len(s) > 0
+}
+
+pub fn isNumeric(s: string) -> bool {
+  is_digit_only(s) && len(s) > 0
+}
+
+pub fn isAlnum(s: string) -> bool {
+  let mut i = 0;
+  let mut ok = len(s) > 0;
+  while i < len(s) && ok {
+    let c = charCode(s, i);
+    let a = is_alpha_code(c);
+    let d = is_digit_code(c);
+    if !(a || d) { ok = false; };
+    i = i + 1;
+  }
+  ok
+}
+
+pub fn isLower(s: string) -> bool {
+  let mut i = 0;
+  let mut ok = len(s) > 0;
+  while i < len(s) && ok {
+    let c = charCode(s, i);
+    if c < 97 { ok = false; };
+    if c > 122 { ok = false; };
+    i = i + 1;
+  }
+  ok
+}
+
+pub fn isUpper(s: string) -> bool {
+  let mut i = 0;
+  let mut ok = len(s) > 0;
+  while i < len(s) && ok {
+    let c = charCode(s, i);
+    if c < 65 { ok = false; };
+    if c > 90 { ok = false; };
+    i = i + 1;
+  }
+  ok
+}
+
+//----------------------------------------------------------------------------
+// Number validators
+//----------------------------------------------------------------------------
+
+pub fn isInRange(x: int, lo: int, hi: int) -> bool {
+  x >= lo && x <= hi
+}
+
+pub fn isOneOf(x: int, choices: [int]) -> bool {
+  let mut i = 0;
+  let mut found = false;
+  while i < len(choices) && !found {
+    if choices[i] == x { found = true; };
+    i = i + 1;
+  }
+  found
+}
+
+//----------------------------------------------------------------------------
+// String validators
+//----------------------------------------------------------------------------
+
+pub fn isNonEmpty(s: string) -> bool {
+  len(s) > 0
+}
+
+pub fn isLength(s: string, n: int) -> bool {
+  len(s) == n
+}
+
+pub fn isMaxLength(s: string, n: int) -> bool {
+  len(s) <= n
+}
+
+// matches(s, alphabet) — true if every char of `s` is in `alphabet`.
+// `alphabet` is a string containing the allowed chars. This is a
+// poor man's regex `[alphabet]*` matcher.
+pub fn matches(s: string, alphabet: string) -> bool {
+  let mut i = 0;
+  let mut ok = true;
+  while i < len(s) && ok {
+    let c = charAt(s, i);
+    let in_alph = char_in(alphabet, c);
+    if !in_alph { ok = false; };
+    i = i + 1;
+  }
+  ok
+}
+
+//----------------------------------------------------------------------------
+// Helpers
+//----------------------------------------------------------------------------
+
+fn count_char(s: string, c: string) -> int {
+  let mut i = 0;
+  let mut n = 0;
+  while i < len(s) {
+    if charAt(s, i) == c { n = n + 1; };
+    i = i + 1;
+  }
+  n
+}
+
+fn find_char(s: string, c: string) -> int {
+  let mut i = 0;
+  let mut pos = -1;
+  while i < len(s) && pos < 0 {
+    if charAt(s, i) == c { pos = i; };
+    i = i + 1;
+  }
+  pos
+}
+
+fn charAt(s: string, i: int) -> string {
+  fromCharCode(charCode(s, i))
+}
+
+fn is_alpha_only(s: string) -> bool {
+  let mut i = 0;
+  let mut ok = true;
+  while i < len(s) && ok {
+    let a = is_alpha_code(charCode(s, i));
+    if !a { ok = false; };
+    i = i + 1;
+  }
+  ok
+}
+
+fn is_digit_only(s: string) -> bool {
+  let mut i = 0;
+  let mut ok = len(s) > 0;
+  while i < len(s) && ok {
+    let d = is_digit_code(charCode(s, i));
+    if !d { ok = false; };
+    i = i + 1;
+  }
+  ok
+}
+
+fn is_hex_only(s: string) -> bool {
+  let mut i = 0;
+  let mut ok = len(s) > 0;
+  while i < len(s) && ok {
+    let c = charCode(s, i);
+    let d = is_digit_code(c);
+    let upper = c >= 65 && c <= 70;
+    let lower = c >= 97 && c <= 102;
+    if !d {
+      if !upper {
+        if !lower { ok = false; };
+      };
+    };
+    i = i + 1;
+  }
+  ok
+}
+
+fn is_alnum_dot_dash(s: string) -> bool {
+  let mut i = 0;
+  let mut ok = len(s) > 0;
+  while i < len(s) && ok {
+    let c = charCode(s, i);
+    let a = is_alpha_code(c);
+    let d = is_digit_code(c);
+    let dot = c == 46;
+    let dash = c == 45;
+    if !a {
+      if !d {
+        if !dot {
+          if !dash { ok = false; };
+        };
+      };
+    };
+    i = i + 1;
+  }
+  ok
+}
+
+fn is_alpha_code(c: int) -> bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+}
+
+fn is_digit_code(c: int) -> bool {
+  c >= 48 && c <= 57
+}
+
+fn char_in(s: string, c: string) -> bool {
+  let mut i = 0;
+  let mut found = false;
+  while i < len(s) && !found {
+    if charAt(s, i) == c { found = true; };
+    i = i + 1;
+  }
+  found
+}
+
+fn starts_with(s: string, prefix: string) -> bool {
+  let n = len(prefix);
+  let ok = false;
+  if n > len(s) {
+    false
+  } else {
+    let mut i = 0;
+    let mut all_match = true;
+    while i < n && all_match {
+      if charAt(s, i) != charAt(prefix, i) { all_match = false; };
+      i = i + 1;
+    }
+    all_match
+  }
+}
+
+// split_on(s, sep) — split s on each occurrence of sep (single char).
+fn split_on(s: string, sep: string) -> [string] {
+  let mut out = [];
+  let mut cur = "";
+  let mut i = 0;
+  while i < len(s) {
+    let c = charAt(s, i);
+    if c == sep {
+      push(out, cur);
+      cur = "";
+    } else {
+      cur = cur + c;
+    };
+    i = i + 1;
+  }
+  push(out, cur);
+  out
+}
+
+// parse_int(s) — convert a digit-only string to an int.
+fn parse_int(s: string) -> int {
+  let mut i = 0;
+  let mut v = 0;
+  while i < len(s) {
+    let c = charCode(s, i) - 48;
+    v = v * 10 + c;
+    i = i + 1;
+  }
+  v
+}

@@ -1,0 +1,46 @@
+// aether-heap-extra/examples/example.ae
+// ======================================
+// A demo of the aether-heap-extra package: shows priority-queue push/pop,
+// update-key, delete, and merge.
+import {
+  pqNew, pqPush, pqPop, pqPeek, pqSize, pqMerge, pqUpdateKey, pqDelete,
+} from "../src/lib.ae";
+
+print("== aether-heap-extra example ==");
+print("");
+
+let pq = pqNew();
+pqPush(pq, 5, 50);
+pqPush(pq, 1, 10);
+pqPush(pq, 3, 30);
+pqPush(pq, 2, 20);
+pqPush(pq, 4, 40);
+print(f"pqSize        = {pqSize(pq)}");
+print(f"pqPeek        = {pqPeek(pq)}");
+print(f"pqPop         = {pqPop(pq)}");
+print(f"pqPop         = {pqPop(pq)}");
+print(f"pqSize        = {pqSize(pq)}");
+
+pqUpdateKey(pq, 50, 0);  // update value 50 to priority 0
+print(f"after UpdateKey(50, 0):");
+print(f"  pqPeek      = {pqPeek(pq)}");
+
+pqDelete(pq, 30);  // remove value 30
+print(f"after Delete(30):");
+print(f"  pqSize      = {pqSize(pq)}");
+
+let pqA = pqNew();
+pqPush(pqA, 3, 30);
+pqPush(pqA, 1, 10);
+let pqB = pqNew();
+pqPush(pqB, 4, 40);
+pqPush(pqB, 2, 20);
+let merged = pqMerge(pqA, pqB);
+print(f"merged size  = {pqSize(merged)}");
+print(f"merged pop1  = {pqPop(merged)}");
+print(f"merged pop2  = {pqPop(merged)}");
+print(f"merged pop3  = {pqPop(merged)}");
+print(f"merged pop4  = {pqPop(merged)}");
+
+print("");
+print("All demos ran successfully.");

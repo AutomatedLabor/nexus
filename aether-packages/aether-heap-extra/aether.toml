@@ -1,0 +1,11 @@
+[package]
+name = "aether-heap-extra"
+version = "0.1.0"
+description = "Priority queue (binary min-heap) extensions for Aether — 8 pub functions: pqNew, pqPush, pqPop, pqPeek, pqSize, pqMerge, pqUpdateKey, pqDelete."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — uses only Aether's core builtins (push, pop, len, while).
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

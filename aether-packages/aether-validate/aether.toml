@@ -1,0 +1,12 @@
+[package]
+name = "aether-validate"
+version = "0.1.0"
+description = "Validation predicates for Aether — 15 pub functions: isEmail, isUrl, isIpv4, isUuid, isDate, isAlpha, isNumeric, isAlnum, isLower, isUpper, isInRange, isOneOf, isNonEmpty, isLength, matches."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — uses only Aether's core builtins
+# (charCode, fromCharCode, strSlice, len, while, recursion).
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

@@ -1,0 +1,51 @@
+// aether-tree/examples/example.ae
+// ===============================
+// A demo of the aether-tree package: builds a tree, walks it, maps
+// it, filters it, and prints it.
+import {
+  treeNew, treeAddChild, treeValue, treeDepth, treeSize,
+  treeMap, treeFilter, treeFind, treeFlatten, treeWalk,
+  treeBfs, treeDfs, treeEquals, treePrint, treeFromEdges,
+} from "../src/lib.ae";
+
+print("== aether-tree example ==");
+print("");
+
+let root = treeNew(1);
+let a = treeNew(2);
+let b = treeNew(3);
+let a1 = treeNew(4);
+let a2 = treeNew(5);
+let b1 = treeNew(6);
+treeAddChild(root, a);
+treeAddChild(root, b);
+treeAddChild(a, a1);
+treeAddChild(a, a2);
+treeAddChild(b, b1);
+
+print(f"treePrint(root)      = {treePrint(root)}");
+print(f"treeSize(root)        = {treeSize(root)}");
+print(f"treeDepth(root)       = {treeDepth(root)}");
+print(f"treeFlatten(root)     = {treeFlatten(root)}");
+print(f"treeBfs(root)          = {treeBfs(root)}");
+print(f"treeDfs(root)          = {treeDfs(root)}");
+
+fn dbl(x: int) -> int { x * 2 }
+let mapped = treeMap(root, dbl);
+print(f"treeMap(dbl) print    = {treePrint(mapped)}");
+
+fn is_5(x: int) -> bool { x == 5 }
+let found = treeFind(root, is_5);
+print(f"treeFind(==5) value   = {treeValue(found)}");
+
+fn is_even(x: int) -> bool { x % 2 == 0 }
+let filtered = treeFilter(root, is_even);
+print(f"treeFilter(even)       = {treePrint(filtered)}");
+
+let edges = [[10, 20], [10, 30], [20, 40], [20, 50]];
+let built = treeFromEdges(edges);
+print(f"treeFromEdges print   = {treePrint(built)}");
+print(f"treeFromEdges size    = {treeSize(built)}");
+
+print("");
+print("All demos ran successfully.");
