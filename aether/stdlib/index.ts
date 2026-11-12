@@ -76,6 +76,16 @@ import * as RBTree from "./rbtree";
 import * as Flat from "./flat";
 import * as Zip from "./zip";
 import * as SortExtra from "./sort-extra";
+// New modules (V3-W14-EXPAND6):
+import * as ZipUtils from "./zip-utils";
+import * as Monoid from "./monoid";
+import * as Lens from "./lens";
+import * as OptParse from "./optparse";
+// New modules (V3-W14-EXPAND6b — Task V3-W14-EXPAND6):
+import * as Monoid2 from "./monoid2";
+import * as Lens2 from "./lens2";
+import * as OptParse2 from "./optparse2";
+import * as Scc from "./scc";
 
 export interface StdlibFn {
   name: string;
@@ -150,6 +160,16 @@ export function registerAll(register: (name: string, fn: any) => void): void {
   Flat.register(register);
   Zip.register(register);
   SortExtra.register(register);
+  // New modules (V3-W14-EXPAND6):
+  ZipUtils.register(register);
+  Monoid.register(register);
+  Lens.register(register);
+  OptParse.register(register);
+  // New modules (V3-W14-EXPAND6b — Task V3-W14-EXPAND6):
+  Monoid2.register(register);
+  Lens2.register(register);
+  OptParse2.register(register);
+  Scc.register(register);
 }
 
 /** Build a {name -> fn} map (used by the evaluator's `opts.builtins`). */
@@ -215,6 +235,16 @@ export const STDLIB_MANIFEST: StdlibModuleManifest[] = [
   Flat.MANIFEST as StdlibModuleManifest,
   Zip.MANIFEST as StdlibModuleManifest,
   SortExtra.MANIFEST as StdlibModuleManifest,
+  // New modules (V3-W14-EXPAND6):
+  ZipUtils.MANIFEST as StdlibModuleManifest,
+  Monoid.MANIFEST as StdlibModuleManifest,
+  Lens.MANIFEST as StdlibModuleManifest,
+  OptParse.MANIFEST as StdlibModuleManifest,
+  // New modules (V3-W14-EXPAND6b — Task V3-W14-EXPAND6):
+  Monoid2.MANIFEST as StdlibModuleManifest,
+  Lens2.MANIFEST as StdlibModuleManifest,
+  OptParse2.MANIFEST as StdlibModuleManifest,
+  Scc.MANIFEST as StdlibModuleManifest,
 ];
 
 /** Total function count across all modules (excluding async — not callable). */

@@ -1,0 +1,165 @@
+// hash_table_demo2.ae
+// ====================
+// Hash table with OPEN ADDRESSING (linear probing), in contrast
+// to the chaining-based `hash_table_demo.ae`. Same demo: insert
+// 10 entries, look up 5, print stats.
+//
+// Open addressing stores all entries in a single array; on
+// collision, the probe walks forward one slot at a time until it
+// finds an empty slot (for insert) or the matching key (for
+// lookup). Deletion needs tombstones ("DELETED" sentinels) to
+// keep probe chains intact — we don't implement delete here.
+//
+// The hash function is the simple "modulo a prime" of the sum
+// of char codes. The table capacity is a prime (11) so it's
+// ~91% loaded (10 entries / 11 slots) — high enough to force
+// several probe walks but with one empty slot so inserts never
+// fail.
+
+struct HashTable {
+  capacity: int,
+  size: int,            // number of occupied slots (incl. tombstones-as-was)
+  keys: any,            // [string]   — keys, or "" for empty
+  vals: any,            // [int]      — values parallel to keys
+}
+
+// Hash a string: sum of char codes mod capacity.
+fn hash(s: string, capacity: int) -> int {
+  let mut h = 0;
+  let mut i = 0;
+  while i < len(s) {
+    h = h + charCode(s, i);
+    i = i + 1;
+  }
+  // Use a non-negative modulo (in case the intermediate h gets large).
+  let m = h % capacity;
+  if m < 0 { m + capacity } else { m }
+}
+
+// Create a fresh hash table with the given capacity.
+fn ht_new(capacity: int) -> HashTable {
+  let mut keys = [];
+  let mut vals = [];
+  let mut i = 0;
+  while i < capacity {
+    push(keys, "");
+    push(vals, 0);
+    i = i + 1;
+  }
+  HashTable { capacity: capacity, size: 0, keys: keys, vals: vals }
+}
+
+// Linear probe: find the slot index where `key` is or should go.
+// Returns -1 if the table is full.
+fn find_slot(t: HashTable, key: string) -> int {
+  let start = hash(key, t.capacity);
+  let mut i = 0;
+  let mut found = -1;
+  while i < t.capacity {
+    let idx = (start + i) % t.capacity;
+    if t.keys[idx] == key {
+      found = idx;
+      i = t.capacity;
+    } else {
+      if t.keys[idx] == "" {
+        found = idx;
+        i = t.capacity;
+      } else {
+        i = i + 1;
+      };
+    };
+  }
+  found
+}
+
+// Insert a (key, val) pair. Returns the new size.
+fn ht_insert(t: HashTable, key: string, val: int) -> int {
+  let idx = find_slot(t, key);
+  if idx < 0 {
+    panic("hash table full")
+  };
+  let was_empty = t.keys[idx] == "";
+  t.keys[idx] = key;
+  t.vals[idx] = val;
+  if was_empty {
+    t.size = t.size + 1;
+  };
+  t.size
+}
+
+// Look up a key. Returns the value, or -9999 if not found.
+fn ht_lookup(t: HashTable, key: string) -> int {
+  let start = hash(key, t.capacity);
+  let mut i = 0;
+  let mut result = -9999;
+  while i < t.capacity {
+    let idx = (start + i) % t.capacity;
+    if t.keys[idx] == key {
+      result = t.vals[idx];
+      i = t.capacity;
+    } else {
+      if t.keys[idx] == "" {
+        i = t.capacity;
+      } else {
+        i = i + 1;
+      };
+    };
+  }
+  result
+}
+
+// Pretty-print the table's non-empty slots.
+fn ht_print(t: HashTable) -> () {
+  let mut i = 0;
+  while i < t.capacity {
+    if t.keys[i] != "" {
+      print(f"  slot {i}: \"{t.keys[i]}\" -> {t.vals[i]}")
+    };
+    i = i + 1;
+  }
+}
+
+print("== Hash table (open addressing, linear probing) ==");
+print("");
+
+let t = ht_new(11);
+print(f"capacity: {t.capacity}");
+
+let keys = ["apple", "banana", "cherry", "date", "elder",
+            "fig", "grape", "honeydew", "kiwi", "lemon"];
+let vals = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+
+let mut i = 0;
+while i < len(keys) {
+  let sz = ht_insert(t, keys[i], vals[i]);
+  i = i + 1;
+}
+
+print(f"inserted {t.size} entries (capacity {t.capacity}, load factor ~{int((t.size * 100) / t.capacity)}%)");
+print("");
+print("non-empty slots:");
+ht_print(t);
+print("");
+
+// Look up 5 hits and 5 misses.
+print("lookups:");
+let lookups = ["apple", "cherry", "fig", "kiwi", "lemon", "mango", "pear", "date", "xyz", "banana"];
+let mut j = 0;
+while j < len(lookups) {
+  let v = ht_lookup(t, lookups[j]);
+  let label = if v == -9999 { "miss" } else { "hit " };
+  print(f"  {label}  \"{lookups[j]}\" -> {v}");
+  j = j + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(ht_lookup(t, "apple"), 10);
+assert_eq(ht_lookup(t, "cherry"), 30);
+assert_eq(ht_lookup(t, "kiwi"), 90);
+assert_eq(ht_lookup(t, "lemon"), 100);
+assert_eq(ht_lookup(t, "mango"), -9999);   // miss
+assert_eq(ht_lookup(t, "xyz"), -9999);     // miss
+assert_eq(t.size, 10);                      // all 10 slots filled
+
+print("All assertions passed.");

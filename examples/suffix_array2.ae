@@ -1,0 +1,147 @@
+// suffix_array2.ae
+// =================
+// Build a suffix array for "abracadabra" using an insertion-sort
+// variant (O(n^2) comparisons) — simpler than the merge-sort
+// version in `suffix_array.ae`, and serves as a correctness oracle
+// for the more complex `suffix_array.ae` (same algorithm, different
+// string + sort).
+//
+// A suffix array is the list of starting indices of all suffixes
+// of the input, sorted lexicographically by suffix text. Useful
+// for full-text search: once built, binary search over the array
+// finds any substring in O(|P| log |T|) time.
+//
+// We build it the simple way: enumerate all suffixes with their
+// starting positions, sort them lexicographically by suffix text
+// (via an insertion sort on the (suffix, index) pairs), then
+// extract the positions.
+
+// Extract a suffix of `s` starting at index `i` to the end.
+fn suffix_from(s: string, i: int) -> string {
+  let mut out = "";
+  let mut k = i;
+  while k < len(s) {
+    out = out + str(s[k]);
+    k = k + 1;
+  }
+  out
+}
+
+// Compare two strings lexicographically. Returns -1, 0, or 1.
+fn cmp_str(a: string, b: string) -> int {
+  let mut i = 0;
+  let mut result = 0;
+  while i < len(a) && i < len(b) && result == 0 {
+    let ca = charCode(a, i);
+    let cb = charCode(b, i);
+    if ca < cb {
+      result = -1;
+    } else {
+      if ca > cb {
+        result = 1;
+      };
+    };
+    i = i + 1;
+  }
+  if result != 0 {
+    result
+  } else {
+    if len(a) == len(b) {
+      0
+    } else {
+      if len(a) < len(b) { -1 } else { 1 }
+    }
+  }
+}
+
+// Insertion sort: insert `pair` into the sorted `arr` (sorted by
+// the suffix text, which is pair[0]). Returns the new array.
+// In-place on a copy to avoid mutating the input.
+fn insert_sorted(arr: [any], pair: any) -> [any] {
+  let mut out = [];
+  let mut inserted = 0;
+  let mut i = 0;
+  while i < len(arr) {
+    if inserted == 0 {
+      let c = cmp_str(arr[i][0], pair[0]);
+      if c > 0 {
+        push(out, pair);
+        inserted = 1;
+      };
+    };
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  if inserted == 0 {
+    push(out, pair);
+  };
+  out
+}
+
+// Build the suffix array by inserting each (suffix, index) pair
+// into a sorted list. O(n^2) comparisons but simple and obviously
+// correct.
+fn build_suffix_array(s: string) -> [int] {
+  let mut sorted = [];
+  let mut i = 0;
+  while i < len(s) {
+    let suf = suffix_from(s, i);
+    sorted = insert_sorted(sorted, [suf, i]);
+    i = i + 1;
+  }
+  let mut out = [];
+  let mut k = 0;
+  while k < len(sorted) {
+    push(out, sorted[k][1]);
+    k = k + 1;
+  }
+  out
+}
+
+// Render an int array as "[5, 3, 1, 0, 4, 2]".
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Suffix array (insertion-sort variant) ==");
+print("");
+
+let s = "abracadabra";
+print(f"input: \"{s}\" (length {len(s)})");
+
+let sa = build_suffix_array(s);
+
+// Print each suffix in the sorted order along with its starting index.
+print("");
+print("sorted suffixes:");
+let mut i = 0;
+while i < len(sa) {
+  let idx = sa[i];
+  let suf = suffix_from(s, idx);
+  print(f"  [{idx}] \"{suf}\"");
+  i = i + 1;
+}
+print("");
+
+print(f"suffix array: {show_ints(sa)}");
+print("");
+
+// Sanity assertions.
+// For "abracadabra" (length 11), the suffixes in sorted order are:
+//   "a"                (idx 10)  <-- shortest suffix first
+//   "abra"             (idx 7)
+//   "abracadabra"      (idx 0)
+//   "acadabra"         (idx 3)
+//   "adabra"           (idx 5)
+//   "bra"              (idx 8)
+//   "bracadabra"       (idx 1)
+//   "cadabra"          (idx 4)
+//   "dabra"            (idx 6)
+//   "ra"               (idx 9)
+//   "racadabra"        (idx 2)
+assert_eq(sa, [10, 7, 0, 3, 5, 8, 1, 4, 6, 9, 2]);
+assert_eq(len(sa), 11);
+print("All assertions passed.");

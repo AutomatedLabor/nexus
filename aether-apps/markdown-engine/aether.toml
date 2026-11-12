@@ -1,0 +1,14 @@
+[package]
+name = "markdown-engine"
+version = "0.1.0"
+description = "A markdown -> HTML renderer written in pure Aether. Public surface: new() -> MdState, render(state, md: string) -> string. Supports # h1..###### h6, * or - unordered lists, N. ordered lists, **bold**, *italic*, `code`, [link](url), > blockquote, ```fenced code blocks```, --- horizontal rules, and paragraphs. HTML-escapes <, >, & in text and code. Line-by-line block parser + left-to-right inline parser. No nested lists, no reference links, no images, no tables (v1)."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — uses Aether's core builtins only
+# (push, len, type_of, panic, str, charCode, fromCharCode).
+
+[exports]
+# Exposed via `pub fn` declarations in src/markdown.ae:
+#   - new() -> MdState
+#   - render(state, md: string) -> string

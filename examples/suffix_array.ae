@@ -1,0 +1,180 @@
+// suffix_array.ae
+// ==================
+// Build a suffix array for the string "banana".
+//
+// A suffix array is the list of starting indices of all suffixes of
+// the input, sorted lexicographically by the suffix text. It's a
+// classic data structure for full-text search: once built, binary
+// search over the array finds any substring in O(|P| log |T|) time.
+//
+// We build it the simple way: enumerate all suffixes with their
+// starting positions, sort them lexicographically by suffix text,
+// then extract the positions. This is O(|T|^2 log |T|) due to string
+// comparisons; production builds use doubling or SA-IS algorithms
+// for O(|T| log |T|) or O(|T|) construction.
+//
+// We use `reduce` to build the list of suffix pairs (avoiding the
+// for-loop-scope quirk), and a custom merge sort for the ordering
+// (because Aether's built-in sort isn't lexicographic on strings
+// — and to make the algorithm self-contained).
+
+// Extract a suffix of `s` starting at index `i` to the end.
+// We build the suffix character by character via a `while` loop
+// since Aether doesn't expose a `slice` builtin that takes an
+// open-ended range.
+fn suffix_from(s: string, i: int) -> string {
+  let mut out = "";
+  let mut k = i;
+  while k < len(s) {
+    out = out + str(s[k]);
+    k = k + 1;
+  }
+  out
+}
+
+// Compare two strings lexicographically.  Returns -1, 0, or 1.
+fn cmp_str(a: string, b: string) -> int {
+  let mut i = 0;
+  let mut result = 0;
+  while i < len(a) && i < len(b) && result == 0 {
+    let ca = charCode(a, i);
+    let cb = charCode(b, i);
+    if ca < cb {
+      result = -1
+    } else {
+      if ca > cb {
+        result = 1
+      }
+    };
+    i = i + 1;
+  }
+  if result != 0 {
+    result
+  } else {
+    if len(a) == len(b) {
+      0
+    } else {
+      if len(a) < len(b) { -1 } else { 1 }
+    }
+  }
+}
+
+// Merge two sorted arrays of (suffix, index) pairs (each pair is a
+// 2-element array).  Returns the merged sorted array.
+fn merge(left: [any], right: [any]) -> [any] {
+  let mut out = [];
+  let mut i = 0;
+  let mut j = 0;
+  while i < len(left) && j < len(right) {
+    let l = left[i];
+    let r = right[j];
+    let c = cmp_str(l[0], r[0]);
+    if c <= 0 {
+      push(out, l);
+      i = i + 1
+    } else {
+      push(out, r);
+      j = j + 1
+    }
+  }
+  while i < len(left) {
+    push(out, left[i]);
+    i = i + 1;
+  }
+  while j < len(right) {
+    push(out, right[j]);
+    j = j + 1;
+  }
+  out
+}
+
+// Merge sort by suffix text.
+fn merge_sort(arr: [any]) -> [any] {
+  if len(arr) <= 1 {
+    arr
+  } else {
+    let mid = int(len(arr) / 2);
+    let mut left = [];
+    let mut i = 0;
+    while i < mid {
+      push(left, arr[i]);
+      i = i + 1;
+    }
+    let mut right = [];
+    while i < len(arr) {
+      push(right, arr[i]);
+      i = i + 1;
+    }
+    merge(merge_sort(left), merge_sort(right))
+  }
+}
+
+// Build the suffix array: list of starting indices of all suffixes,
+// sorted lexicographically by suffix text.
+fn build_suffix_array(s: string) -> [int] {
+  // Build the list of (suffix, index) pairs.
+  let mut pairs = [];
+  let mut i = 0;
+  while i < len(s) {
+    let suf = suffix_from(s, i);
+    push(pairs, [suf, i]);
+    i = i + 1;
+  }
+  // Sort lexicographically by suffix text.
+  let sorted = merge_sort(pairs);
+  // Extract the indices.
+  let mut out = [];
+  let mut k = 0;
+  while k < len(sorted) {
+    push(out, sorted[k][1]);
+    k = k + 1;
+  }
+  out
+}
+
+// Render an int array as "[5, 3, 1, 0, 4, 2]".
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+// Render a string array.
+fn show_strs(arr: [string]) -> string {
+  let body = reduce(arr, fn(acc: string, x: string) -> string {
+    if acc == "" { x } else { acc + ", " + x }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Suffix array ==");
+print("");
+
+let s = "banana";
+print(f"input: \"{s}\"");
+
+let sa = build_suffix_array(s);
+
+// Print each suffix in the sorted order along with its starting index.
+print("");
+print("sorted suffixes:");
+let mut i = 0;
+while i < len(sa) {
+  let idx = sa[i];
+  let suf = suffix_from(s, idx);
+  print(f"  [{idx}] \"{suf}\"");
+  i = i + 1;
+}
+print("");
+
+print(f"suffix array: {show_ints(sa)}");
+print("");
+
+// Sanity assertions.
+// For "banana":
+//   suffixes (sorted): "a", "ana", "anana", "banana", "na", "nana"
+//   starting indices:   5      3       1        0        4     2
+assert_eq(sa, [5, 3, 1, 0, 4, 2]);
+assert_eq(len(sa), 6);
+print("All assertions passed.");

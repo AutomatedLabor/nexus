@@ -1,0 +1,176 @@
+// hash_table_demo.ae
+// ====================
+// A hash table with separate chaining (a.k.a. closed addressing).
+//
+// We implement a small hash table from scratch:
+//   - bucket array of size `m` (we use 7 — a small prime).
+//   - each bucket is an array of (key, value) pairs (the chain).
+//   - `hash(key)` produces an int in [0, m) via a polynomial rolling
+//     hash with a small base; we use the key's character codes.
+//   - `insert` and `get` walk the chain at the bucket's index.
+//
+// We insert 10 string -> int entries, look up 5 (3 hits, 2 misses),
+// and print the bucket distribution.  No external stdlib — pure
+// Aether.
+
+// Hash a string into the range [0, m) using a polynomial rolling
+// hash with base 31.  Each character contributes its code point
+// times base^(position), mod m.  We take mod m at each step to keep
+// the running value bounded.
+fn hash(s: string, m: int) -> int {
+  let mut h = 0;
+  let mut i = 0;
+  while i < len(s) {
+    let c = charCode(s, i);
+    h = (h * 31 + c) % m;
+    i = i + 1;
+  }
+  h
+}
+
+// Create an empty hash table of size `m`.  Returns a struct with the
+// bucket array (each bucket is an empty array) and the size.
+struct HT {
+  buckets: any,   // [ [ [string, int] ] ]
+  size: int,       // capacity
+  count: int,      // entry count
+}
+
+fn ht_new(m: int) -> HT {
+  let mut bks = [];
+  let mut i = 0;
+  while i < m {
+    push(bks, []);
+    i = i + 1;
+  }
+  HT { buckets: bks, size: m, count: 0 }
+}
+
+// Look up a key in a chain.  Returns the index of the [k, v] pair in
+// the chain, or -1 if not found.  Each pair is a 2-element array.
+fn chain_find(chain: [any], key: string) -> int {
+  let mut i = 0;
+  let mut found = -1;
+  while i < len(chain) {
+    let pair = chain[i];
+    let k = pair[0];
+    if k == key {
+      found = i
+    };
+    i = i + 1;
+  }
+  found
+}
+
+// Insert (key, val) into the table.  If the key exists, overwrite.
+// Returns the (possibly updated) table.
+fn ht_put(t: HT, key: string, val: int) -> HT {
+  let idx = hash(key, t.size);
+  let chain = t.buckets[idx];
+  let i = chain_find(chain, key);
+  if i >= 0 {
+    // overwrite the value
+    let pair = chain[i];
+    pair[1] = val;
+    t
+  } else {
+    // append a new pair as a 2-element array
+    let new_pair = [key, val];
+    push(chain, new_pair);
+    t.count = t.count + 1;
+    t
+  }
+}
+
+// Look up a key.  Returns the value, or -99999 if not found.
+fn ht_get(t: HT, key: string) -> int {
+  let idx = hash(key, t.size);
+  let chain = t.buckets[idx];
+  let i = chain_find(chain, key);
+  if i >= 0 {
+    let pair = chain[i];
+    pair[1]
+  } else {
+    -99999
+  }
+}
+
+// Does the table contain the key?
+fn ht_has(t: HT, key: string) -> bool {
+  ht_get(t, key) != -99999
+}
+
+// Render a chain as a string like "[(apple, 3), (pear, 7)]".
+fn show_chain(chain: [any]) -> string {
+  let mut out = "[";
+  let mut i = 0;
+  while i < len(chain) {
+    if i > 0 { out = out + ", " };
+    let pair = chain[i];
+    out = out + "(" + pair[0] + ", " + str(pair[1]) + ")";
+    i = i + 1;
+  }
+  out + "]"
+}
+
+// Render the whole table: one line per non-empty bucket.
+fn show_table(t: HT) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < t.size {
+    let chain = t.buckets[i];
+    if len(chain) > 0 {
+      out = out + "  bucket[" + str(i) + "]: " + show_chain(chain) + "\n"
+    };
+    i = i + 1;
+  }
+  out
+}
+
+print("== Hash table (separate chaining) ==");
+print("");
+
+let mut table = ht_new(7);
+table = ht_put(table, "apple", 3);
+table = ht_put(table, "banana", 7);
+table = ht_put(table, "cherry", 11);
+table = ht_put(table, "date", 13);
+table = ht_put(table, "elderberry", 17);
+table = ht_put(table, "fig", 19);
+table = ht_put(table, "grape", 23);
+table = ht_put(table, "honeydew", 29);
+table = ht_put(table, "kiwi", 31);
+table = ht_put(table, "lemon", 37);
+
+print(f"inserted 10 entries (capacity {table.size}, count {table.count})");
+print("");
+print("non-empty buckets:");
+print(show_table(table));
+print("");
+
+// Look up 5 keys: 3 hits, 2 misses.
+let keys = ["apple", "fig", "lemon", "missing1", "missing2"];
+let mut j = 0;
+while j < len(keys) {
+  let v = ht_get(table, keys[j]);
+  let present = if v == -99999 { "miss" } else { "hit  = " + str(v) };
+  print(f"  get(\"{keys[j]}\") -> {present}");
+  j = j + 1;
+}
+print("");
+
+// Overwrite an existing key.
+table = ht_put(table, "apple", 999);
+let after = ht_get(table, "apple");
+print(f"after overwrite apple=999, get(\"apple\") = {after}");
+print("");
+
+// Sanity assertions.
+assert_eq(table.count, 10);
+assert_eq(ht_get(table, "apple"), 999);
+assert_eq(ht_get(table, "fig"), 19);
+assert_eq(ht_get(table, "lemon"), 37);
+assert_eq(ht_get(table, "missing1"), -99999);
+assert_eq(ht_has(table, "cherry"), true);
+assert_eq(ht_has(table, "ghost"), false);
+print("All assertions passed.");

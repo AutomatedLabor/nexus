@@ -1,0 +1,248 @@
+// skiplist_demo.ae
+// ==================
+// A skip list: a probabilistic data structure that supports O(log n)
+// average-time search and insert. It consists of a sorted linked list
+// at level 0 plus "express lanes" at higher levels that let you skip
+// over large chunks of the level-0 list.
+//
+// Our skip list:
+//   - Maximum level `MAX_LEVEL = 4`.
+//   - Each new node gets a random level in [1, MAX_LEVEL] (coin flips
+//     via a tiny LCG).
+//   - All nodes appear at level 0; higher levels contain a subset.
+//
+// "Next" pointers are encoded as a `Link` enum (Some/None) because
+// Aether doesn't have a `null` literal. We insert 10 integers and
+// search for 5 of them (3 hits, 2 misses). To keep the demo
+// deterministic, the "random" levels come from a fixed-seed LCG.
+//
+// Note on style: the inner search/insert loops cannot use
+// `match Link::Some(n) => cur = n` inside an `if` body inside a
+// `while` — that pattern runs into a known evaluator quirk where
+// the outer mutable binding can't be assigned through a match arm.
+// We work around it by extracting the match into a small helper
+// function (`link_node_or`) that returns the SkipNode or a fallback,
+// so the only statement that mutates `cur` in the loop body is
+// `cur = link_node_or(...)`.
+
+enum Link {
+  Some(any),   // SkipNode
+  None,
+}
+
+struct SkipNode {
+  key: int,
+  next: any,   // [Link]
+}
+
+struct SkipList {
+  max_level: int,
+  level: int,
+  head: any,   // SkipNode
+}
+
+// Tiny LCG: x_{n+1} = (a*x_n + c) mod m. Seeded with 1; used to decide
+// node levels (coin flips). Bumping a global `lcg_state` mutates a
+// single int — that's allowed in Aether.
+let mut lcg_state = 1;
+fn lcg_next() -> int {
+  lcg_state = (1103515245 * lcg_state + 12345) % 2147483648;
+  lcg_state
+}
+
+// Randomly choose a level for a new node: flip coins, increment level
+// on each "heads" (odd lcg output), stop at MAX_LEVEL.
+fn random_level(max_level: int) -> int {
+  let mut lvl = 1;
+  let mut i = 0;
+  let mut stop = false;
+  while i < max_level - 1 && !stop {
+    let r = lcg_next();
+    if (r % 2) == 1 {
+      lvl = lvl + 1
+    } else {
+      stop = true
+    };
+    i = i + 1;
+  }
+  if lvl > max_level { max_level } else { lvl }
+}
+
+// Create a new skip node with the given key and level.  All `next`
+// pointers are initialised to `Link::None`.
+fn new_node(key: int, level: int) -> SkipNode {
+  let mut nexts = [];
+  let mut i = 0;
+  while i < level {
+    push(nexts, Link::None);
+    i = i + 1;
+  }
+  SkipNode { key: key, next: nexts }
+}
+
+// Create an empty skip list.  The head is a sentinel node with a very
+// small key (effectively -infinity) so it always sorts before any
+// real key.
+fn sl_new(max_level: int) -> SkipList {
+  let head = new_node(-2147483647, max_level);
+  SkipList { max_level: max_level, level: 1, head: head }
+}
+
+// Get the SkipNode out of a Link, or `fallback` if it's None.  Used
+// inside the search loop to avoid doing a `match` directly inside an
+// `if` body inside a `while` (which hits an evaluator scoping quirk
+// where mutating `cur` via a match arm fails).
+fn link_node_or(l: Link, fallback: SkipNode) -> SkipNode {
+  match l {
+    Link::None => fallback,
+    Link::Some(n) => n as SkipNode,
+  }
+}
+
+// Read the key of a Link, treating None as +inf so the inner while
+// loop terminates when next is None.
+fn link_key(l: Link) -> int {
+  match l {
+    Link::None => 2147483647,
+    Link::Some(n) => (n as SkipNode).key,
+  }
+}
+
+// Search for a key.  Returns true if present.
+// Walk from the top level down: at each level, advance the pointer
+// while the next node's key is less than the target.  Then drop one
+// level.  At level 0, the next node is either the target (hit) or
+// larger (miss).
+fn sl_search(sl: SkipList, key: int) -> bool {
+  let mut cur = sl.head;
+  let mut lvl = sl.max_level - 1;
+  while lvl >= 0 {
+    let mut cont = 1;
+    while cont == 1 {
+      let next = cur.next[lvl];
+      let nk = link_key(next);
+      if nk < key {
+        // advance cur to next (if None, we just stop because nk becomes +inf)
+        if nk == 2147483647 {
+          cont = 0
+        } else {
+          cur = link_node_or(next, cur)
+        }
+      } else {
+        cont = 0
+      }
+    };
+    lvl = lvl - 1;
+  }
+  let candidate = cur.next[0];
+  let ck = link_key(candidate);
+  ck == key
+}
+
+// Insert a key into the skip list.  Walks down from the top to find
+// the predecessor at each level; splices the new node in.
+fn sl_insert(sl: SkipList, key: int) -> SkipList {
+  let mut update = [];
+  let mut i = 0;
+  while i < sl.max_level {
+    push(update, sl.head);
+    i = i + 1;
+  }
+  let mut cur = sl.head;
+  let mut lvl = sl.max_level - 1;
+  while lvl >= 0 {
+    let mut cont = 1;
+    while cont == 1 {
+      let next = cur.next[lvl];
+      let nk = link_key(next);
+      if nk < key {
+        if nk == 2147483647 {
+          cont = 0
+        } else {
+          cur = link_node_or(next, cur)
+        }
+      } else {
+        cont = 0
+      }
+    };
+    update[lvl] = cur;
+    lvl = lvl - 1;
+  }
+  let new_lvl = random_level(sl.max_level);
+  let node = new_node(key, new_lvl);
+  let mut j = 0;
+  while j < new_lvl {
+    let pred = update[j] as SkipNode;
+    node.next[j] = pred.next[j];
+    pred.next[j] = Link::Some(node);
+    j = j + 1;
+  }
+  if new_lvl > sl.level {
+    sl.level = new_lvl
+  };
+  sl
+}
+
+// Walk the level-0 list and collect all keys in sorted order.
+fn sl_keys(sl: SkipList) -> [int] {
+  let mut out = [];
+  let mut cur = sl.head;
+  let mut looping = 1;
+  while looping == 1 {
+    let next = cur.next[0];
+    let nk = link_key(next);
+    if nk == 2147483647 {
+      looping = 0
+    } else {
+      let n = link_node_or(next, cur);
+      push(out, n.key);
+      cur = n
+    }
+  }
+  out
+}
+
+// Render an int array as "[1, 2, 3]".
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Skip list (randomized) ==");
+print("");
+
+let mut sl = sl_new(4);
+print(f"max level: {sl.max_level}");
+
+let keys = [10, 5, 20, 1, 15, 25, 8, 12, 18, 30];
+let mut i = 0;
+while i < len(keys) {
+  sl = sl_insert(sl, keys[i]);
+  i = i + 1;
+}
+print(f"inserted: {show_ints(keys)}");
+print(f"in-order (level 0): {show_ints(sl_keys(sl))}");
+print("");
+
+// Search 5 keys: 3 hits, 2 misses.
+let to_find = [12, 1, 30, 7, 99];
+let mut j = 0;
+while j < len(to_find) {
+  let k = to_find[j];
+  let found = sl_search(sl, k);
+  print(f"  search({k}) = {found}");
+  j = j + 1;
+}
+print("");
+
+// Sanity assertions.
+let collected = sl_keys(sl);
+assert_eq(collected, [1, 5, 8, 10, 12, 15, 18, 20, 25, 30]);
+assert_eq(sl_search(sl, 12), true);
+assert_eq(sl_search(sl, 1), true);
+assert_eq(sl_search(sl, 30), true);
+assert_eq(sl_search(sl, 7), false);
+assert_eq(sl_search(sl, 99), false);
+print("All assertions passed.");

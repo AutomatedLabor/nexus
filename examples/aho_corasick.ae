@@ -1,0 +1,245 @@
+// aho_corasick.ae
+// =================
+// Aho-Corasick multi-pattern string search. Given a set of patterns
+// and a text, find every occurrence of any pattern in the text in a
+// single linear scan.
+//
+// The algorithm builds a trie of the patterns, then augments it with
+// "failure links" — pointers from each node to the longest proper
+// suffix of the current path that is also a prefix of some pattern.
+// At search time, when a character doesn't match a child edge, we
+// walk back along failure links until we find a match (or hit root).
+// When we land on a node that completes one or more patterns, we
+// report a match.
+//
+// We search for ["he", "she", "his"] in "ushers" — the canonical
+// Aho-Corasick demo from the original paper's examples. Expected:
+//   - "she" at position 1
+//   - "he"  at position 2
+//
+// Implementation notes:
+//   - Trie nodes are structs with `children` (array of [char, node]
+//     pairs), `fail` (index of the failure-link target), `output`
+//     (array of pattern indices that end at this node).
+//   - Indices rather than pointers because Aether doesn't have null
+//     and we want stable references across the BFS that builds the
+//     failure links.
+//   - BFS for failure-link construction is implemented as a manual
+//     queue (an array of node indices) processed with `while`.
+
+struct ACNode {
+  children: any,    // [[string, int]]  -- (char, node index)
+  fail: int,         // index of failure link
+  outputs: any,      // [int] -- pattern indices ending here
+}
+
+fn new_node() -> ACNode {
+  ACNode { children: [], fail: 0, outputs: [] }
+}
+
+// Find a child by character (returns -1 if none).
+fn find_child(n: ACNode, c: string) -> int {
+  let mut i = 0;
+  let mut found = -1;
+  while i < len(n.children) {
+    let pair = n.children[i];
+    if pair[0] == c {
+      found = i
+    };
+    i = i + 1;
+  }
+  found
+}
+
+// Build the trie from a list of patterns. Returns the array of
+// nodes (with index 0 being the root).
+fn build_trie(patterns: [string]) -> [ACNode] {
+  let mut nodes = [];
+  push(nodes, new_node());  // root at index 0
+  let mut p = 0;
+  while p < len(patterns) {
+    let pat = patterns[p];
+    let mut cur = 0;   // start at root
+    let mut i = 0;
+    while i < len(pat) {
+      let c = str(pat[i]);
+      let ci = find_child(nodes[cur], c);
+      let next_idx = if ci >= 0 {
+        nodes[cur].children[ci][1]
+      } else {
+        push(nodes, new_node());
+        let new_idx = len(nodes) - 1;
+        push(nodes[cur].children, [c, new_idx]);
+        new_idx
+      };
+      cur = next_idx;
+      i = i + 1;
+    }
+    push(nodes[cur].outputs, p);
+    p = p + 1;
+  }
+  nodes
+}
+
+// Find the child index of node `n` for char `c`, OR follow failure
+// links until we find one (or hit root).  Returns the resulting
+// node index.
+fn go(nodes: [ACNode], n_idx: int, c: string) -> int {
+  let mut cur = n_idx;
+  let mut cont = 1;
+  while cont == 1 {
+    let ci = find_child(nodes[cur], c);
+    if ci >= 0 {
+      let child_idx = nodes[cur].children[ci][1];
+      cur = child_idx;
+      cont = 0
+    } else {
+      if cur == 0 {
+        cont = 0
+      } else {
+        cur = nodes[cur].fail
+      }
+    }
+  }
+  cur
+}
+
+// Build failure links via BFS.  For each node, its fail link points
+// to the longest proper suffix that's also a prefix of some pattern.
+fn build_fail_links(nodes: [ACNode]) -> () {
+  let mut queue = [];
+  // Initialise: children of root have fail = 0; their children get
+  // processed via BFS.
+  let mut i = 0;
+  while i < len(nodes[0].children) {
+    let child_idx = nodes[0].children[i][1];
+    nodes[child_idx].fail = 0;
+    push(queue, child_idx);
+    i = i + 1;
+  }
+  while len(queue) > 0 {
+    let cur = queue[0];
+    // dequeue
+    let mut rest = [];
+    let mut k = 1;
+    while k < len(queue) {
+      push(rest, queue[k]);
+      k = k + 1;
+    }
+    queue = rest;
+    // walk children
+    let mut j = 0;
+    while j < len(nodes[cur].children) {
+      let c = nodes[cur].children[j][0];
+      let child_idx = nodes[cur].children[j][1];
+      push(queue, child_idx);
+      // follow parent's fail link to find a node with edge c
+      let mut f = nodes[cur].fail;
+      let mut found = -1;
+      let mut cont = 1;
+      while cont == 1 {
+        let ci = find_child(nodes[f], c);
+        if ci >= 0 {
+          let cand = nodes[f].children[ci][1];
+          if cand != child_idx {
+            found = cand
+          };
+          cont = 0
+        } else {
+          if f == 0 {
+            cont = 0
+          } else {
+            f = nodes[f].fail
+          }
+        }
+      }
+      nodes[child_idx].fail = if found >= 0 { found } else { 0 };
+      // Inherit outputs from the fail target.
+      let mut m = 0;
+      let fail_target = nodes[child_idx].fail;
+      let inherited = nodes[fail_target].outputs;
+      while m < len(inherited) {
+        push(nodes[child_idx].outputs, inherited[m]);
+        m = m + 1;
+      }
+      j = j + 1;
+    }
+  }
+}
+
+// Search for patterns in `text`. Returns a list of (start, pattern_index)
+// pairs.
+fn ac_search(nodes: [ACNode], patterns: [string], text: string) -> [any] {
+  let mut out = [];
+  let mut cur = 0;
+  let mut i = 0;
+  while i < len(text) {
+    let c = str(text[i]);
+    cur = go(nodes, cur, c);
+    // Report all patterns ending here.
+    let outs = nodes[cur].outputs;
+    let mut k = 0;
+    while k < len(outs) {
+      let pat_idx = outs[k];
+      let pat_len = len(patterns[pat_idx]);
+      let start = i - pat_len + 1;
+      push(out, [start, pat_idx]);
+      k = k + 1;
+    }
+    i = i + 1;
+  }
+  out
+}
+
+// Render matches as a string.
+fn show_matches(matches: [any], patterns: [string]) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(matches) {
+    if i > 0 { out = out + ", " };
+    let m = matches[i];
+    let start = m[0];
+    let pi = m[1];
+    out = out + f"\"{patterns[pi]}\"@{start}";
+    i = i + 1;
+  }
+  "[" + out + "]"
+}
+
+print("== Aho-Corasick multi-pattern search ==");
+print("");
+
+let patterns = ["he", "she", "his"];
+let text = "ushers";
+print(f"patterns: {patterns}");
+print(f"text:     \"{text}\"");
+print("");
+
+let nodes = build_trie(patterns);
+print(f"trie has {len(nodes)} nodes");
+
+let _ = build_fail_links(nodes);
+print("built failure links");
+print("");
+
+let matches = ac_search(nodes, patterns, text);
+print(f"matches: {show_matches(matches, patterns)}");
+print("");
+
+// Sanity assertions.
+// Expected matches in "ushers":
+//   - "she" at position 1 (ushers[1:4] = "she")
+//   - "he"  at position 2 (ushers[2:4] = "he")
+assert_eq(len(matches), 2);
+// Each match is [start, pattern_index]. Patterns are indexed: 0="he", 1="she", 2="his".
+// We sort by start to make assertions deterministic.
+let m0 = matches[0];
+let m1 = matches[1];
+// Unpack and check: "she"@1 should be (1, 1); "he"@2 should be (2, 0).
+// (The order in which they're emitted depends on the order of the
+// `outputs` arrays; we just check that both pairs appear.)
+let has_she_at_1 = (m0[0] == 1 && m0[1] == 1) || (m1[0] == 1 && m1[1] == 1);
+let has_he_at_2 = (m0[0] == 2 && m0[1] == 0) || (m1[0] == 2 && m1[1] == 0);
+assert_eq(has_she_at_1, true);
+assert_eq(has_he_at_2, true);
+print("All assertions passed.");

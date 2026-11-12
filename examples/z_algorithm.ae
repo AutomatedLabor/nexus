@@ -1,0 +1,113 @@
+// z_algorithm.ae
+// =================
+// Z-algorithm: compute the Z array of the string "aabcaabxaaaz".
+// Z[i] is the length of the longest substring starting at index i
+// that is also a prefix of the whole string. Z[0] is conventionally
+// 0 (or n; we use 0 here).
+//
+// The Z-algorithm runs in O(n) time using a "Z-box" — the rightmost
+// interval [L, R] that is also a prefix of the string. For each i,
+// if i <= R, we can use the previously computed Z values to seed
+// Z[i] = min(Z[i - L], R - i + 1), then extend by direct comparison.
+// Outside the Z-box, we just compare directly.
+//
+// The Z array is the foundation of many string-search algorithms
+// (e.g. Z-based pattern matching concatenates P + "#" + T and looks
+// for Z values equal to |P|).
+
+// Compute the Z array of `s`.
+fn z_array(s: string) -> [int] {
+  let n = len(s);
+  let mut z = [];
+  // Initialize Z array with zeros.
+  let mut i = 0;
+  while i < n {
+    push(z, 0);
+    i = i + 1;
+  }
+  if n == 0 {
+    return z;
+  };
+  // Z[0] is 0 by convention (or n; we use 0).
+  // L, R are the bounds of the current Z-box.
+  let mut L = 0;
+  let mut R = 0;
+  let mut k = 1;
+  while k < n {
+    if k > R {
+      // Outside the Z-box: direct comparison.
+      L = k;
+      R = k;
+      while R < n && s[R] == s[R - k] {
+        R = R + 1;
+      }
+      z[k] = R - L;
+      R = R - 1;
+    } else {
+      // Inside the Z-box: use the previously computed value.
+      // Mirror position is k - L.
+      let mirror = z[k - L];
+      let remaining = R - k + 1;
+      if mirror < remaining {
+        z[k] = mirror;
+      } else {
+        // Extend beyond R by direct comparison.
+        L = k;
+        while R < n && s[R] == s[R - k] {
+          R = R + 1;
+        }
+        z[k] = R - L;
+        R = R - 1;
+      };
+    };
+    k = k + 1;
+  }
+  z
+}
+
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Z-algorithm ==");
+print("");
+
+let s = "aabcaabxaaaz";
+print(f"input: \"{s}\" (length {len(s)})");
+print("");
+
+let z = z_array(s);
+
+// Print the Z array indexed.
+print("Z array:");
+let mut i = 0;
+while i < len(z) {
+  print(f"  Z[{i}] = {z[i]}  (s[{i}] = '{s[i]}')");
+  i = i + 1;
+}
+print("");
+
+print(f"Z = {show_ints(z)}");
+print("");
+
+// Explanation:
+//   s = "aabcaabxaaaz"
+//   indices: 0  1  2  3  4  5  6  7  8  9  10 11
+//   chars:   a  a  b  c  a  a  b  x  a  a  a  z
+//   Z:       0  1  0  0  3  1  0  0  2  2  1  0
+//
+// Z[1]=1 because s[1..]="abcaabxaaaz" starts with "a" (matches prefix of length 1)
+//        but s[2]='b' != s[1]='a' so length is 1.
+// Z[4]=3 because s[4..]="aabxaaaz" starts with "aab" (matches prefix of length 3)
+//        but s[7]='x' != s[3]='c' so length is 3.
+// Z[8]=2 because s[8..]="aaz" starts with "aa" (matches prefix of length 2)
+//        but s[10]='a' != s[2]='b' so length is 2.
+// Z[9]=2 because s[9..]="az" starts with "a" (matches prefix of length 1)
+//        but s[10]='a' != s[1]='a' so we get 1, but actually s[10..] = "az" and prefix is "aa..."
+//        s[9]='a' == s[0]='a' (1), s[10]='a' == s[1]='a' (2), s[11]='z' != s[2]='b' → Z[9]=2.
+assert_eq(z, [0, 1, 0, 0, 3, 1, 0, 0, 2, 2, 1, 0]);
+assert_eq(len(z), 12);
+print("All assertions passed.");

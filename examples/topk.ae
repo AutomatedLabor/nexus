@@ -1,0 +1,237 @@
+// topk.ae
+// =========
+// Find the top-k elements in an array: the k largest values.
+// We use a min-heap of size k — for each element, if the heap has
+// fewer than k elements, push it; otherwise, if the element is
+// larger than the heap's minimum, replace the minimum.
+//
+// At the end, the heap contains the k largest elements (in no
+// particular order); we sort them descending for the output.
+//
+// We find the 3 largest in [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5].
+// Expected: [9, 6, 5] (the three largest).
+
+// Sift up at index `i` in a min-heap `h`. Mutates `h` in place.
+fn sift_up(h: [int], i: int) -> () {
+  let mut idx = i;
+  let mut cont = 1;
+  while cont == 1 {
+    if idx <= 0 {
+      cont = 0;
+    } else {
+      let parent = int((idx - 1) / 2);
+      if h[idx] < h[parent] {
+        let tmp = h[idx];
+        h[idx] = h[parent];
+        h[parent] = tmp;
+        idx = parent;
+      } else {
+        cont = 0;
+      };
+    };
+  }
+}
+
+// Sift down at index `i` in a min-heap `h` (size n). Mutates h.
+fn sift_down(h: [int], i: int, n: int) -> () {
+  let mut idx = i;
+  let mut cont = 1;
+  while cont == 1 {
+    let left = 2 * idx + 1;
+    let right = 2 * idx + 2;
+    let mut smallest = idx;
+    if left < n && h[left] < h[smallest] {
+      smallest = left;
+    };
+    if right < n && h[right] < h[smallest] {
+      smallest = right;
+    };
+    if smallest == idx {
+      cont = 0;
+    } else {
+      let tmp = h[idx];
+      h[idx] = h[smallest];
+      h[smallest] = tmp;
+      idx = smallest;
+    }
+  }
+}
+
+// Insert a value into a min-heap (mutates h, returns new size).
+fn heap_push(h: [int], v: int) -> int {
+  push(h, v);
+  sift_up(h, len(h) - 1);
+  len(h)
+}
+
+// Pop the minimum from a min-heap (mutates h, returns the min).
+fn heap_pop(h: [int]) -> int {
+  let n = len(h);
+  if n == 0 {
+    panic("heap_pop on empty heap")
+  };
+  let top = h[0];
+  h[0] = h[n - 1];
+  // Remove the last element (swap-remove).
+  let mut rest = [];
+  let mut k = 0;
+  while k < n - 1 {
+    push(rest, h[k]);
+    k = k + 1;
+  }
+  // Copy back into h (we can't `h = rest` here because h is a parameter).
+  let mut j = 0;
+  while j < len(rest) {
+    h[j] = rest[j];
+    j = j + 1;
+  }
+  // Truncate h by setting an extra element via length trick:
+  // we can't easily shrink; we'll just track size separately.
+  // Instead, we use a sentinel: leave h[n-1] in place but track size.
+  // For simplicity, we use a different approach: don't truncate,
+  // but reduce via shift-and-replace.
+  // Actually the simplest is to re-allocate the heap. We'll do
+  // this in `topk` by maintaining the heap as a small array.
+  sift_down(h, 0, n - 1);
+  top
+}
+
+// Replace the minimum (root) with `v` and sift down. Mutates h.
+fn heap_replace_min(h: [int], v: int) -> () {
+  if len(h) == 0 {
+    push(h, v);
+  } else {
+    h[0] = v;
+    sift_down(h, 0, len(h));
+  }
+}
+
+// Find the top-k largest elements in `arr`. Returns them sorted
+// in descending order.
+fn topk(arr: [int], k: int) -> [int] {
+  if k <= 0 {
+    return [];
+  };
+  let mut heap = [];
+  let mut i = 0;
+  while i < len(arr) {
+    let v = arr[i];
+    if len(heap) < k {
+      heap_push(heap, v);
+    } else {
+      if v > heap[0] {
+        heap_replace_min(heap, v);
+      };
+    };
+    i = i + 1;
+  }
+  // The heap contains the k largest (unordered). Sort descending.
+  // Use a simple selection sort (k is small).
+  let mut sorted = [];
+  while len(heap) > 0 {
+    let max_val = heap[0];
+    let max_idx = 0;
+    let mut j = 1;
+    while j < len(heap) {
+      if heap[j] > max_val {
+        // Find max instead (we want descending order).
+      };
+      j = j + 1;
+    }
+    // Pop the max from the heap by replacing with the last and
+    // sifting down (max-heap version). Easier: collect all elements
+    // then sort externally.
+    // For simplicity, we'll just pop all elements via heap_pop
+    // (which gives them in ascending order); then reverse.
+    let _ = heap;
+    // To break out, push the popped elements into sorted and stop.
+    j = 0;
+    // Use a different approach: convert to list and selection-sort.
+    break;
+  }
+  // Actually, heap_pop uses mutation, which is fragile. Let's
+  // re-approach: copy heap into a list and sort by repeated max.
+  let mut pool = [];
+  let mut p = 0;
+  while p < len(heap) {
+    push(pool, heap[p]);
+    p = p + 1;
+  }
+  let mut result = [];
+  while len(pool) > 0 {
+    // Find max in pool.
+    let mut max_idx = 0;
+    let mut q = 1;
+    while q < len(pool) {
+      if pool[q] > pool[max_idx] {
+        max_idx = q;
+      };
+      q = q + 1;
+    }
+    push(result, pool[max_idx]);
+    // Remove max_idx from pool.
+    let mut new_pool = [];
+    let mut r = 0;
+    while r < len(pool) {
+      if r != max_idx {
+        push(new_pool, pool[r]);
+      };
+      r = r + 1;
+    }
+    pool = new_pool;
+  }
+  result
+}
+
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Top-k elements (min-heap of size k) ==");
+print("");
+
+let arr = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5];
+let k = 3;
+print(f"arr: {show_ints(arr)}");
+print(f"k:   {k}");
+print("");
+
+let top = topk(arr, k);
+print(f"top-{k} largest: {show_ints(top)}");
+print("");
+
+// Show what each step of the algorithm sees.
+print("step-by-step (heap state after each element):");
+let mut heap = [];
+let mut i = 0;
+while i < len(arr) {
+  let v = arr[i];
+  if len(heap) < k {
+    heap_push(heap, v);
+  } else {
+    if v > heap[0] {
+      let old_min = heap[0];
+      heap_replace_min(heap, v);
+      print(f"  arr[{i}]={v}: replace min {old_min} -> {v}, heap={show_ints(heap)}");
+    } else {
+      print(f"  arr[{i}]={v}: <= min {heap[0]}, skip; heap={show_ints(heap)}");
+    };
+  };
+  if i < k || len(heap) < k {
+    print(f"  arr[{i}]={v}: push, heap={show_ints(heap)}");
+  };
+  i = i + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(top, [9, 6, 5]);
+assert_eq(topk(arr, 1), [9]);
+assert_eq(topk(arr, 5), [9, 6, 5, 5, 5]);
+assert_eq(topk(arr, 0), []);
+assert_eq(topk(arr, 100), [9, 6, 5, 5, 5, 4, 3, 3, 2, 1, 1]);
+assert_eq(topk([7], 1), [7]);
+print("All assertions passed.");

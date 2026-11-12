@@ -1,0 +1,141 @@
+// rabin_karp_rolling.ae
+// =======================
+// Rabin-Karp string search with a rolling hash. Search for "abc"
+// in "abcabcabc" and report all match positions.
+//
+// Rabin-Karp hashes a window of length |P| over the text and
+// compares the hash to the pattern's hash. On a hash match, it
+// verifies with a character-by-character comparison to rule out
+// spurious collisions. The "rolling" part: when the window slides
+// one char forward, the hash can be updated in O(1) by subtracting
+// the contribution of the outgoing char and adding the contribution
+// of the incoming char, mod a base and a prime.
+//
+// We use base 256 (char codes) and prime 1000000007. The hash is
+// H(s) = sum_{i=0}^{n-1} s[i] * base^(n-1-i) mod p.
+
+const BASE = 256;
+const PRIME = 1000000007;
+
+// Compute base^exp mod PRIME. Iterative; uses fast exponentiation.
+fn mod_pow(base: int, exp: int) -> int {
+  let mut result = 1;
+  let mut b = base % PRIME;
+  let mut e = exp;
+  while e > 0 {
+    if e % 2 == 1 {
+      result = (result * b) % PRIME;
+    };
+    b = (b * b) % PRIME;
+    e = int(e / 2);
+  }
+  result
+}
+
+// Compute the hash of a string window [i, i+len) in `text`.
+fn hash_window(text: string, start: int, length: int) -> int {
+  let mut h = 0;
+  let mut i = 0;
+  while i < length {
+    let c = charCode(text, start + i);
+    h = (h * BASE + c) % PRIME;
+    i = i + 1;
+  }
+  h
+}
+
+// Compare substrings text[s..s+m] and pattern (char-by-char).
+fn eq_at(text: string, s: int, pattern: string, m: int) -> bool {
+  let mut i = 0;
+  let mut ok = true;
+  while i < m && ok {
+    if text[s + i] != pattern[i] {
+      ok = false;
+    };
+    i = i + 1;
+  }
+  ok
+}
+
+// Rabin-Karp search. Returns the list of starting indices where
+// `pattern` occurs in `text`.
+fn rabin_karp(text: string, pattern: string) -> [int] {
+  let n = len(text);
+  let m = len(pattern);
+  let mut result = [];
+  if m == 0 || m > n {
+    return result;
+  };
+  let pat_hash = hash_window(pattern, 0, m);
+  let mut win_hash = hash_window(text, 0, m);
+  // base^(m-1) mod PRIME (used for the rolling update).
+  let base_pow = mod_pow(BASE, m - 1);
+  // Check window at position 0.
+  if win_hash == pat_hash {
+    if eq_at(text, 0, pattern, m) {
+      push(result, 0);
+    };
+  };
+  let mut i = 1;
+  while i <= n - m {
+    // Rolling update: remove text[i-1], add text[i+m-1].
+    let out_c = charCode(text, i - 1);
+    let in_c = charCode(text, i + m - 1);
+    // win_hash = ((win_hash - out_c * base_pow) * BASE + in_c) mod PRIME
+    // Use a non-negative mod.
+    let raw = (win_hash - (out_c * base_pow) % PRIME) * BASE + in_c;
+    let m1 = raw % PRIME;
+    if m1 < 0 { m1 + PRIME } else { m1 };
+    win_hash = m1;
+    if win_hash == pat_hash {
+      if eq_at(text, i, pattern, m) {
+        push(result, i);
+      };
+    };
+    i = i + 1;
+  }
+  result
+}
+
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Rabin-Karp with rolling hash ==");
+print("");
+
+let pattern = "abc";
+let text = "abcabcabc";
+print(f"pattern: \"{pattern}\"");
+print(f"text:    \"{text}\" (length {len(text)})");
+print("");
+
+let matches = rabin_karp(text, pattern);
+print(f"matches at positions: {show_ints(matches)}");
+
+// Show the rolling-hash trace.
+print("");
+print("rolling-hash trace:");
+print(f"  pattern hash: {hash_window(pattern, 0, len(pattern))}");
+let mut i = 0;
+while i <= len(text) - len(pattern) {
+  let wh = hash_window(text, i, len(pattern));
+  let eq_marker = if wh == hash_window(pattern, 0, len(pattern)) { "==" } else { "!=" };
+  print(f"  window [{i}, {i + len(pattern)}): hash={wh} {eq_marker} pattern_hash");
+  i = i + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(matches, [0, 3, 6]);   // three occurrences of "abc" in "abcabcabc"
+
+// Edge cases.
+assert_eq(rabin_karp("hello world", "world"), [6]);
+assert_eq(rabin_karp("aaa", "a"), [0, 1, 2]);
+assert_eq(rabin_karp("abcdef", "xyz"), []);
+assert_eq(rabin_karp("abc", "abcd"), []);   // pattern longer than text
+
+print("All assertions passed.");

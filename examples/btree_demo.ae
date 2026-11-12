@@ -1,0 +1,280 @@
+// btree_demo.ae
+// ==============
+// A small B-tree of order 3 (a.k.a. a 2-3 tree): each internal node
+// holds 1 or 2 keys and has 2 or 3 children. All leaves are at the
+// same depth. Insertions keep the tree balanced by splitting nodes
+// when they overflow (>= 3 keys).
+//
+// We insert 10 keys, print the in-order traversal (which should be
+// sorted), search for 5 (3 hits, 2 misses), and assert.
+//
+// Implementation notes:
+//   - A BTree node is a struct with `keys: [int]` and `children: [BTree]`.
+//   - Leaf nodes have empty `children`.
+//   - Order 3 means max 2 keys per node; on overflow (3 keys) we split
+//     into two nodes with the middle key promoted.
+//   - We use a recursive `insert` that returns a (new_tree, optional
+//     promoted_key, optional new_right_subtree) — if the root splits,
+//     a new root is built around the promoted key.
+//
+// We avoid `null` (Aether doesn't have it) and use an enum `Maybe` to
+// represent "no promoted key" at the top of the recursion.
+
+enum Maybe {
+  Some(int, any, any),   // (promoted_key, left_subtree, right_subtree)
+  None,
+}
+
+struct BTree {
+  keys: any,        // [int]
+  children: any,    // [BTree]  (length 0 for leaves, else keys.length + 1)
+}
+
+// Make a leaf node with one key.
+fn leaf(k: int) -> BTree {
+  BTree { keys: [k], children: [] }
+}
+
+// Make an empty leaf.
+fn empty_leaf() -> BTree {
+  BTree { keys: [], children: [] }
+}
+
+// Is this node a leaf? (no children)
+fn is_leaf(t: BTree) -> bool {
+  len(t.children) == 0
+}
+
+// In-order traversal: collect all keys.
+fn in_order(t: BTree) -> [int] {
+  if is_leaf(t) {
+    t.keys
+  } else {
+    // for each key, walk child[i], then key[i], then child[i+1] at end
+    let mut out = [];
+    let mut i = 0;
+    while i < len(t.keys) {
+      let c = t.children[i] as BTree;
+      out = out + in_order(c);
+      push(out, t.keys[i]);
+      i = i + 1;
+    }
+    let last_child = t.children[len(t.children) - 1] as BTree;
+    out = out + in_order(last_child);
+    out
+  }
+}
+
+// Search for a key in a BTree.  Returns true if present.
+fn search(t: BTree, key: int) -> bool {
+  if is_leaf(t) {
+    let mut i = 0;
+    let mut found = false;
+    while i < len(t.keys) {
+      if t.keys[i] == key { found = true };
+      i = i + 1;
+    }
+    found
+  } else {
+    // find the appropriate child: smallest i with key < t.keys[i];
+    // if none, descend into the last child.
+    let mut i = 0;
+    let mut go_child = len(t.children) - 1;
+    let mut found_pos = false;
+    while i < len(t.keys) && !found_pos {
+      if key < t.keys[i] {
+        go_child = i;
+        found_pos = true
+      };
+      i = i + 1;
+    }
+    // If we found the key in this node, it's a hit; otherwise recurse.
+    let mut k_found = false;
+    let mut j = 0;
+    while j < len(t.keys) {
+      if t.keys[j] == key { k_found = true };
+      j = j + 1;
+    }
+    if k_found {
+      true
+    } else {
+      let child = t.children[go_child] as BTree;
+      search(child, key)
+    }
+  }
+}
+
+// Insert into a leaf: keep keys sorted.  If the leaf overflows
+// (>= 3 keys), we return a `Maybe::Some(promoted, left, right)`
+// instead.  Otherwise we return `Maybe::None`.
+fn insert_into_leaf(t: BTree, key: int) -> Maybe {
+  // Insert key in sorted position
+  let mut new_keys = [];
+  let mut i = 0;
+  let mut inserted = false;
+  while i < len(t.keys) {
+    if !inserted && key < t.keys[i] {
+      push(new_keys, key);
+      inserted = true
+    };
+    push(new_keys, t.keys[i]);
+    i = i + 1;
+  }
+  if !inserted {
+    push(new_keys, key)
+  };
+  // If still within capacity (<=2 keys), no split.
+  if len(new_keys) <= 2 {
+    t.keys = new_keys;
+    Maybe::None
+  } else {
+    // Split: middle key gets promoted, left and right become new leaves.
+    let mid = new_keys[1];
+    let left_keys = [new_keys[0]];
+    let right_keys = [new_keys[2]];
+    Maybe::Some(mid, BTree { keys: left_keys, children: [] }, BTree { keys: right_keys, children: [] })
+  }
+}
+
+// Insert a key into the BTree.  Returns the new tree (root may have
+// changed if a split propagated to the top).
+fn insert(t: BTree, key: int) -> BTree {
+  let r = insert_helper(t, key);
+  match r {
+    Maybe::None => t,
+    Maybe::Some(promoted, left, right) =>
+      BTree { keys: [promoted], children: [left, right] },
+  }
+}
+
+// Recursive helper.  Returns Maybe::Some(promoted, left, right) if
+// the subtree rooted at `t` split on insert; Maybe::None otherwise.
+fn insert_helper(t: BTree, key: int) -> Maybe {
+  if is_leaf(t) {
+    insert_into_leaf(t, key)
+  } else {
+    // Find which child to descend into: smallest i with key < t.keys[i];
+    // if none, descend into the last child.
+    let mut i = 0;
+    let mut go_child = len(t.children) - 1;
+    let mut found_pos = false;
+    while i < len(t.keys) && !found_pos {
+      if key < t.keys[i] {
+        go_child = i;
+        found_pos = true
+      };
+      i = i + 1;
+    }
+    // Check if key already exists in this node.
+    let mut k_found = false;
+    let mut j = 0;
+    while j < len(t.keys) {
+      if t.keys[j] == key { k_found = true };
+      j = j + 1;
+    }
+    if k_found {
+      Maybe::None
+    } else {
+      let child = t.children[go_child] as BTree;
+      let sub = insert_helper(child, key);
+      match sub {
+        Maybe::None => Maybe::None,
+        Maybe::Some(promoted, left, right) => {
+          // Splice the promoted key and the two new children into t.
+          let mut new_keys = [];
+          let mut new_children = [];
+          let mut k = 0;
+          while k < len(t.keys) {
+            if k == go_child {
+              push(new_keys, promoted)
+            };
+            push(new_keys, t.keys[k]);
+            k = k + 1;
+          }
+          if go_child == len(t.keys) {
+            push(new_keys, promoted)
+          };
+          let mut c = 0;
+          while c < len(t.children) {
+            if c == go_child {
+              push(new_children, left);
+              push(new_children, right)
+            } else {
+              push(new_children, t.children[c])
+            };
+            c = c + 1;
+          }
+          // If we now have <= 2 keys (<= 3 children), no further split.
+          if len(new_keys) <= 2 {
+            t.keys = new_keys;
+            t.children = new_children;
+            Maybe::None
+          } else {
+            // Internal split: middle key promoted, left and right are
+            // internal nodes built from the first 2 and last 2 children.
+            // For order 3, new_keys has length 3 (e.g. [a, m, b]) and
+            // new_children has length 4.  Split point: index 1.
+            let mid = new_keys[1];
+            let left_keys = [new_keys[0]];
+            let left_children = [new_children[0], new_children[1]];
+            let right_keys = [new_keys[2]];
+            let right_children = [new_children[2], new_children[3]];
+            Maybe::Some(mid,
+              BTree { keys: left_keys, children: left_children },
+              BTree { keys: right_keys, children: right_children })
+          }
+        },
+      }
+    }
+  }
+}
+
+// Render an int array as "[1, 2, 3]".
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+// Build a tree from a list of keys by inserting one at a time.
+fn build_from(vals: [int]) -> BTree {
+  fn helper(i: int, acc: BTree) -> BTree {
+    if i >= len(vals) {
+      acc
+    } else {
+      helper(i + 1, insert(acc, vals[i]))
+    }
+  }
+  helper(0, empty_leaf())
+}
+
+print("== B-tree (order 3) ==");
+print("");
+
+let keys = [10, 20, 5, 6, 12, 30, 7, 17, 1, 25];
+print(f"insert order:  {show_ints(keys)}");
+
+let tree = build_from(keys);
+print(f"in-order:      {show_ints(in_order(tree))}  (sorted)");
+print("");
+
+// Search 5 keys: 3 hits, 2 misses.
+let to_find = [12, 1, 25, 99, 8];
+let mut i = 0;
+while i < len(to_find) {
+  let k = to_find[i];
+  let found = search(tree, k);
+  print(f"  search({k}) = {found}");
+  i = i + 1;
+}
+print("");
+
+// Sanity assertions.
+assert_eq(in_order(tree), [1, 5, 6, 7, 10, 12, 17, 20, 25, 30]);
+assert_eq(search(tree, 12), true);
+assert_eq(search(tree, 1), true);
+assert_eq(search(tree, 25), true);
+assert_eq(search(tree, 99), false);
+assert_eq(search(tree, 8), false);
+print("All assertions passed.");

@@ -1,0 +1,236 @@
+// avl_demo.ae
+// ===========
+// A simplified AVL tree (self-balancing binary search tree).
+// Inserts 5 keys (3, 1, 5, 2, 4) that would produce an unbalanced
+// tree in a naive BST; AVL rotations keep the tree height-balanced
+// at every step. We then print the in-order (sorted) sequence and
+// the heights of each subtree to confirm balance.
+//
+// AVL invariant: for every node, |height(left) - height(right)| <= 1.
+// On insert we walk back up the path and apply one of four rotations:
+//
+//   - left-left        -> rotate right at the unbalanced node
+//   - right-right      -> rotate left  at the unbalanced node
+//   - left-right       -> rotate left on the left child, then right
+//   - right-left       -> rotate right on the right child, then left
+//
+// We use a recursive enum for the tree (no `null` in Aether) and a
+// `while` loop with explicit indices for the demo printing.
+
+enum AVL {
+  Node(int, int, AVL, AVL),   // key, height, left, right
+  Leaf,
+}
+
+// Compute the height of an AVL tree. Leaves are height 0.
+fn height(t: AVL) -> int {
+  match t {
+    AVL::Leaf => 0,
+    AVL::Node(_, h, _, _) => h,
+  }
+}
+
+// Make a single-node AVL with height 1.
+fn singleton(k: int) -> AVL {
+  AVL::Node(k, 1, AVL::Leaf, AVL::Leaf)
+}
+
+// Compute the balance factor of a node: h(left) - h(right).
+// Leaves have balance factor 0 (no children).
+fn balance_factor(t: AVL) -> int {
+  match t {
+    AVL::Leaf => 0,
+    AVL::Node(_, _, l, r) => height(l) - height(r),
+  }
+}
+
+// Rotate right at the given node.  Returns the new subtree root.
+//   y                x
+//  / \              / \
+// x   C    =>      A   y
+// / \                  / \
+// A   B                B   C
+fn rotate_right(y: AVL) -> AVL {
+  match y {
+    AVL::Node(yk, _, x, c) => {
+      match x {
+        AVL::Node(xk, _, a, b) => {
+          let new_y = AVL::Node(yk, 1 + max(height(b), height(c)), b, c);
+          AVL::Node(xk, 1 + max(height(a), height(new_y)), a, new_y)
+        },
+        AVL::Leaf => y, // can't rotate if x is a leaf
+      }
+    },
+    AVL::Leaf => y,
+  }
+}
+
+// Rotate left at the given node.
+//   x                 y
+//  / \               / \
+// A   y      =>     x   C
+//    / \            / \
+//   B   C          A   B
+fn rotate_left(x: AVL) -> AVL {
+  match x {
+    AVL::Node(xk, _, a, y) => {
+      match y {
+        AVL::Node(yk, _, b, c) => {
+          let new_x = AVL::Node(xk, 1 + max(height(a), height(b)), a, b);
+          AVL::Node(yk, 1 + max(height(new_x), height(c)), new_x, c)
+        },
+        AVL::Leaf => x,
+      }
+    },
+    AVL::Leaf => x,
+  }
+}
+
+// Rebalance a node after an insert. Checks the balance factor and
+// applies the appropriate rotation.
+fn rebalance(t: AVL) -> AVL {
+  match t {
+    AVL::Leaf => t,
+    AVL::Node(k, h, l, r) => {
+      let bf = height(l) - height(r);
+      if bf > 1 {
+        // Left-heavy.
+        let left_bf = balance_factor(l);
+        if left_bf >= 0 {
+          // Left-left: rotate right.
+          rotate_right(AVL::Node(k, h, l, r))
+        } else {
+          // Left-right: rotate left on left, then right.
+          rotate_right(AVL::Node(k, h, rotate_left(l), r))
+        }
+      } else {
+        if bf < -1 {
+          // Right-heavy.
+          let right_bf = balance_factor(r);
+          if right_bf <= 0 {
+            // Right-right: rotate left.
+            rotate_left(AVL::Node(k, h, l, r))
+          } else {
+            // Right-left: rotate right on right, then left.
+            rotate_left(AVL::Node(k, h, l, rotate_right(r)))
+          }
+        } else {
+          // Already balanced.
+          t
+        }
+      }
+    },
+  }
+}
+
+// Insert a key into an AVL tree, returning a new tree with the
+// heights updated and rebalanced. Duplicate keys go right.
+fn avl_insert(t: AVL, k: int) -> AVL {
+  match t {
+    AVL::Leaf => singleton(k),
+    AVL::Node(key, _, l, r) => {
+      if k < key {
+        let new_l = avl_insert(l, k);
+        let new_node = AVL::Node(key, 1 + max(height(new_l), height(r)), new_l, r);
+        rebalance(new_node)
+      } else {
+        let new_r = avl_insert(r, k);
+        let new_node = AVL::Node(key, 1 + max(height(l), height(new_r)), l, new_r);
+        rebalance(new_node)
+      }
+    },
+  }
+}
+
+// In-order traversal: left, root, right -> sorted array.
+fn in_order(t: AVL) -> [int] {
+  match t {
+    AVL::Leaf => [],
+    AVL::Node(k, _, l, r) => in_order(l) + [k] + in_order(r),
+  }
+}
+
+// Pre-order traversal with heights: each entry is "k(h)" so we can
+// see the structure (and confirm balance).
+fn pre_order(t: AVL) -> [string] {
+  match t {
+    AVL::Leaf => [],
+    AVL::Node(k, h, l, r) =>
+      [f"{k}(h{h})"] + pre_order(l) + pre_order(r),
+  }
+}
+
+// Build a tree from an array of keys, inserting one at a time.
+fn build_from(vals: [int]) -> AVL {
+  fn helper(i: int, acc: AVL) -> AVL {
+    if i >= len(vals) {
+      acc
+    } else {
+      helper(i + 1, avl_insert(acc, vals[i]))
+    }
+  }
+  helper(0, AVL::Leaf)
+}
+
+// Render an int array as "[1, 2, 3]".
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+// Render a string array.
+fn show_strs(arr: [string]) -> string {
+  let body = reduce(arr, fn(acc: string, x: string) -> string {
+    if acc == "" { x } else { acc + ", " + x }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== AVL tree (self-balancing) ==");
+print("");
+
+let vals = [3, 1, 5, 2, 4];
+print(f"insert order:  {show_ints(vals)}");
+
+let tree = build_from(vals);
+print(f"in-order:       {show_ints(in_order(tree))}  (sorted)");
+print(f"pre-order:      {show_strs(pre_order(tree))}  (node heights shown)");
+print("");
+
+// Verify the balance: a tree built from these 5 keys in a naive BST
+// would have had depth 3 with left/right imbalance. AVL keeps the
+// root's height at 3 and the children balanced.
+//
+// Confirm via assertions on the in-order output and the heights
+// of the root and the right child of the root.
+let root = tree;
+let root_height = match root {
+  AVL::Leaf => 0,
+  AVL::Node(_, h, _, _) => h,
+};
+print(f"root height: {root_height}");
+
+// Walk the right subtree to compute its height too.
+let right_subtree = match root {
+  AVL::Leaf => AVL::Leaf,
+  AVL::Node(_, _, _, r) => r,
+};
+let right_height = height(right_subtree);
+print(f"right subtree height: {right_height}");
+print("");
+
+// Sanity assertions.
+assert_eq(in_order(tree), [1, 2, 3, 4, 5]);
+assert_eq(root_height, 3);
+// Left and right subtree heights differ by at most 1.
+let left_subtree = match root {
+  AVL::Leaf => AVL::Leaf,
+  AVL::Node(_, _, l, _) => l,
+};
+let left_height = height(left_subtree);
+let mut diff = left_height - right_height;
+if diff < 0 { diff = 0 - diff };
+assert(diff <= 1);
+print("All assertions passed.");

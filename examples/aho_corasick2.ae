@@ -1,0 +1,242 @@
+// aho_corasick2.ae
+// =================
+// Aho-Corasick multi-pattern string search — a different pattern
+// set from `aho_corasick.ae`. Same algorithm: build a trie, augment
+// with failure links via BFS, then scan the text once and report
+// every match.
+//
+// Patterns: ["a", "ab", "bab", "bc", "bca", "c", "caa"].
+// Text:     "abccab" (the canonical Aho-Corasick Aho 1975 example).
+//
+// Expected matches in "abccab":
+//   "a"   at 0, 4
+//   "ab"  at 0, 4
+//   "bc"  at 1
+//   "c"   at 2, 3
+//   "cab" at... actually "cab" isn't a pattern. Let's see.
+//
+// This is the textbook example from Aho & Corasick's 1975 paper.
+// It exercises overlapping patterns (e.g. "a" is a prefix of "ab")
+// and shared suffixes (e.g. "ab" and "bab" share "ab" as a suffix),
+// which makes the failure-link construction non-trivial.
+
+struct ACNode {
+  children: any,    // [[string, int]]  -- (char, node index)
+  fail: int,         // index of failure link
+  outputs: any,      // [int] -- pattern indices ending here
+}
+
+fn new_node() -> ACNode {
+  ACNode { children: [], fail: 0, outputs: [] }
+}
+
+// Find a child by character (returns -1 if none).
+fn find_child(n: ACNode, c: string) -> int {
+  let mut i = 0;
+  let mut found = -1;
+  while i < len(n.children) {
+    let pair = n.children[i];
+    if pair[0] == c {
+      found = i;
+    };
+    i = i + 1;
+  }
+  found
+}
+
+// Build the trie from a list of patterns. Returns the array of
+// nodes (with index 0 being the root).
+fn build_trie(patterns: [string]) -> [ACNode] {
+  let mut nodes = [];
+  push(nodes, new_node());
+  let mut p = 0;
+  while p < len(patterns) {
+    let pat = patterns[p];
+    let mut cur = 0;
+    let mut i = 0;
+    while i < len(pat) {
+      let c = str(pat[i]);
+      let ci = find_child(nodes[cur], c);
+      let next_idx = if ci >= 0 {
+        nodes[cur].children[ci][1]
+      } else {
+        push(nodes, new_node());
+        let new_idx = len(nodes) - 1;
+        push(nodes[cur].children, [c, new_idx]);
+        new_idx
+      };
+      cur = next_idx;
+      i = i + 1;
+    }
+    push(nodes[cur].outputs, p);
+    p = p + 1;
+  }
+  nodes
+}
+
+// Find the child index of node `n` for char `c`, OR follow failure
+// links until we find one (or hit root). Returns the resulting
+// node index.
+fn go(nodes: [ACNode], n_idx: int, c: string) -> int {
+  let mut cur = n_idx;
+  let mut cont = 1;
+  while cont == 1 {
+    let ci = find_child(nodes[cur], c);
+    if ci >= 0 {
+      let child_idx = nodes[cur].children[ci][1];
+      cur = child_idx;
+      cont = 0;
+    } else {
+      if cur == 0 {
+        cont = 0;
+      } else {
+        cur = nodes[cur].fail;
+      };
+    };
+  }
+  cur
+}
+
+// Build failure links via BFS.
+fn build_fail_links(nodes: [ACNode]) -> () {
+  let mut queue = [];
+  let mut i = 0;
+  while i < len(nodes[0].children) {
+    let child_idx = nodes[0].children[i][1];
+    nodes[child_idx].fail = 0;
+    push(queue, child_idx);
+    i = i + 1;
+  }
+  while len(queue) > 0 {
+    let cur = queue[0];
+    let mut rest = [];
+    let mut k = 1;
+    while k < len(queue) {
+      push(rest, queue[k]);
+      k = k + 1;
+    }
+    queue = rest;
+    let mut j = 0;
+    while j < len(nodes[cur].children) {
+      let c = nodes[cur].children[j][0];
+      let child_idx = nodes[cur].children[j][1];
+      push(queue, child_idx);
+      let mut f = nodes[cur].fail;
+      let mut found = -1;
+      let mut cont = 1;
+      while cont == 1 {
+        let ci = find_child(nodes[f], c);
+        if ci >= 0 {
+          let cand = nodes[f].children[ci][1];
+          if cand != child_idx {
+            found = cand;
+          };
+          cont = 0;
+        } else {
+          if f == 0 {
+            cont = 0;
+          } else {
+            f = nodes[f].fail;
+          };
+        };
+      }
+      nodes[child_idx].fail = if found >= 0 { found } else { 0 };
+      let fail_target = nodes[child_idx].fail;
+      let inherited = nodes[fail_target].outputs;
+      let mut m = 0;
+      while m < len(inherited) {
+        push(nodes[child_idx].outputs, inherited[m]);
+        m = m + 1;
+      }
+      j = j + 1;
+    }
+  }
+}
+
+// Search for patterns in `text`. Returns a list of (start, pattern_index) pairs.
+fn ac_search(nodes: [ACNode], patterns: [string], text: string) -> [any] {
+  let mut out = [];
+  let mut cur = 0;
+  let mut i = 0;
+  while i < len(text) {
+    let c = str(text[i]);
+    cur = go(nodes, cur, c);
+    let outs = nodes[cur].outputs;
+    let mut k = 0;
+    while k < len(outs) {
+      let pat_idx = outs[k];
+      let pat_len = len(patterns[pat_idx]);
+      let start = i - pat_len + 1;
+      push(out, [start, pat_idx]);
+      k = k + 1;
+    }
+    i = i + 1;
+  }
+  out
+}
+
+fn show_matches(matches: [any], patterns: [string]) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(matches) {
+    if i > 0 { out = out + ", " };
+    let m = matches[i];
+    let start = m[0];
+    let pi = m[1];
+    out = out + f"\"{patterns[pi]}\"@{start}";
+    i = i + 1;
+  }
+  "[" + out + "]"
+}
+
+print("== Aho-Corasick multi-pattern search (textbook example) ==");
+print("");
+
+let patterns = ["a", "ab", "bab", "bc", "bca", "c", "caa"];
+let text = "abccab";
+print(f"patterns: {patterns}");
+print(f"text:     \"{text}\"");
+print("");
+
+let nodes = build_trie(patterns);
+print(f"trie has {len(nodes)} nodes");
+
+let _ = build_fail_links(nodes);
+print("built failure links");
+print("");
+
+let matches = ac_search(nodes, patterns, text);
+print(f"matches: {show_matches(matches, patterns)}");
+print("");
+
+// Sanity assertions.
+// Matches in "abccab":
+//   pos 0: "a" (idx 0), "ab" (idx 1)
+//   pos 1: "bc" (idx 3)
+//   pos 2: "c" (idx 5)
+//   pos 3: "c" (idx 5)
+//   pos 4: "a" (idx 0), "ab" (idx 1)
+// Total: 7 matches.
+assert_eq(len(matches), 7);
+
+// Count matches per pattern.
+fn count_for(matches: [any], pi: int) -> int {
+  let mut n = 0;
+  let mut i = 0;
+  while i < len(matches) {
+    if matches[i][1] == pi {
+      n = n + 1;
+    };
+    i = i + 1;
+  }
+  n
+}
+// "a"  (idx 0): 2 occurrences (at 0 and 4)
+// "ab" (idx 1): 2 occurrences (at 0 and 4)
+// "bc" (idx 3): 1 occurrence  (at 1)
+// "c"  (idx 5): 2 occurrences (at 2 and 3)
+assert_eq(count_for(matches, 0), 2);
+assert_eq(count_for(matches, 1), 2);
+assert_eq(count_for(matches, 3), 1);
+assert_eq(count_for(matches, 5), 2);
+print("All assertions passed.");

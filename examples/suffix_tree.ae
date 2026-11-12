@@ -1,0 +1,167 @@
+// suffix_tree.ae
+// =================
+// A tiny suffix tree for the string "abc". A suffix tree is a
+// compressed trie of all suffixes; we build a simplified version
+// where each edge is a single character (rather than a run), so
+// it's really a suffix trie. We then print the trie structure.
+//
+// For "abc", the suffixes are:
+//   "abc"
+//   "bc"
+//   "c"
+//
+// Each suffix is inserted into a trie rooted at the empty string.
+// The trie distinguishes leaf nodes (which mark the end of a suffix)
+// from internal nodes. Each node has a map of child characters to
+// child nodes.
+//
+// We use a struct for the node, an array for the children (since
+// Aether doesn't have a Map literal we can use), and a sentinel
+// child marker `#` for the end-of-suffix marker.
+
+struct STNode {
+  edges: any,   // [[char, STNode]]
+  is_end: bool,
+}
+
+fn new_node() -> STNode {
+  STNode { edges: [], is_end: false }
+}
+
+// Find a child by character (or -1 if none).
+fn find_child(n: STNode, c: string) -> int {
+  let mut i = 0;
+  let mut found = -1;
+  while i < len(n.edges) {
+    let pair = n.edges[i];
+    if pair[0] == c {
+      found = i
+    };
+    i = i + 1;
+  }
+  found
+}
+
+// Insert a suffix (given as a string) into the trie.
+fn insert_suffix(root: STNode, suffix: string) -> () {
+  let mut cur = root;
+  let mut i = 0;
+  while i < len(suffix) {
+    let c = str(suffix[i]);
+    let idx = find_child(cur, c);
+    let next = if idx >= 0 {
+      cur.edges[idx][1] as STNode
+    } else {
+      let n = new_node();
+      push(cur.edges, [c, n]);
+      n
+    };
+    cur = next;
+    i = i + 1;
+  }
+  cur.is_end = true
+}
+
+// Count the number of nodes in the trie (including the root).
+fn count_nodes(root: STNode) -> int {
+  let mut total = 1;
+  let mut i = 0;
+  while i < len(root.edges) {
+    let child = root.edges[i][1] as STNode;
+    total = total + count_nodes(child);
+    i = i + 1;
+  }
+  total
+}
+
+// Collect every suffix stored in the trie by walking from the root
+// and emitting each end-marked path. Returns a list of (path, depth)
+// pairs sorted by path.
+fn collect_suffixes(root: STNode) -> [string] {
+  let mut out = [];
+  fn helper(n: STNode, path: string) -> () {
+    if n.is_end {
+      push(out, path)
+    };
+    let mut i = 0;
+    while i < len(n.edges) {
+      let c = n.edges[i][0];
+      let child = n.edges[i][1] as STNode;
+      helper(child, path + c);
+      i = i + 1;
+    }
+  }
+  helper(root, "");
+  out
+}
+
+// Render the trie structure as an indented tree.
+fn show_trie(root: STNode, prefix: string) -> string {
+  let mut out = "";
+  let mut i = 0;
+  while i < len(root.edges) {
+    let c = root.edges[i][0];
+    let child = root.edges[i][1] as STNode;
+    let mark = if child.is_end { "*" } else { " " };
+    out = out + prefix + "|-- " + c + mark + "\n";
+    out = out + show_trie(child, prefix + "    ");
+    i = i + 1;
+  }
+  out
+}
+
+// Render a string array.
+fn show_strs(arr: [string]) -> string {
+  let body = reduce(arr, fn(acc: string, x: string) -> string {
+    if acc == "" { x } else { acc + ", " + x }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== Suffix tree (simplified) for \"abc\" ==");
+print("");
+
+let s = "abc";
+print(f"input: \"{s}\"");
+print("");
+
+// Build the trie by inserting each suffix.
+let root = new_node();
+let mut i = 0;
+while i < len(s) {
+  let suf = suffix_from(s, i);
+  let _ = insert_suffix(root, suf);
+  i = i + 1;
+}
+
+print("trie structure (* = end-of-suffix):");
+print(show_trie(root, ""));
+print("");
+
+// Collect and print the stored suffixes (should match the input
+// suffixes, possibly in trie-discovery order).
+let suffixes = collect_suffixes(root);
+print(f"collected suffixes: {show_strs(suffixes)}");
+print(f"node count: {count_nodes(root)}");
+print("");
+
+// Sanity assertions.
+// For "abc" the suffixes are "abc", "bc", "c". The trie has:
+//   root -> 'a' -> 'b' -> 'c' (*)
+//              -> 'b' -> 'c' (*)
+//                     -> 'c' (*)
+//   6 edges, 7 nodes (root + 6 children).
+assert_eq(suffixes, ["abc", "bc", "c"]);
+assert_eq(count_nodes(root), 7);
+print("All assertions passed.");
+
+// Helper: get the suffix of `s` starting at index `i`.
+fn suffix_from(s: string, i: int) -> string {
+  let mut out = "";
+  let mut k = i;
+  while k < len(s) {
+    out = out + str(s[k]);
+    k = k + 1;
+  }
+  out
+}

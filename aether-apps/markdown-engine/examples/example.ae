@@ -1,0 +1,40 @@
+// aether-apps/markdown-engine/examples/example.ae
+// ================================================
+// Render a sample markdown document to HTML and print the result.
+
+import { new, render } from "../src/markdown.ae";
+
+let md = "# Aether Markdown Engine\n\n\
+This is a **paragraph** with *italic*, `code`, and a [link](https://aether.dev).\n\n\
+## Heading level 2\n\n\
+- unordered item 1\n\
+- unordered item 2\n\
+- unordered item 3\n\n\
+### Heading level 3\n\n\
+1. ordered item 1\n\
+2. ordered item 2\n\
+3. ordered item 3\n\n\
+> A blockquote line.\n\n\
+A second paragraph after the blockquote.\n\n\
+---\n\n\
+Here is a fenced code block:\n\n\
+```\n\
+fn main() {\n\
+  print(\"hello, world\");\n\
+}\n\
+```\n\n\
+The end.";
+
+let state = new();
+let html = render(state, md);
+
+print("== Markdown input ==");
+print("");
+print(md);
+print("");
+print("== HTML output ==");
+print("");
+print(html);
+print("");
+print("== End ==");
+print("HTML length: " + str(len(html)) + " chars");

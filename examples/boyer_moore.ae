@@ -1,0 +1,181 @@
+// boyer_moore.ae
+// ================
+// Boyer-Moore string search for "world" in "hello world foo".
+// Reports the index of the first occurrence (and any subsequent
+// occurrences).
+//
+// Boyer-Moore compares the pattern to the text right-to-left and
+// uses the "bad character" heuristic to skip ahead: when a mismatch
+// occurs at pattern position j, look up the mismatched text character
+// in a "last occurrence" table. Shift the pattern so that character
+// aligns with its last occurrence in the pattern (or shift past it
+// entirely if it doesn't appear). This is the Boyer-Moore-Horspool
+// variant; it's still sub-linear on typical English text.
+//
+// We use `while` loops with explicit indices throughout (no `for`,
+// to avoid the v1 evaluator's for-loop-scope quirk).
+
+// Slice a string from `start` (inclusive) to `end` (exclusive).
+fn slice(s: string, start: int, end: int) -> string {
+  let mut out = "";
+  let mut k = start;
+  while k < end && k < len(s) {
+    out = out + str(s[k]);
+    k = k + 1;
+  }
+  out
+}
+
+// Render an int array as "[1, 2, 3]".
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+// Render the last-occurrence table as a string.
+fn show_last_table(table: [any]) -> string {
+  let mut out = "{";
+  let mut i = 0;
+  while i < len(table) {
+    if i > 0 { out = out + ", " };
+    out = out + table[i][0] + ":" + str(table[i][1]);
+    i = i + 1;
+  }
+  out + "}"
+}
+
+// Build a "last occurrence" table for the bad-character rule.
+// Returns an array of (char, index_in_pattern) pairs; we search it
+// linearly at lookup time. (A real impl would use a 256-entry array
+// indexed by char code, but Aether's array model is sparse — we use
+// a list of pairs.)
+fn build_last_table(pat: string) -> [any] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(pat) {
+    let c = str(pat[i]);
+    let mut found = -1;
+    let mut j = 0;
+    while j < len(out) {
+      if out[j][0] == c {
+        found = j
+      };
+      j = j + 1;
+    }
+    if found >= 0 {
+      out[found][1] = i
+    } else {
+      push(out, [c, i])
+    };
+    i = i + 1;
+  }
+  out
+}
+
+// Look up the last-occurrence index of `c` in the table, returning -1
+// if c doesn't appear in the pattern.
+fn last_occurrence(table: [any], c: string) -> int {
+  let mut i = 0;
+  let mut result = -1;
+  while i < len(table) {
+    if table[i][0] == c {
+      result = table[i][1]
+    };
+    i = i + 1;
+  }
+  result
+}
+
+// Boyer-Moore-Horspool search.  Returns a list of starting indices
+// where the pattern occurs in the text.  Empty pattern -> empty list.
+// Non-overlapping matches are reported (shift past each match).
+fn boyer_moore(text: string, pat: string) -> [int] {
+  if len(pat) == 0 {
+    []
+  } else {
+    let n = len(text);
+    let m = len(pat);
+    let table = build_last_table(pat);
+    let mut matches = [];
+    let mut i = 0;  // current alignment start
+    while i + m <= n {
+      // Compare pattern to text[i..i+m] from right to left.
+      let mut j = m - 1;
+      let mut mismatch_at = -1;
+      while j >= 0 && mismatch_at == -1 {
+        let pc = str(pat[j]);
+        let tc = str(text[i + j]);
+        if pc != tc {
+          mismatch_at = j
+        };
+        j = j - 1;
+      }
+      if mismatch_at == -1 {
+        // Full match.
+        push(matches, i);
+        i = i + m
+      } else {
+        // Bad-character shift: align the mismatched text character
+        // with its last occurrence in the pattern (or shift past).
+        let bad_char = str(text[i + mismatch_at]);
+        let last = last_occurrence(table, bad_char);
+        let shift = if last < 0 {
+          mismatch_at + 1
+        } else {
+          if mismatch_at - last > 0 { mismatch_at - last } else { 1 }
+        };
+        i = i + shift
+      }
+    }
+    matches
+  }
+}
+
+print("== Boyer-Moore string search ==");
+print("");
+
+let text = "hello world foo";
+let pat = "world";
+print(f"text:      \"{text}\"");
+print(f"pattern:    \"{pat}\"");
+print(f"last-occ table: {show_last_table(build_last_table(pat))}");
+print("");
+
+let matches = boyer_moore(text, pat);
+print(f"matches:   {show_ints(matches)}  (start indices)");
+if len(matches) > 0 {
+  let first = matches[0];
+  let snippet = slice(text, first, first + len(pat));
+  print(f"first match at index {first}: \"{snippet}\"");
+}
+print("");
+
+// Another test: pattern appears multiple times.
+let text2 = "abcabcabc";
+let pat2 = "abc";
+print(f"text:      \"{text2}\"");
+print(f"pattern:    \"{pat2}\"");
+print(f"matches:   {show_ints(boyer_moore(text2, pat2))}  (non-overlapping)");
+print("");
+
+// Pattern not in text -> empty list.
+let text3 = "the quick brown fox";
+let pat3 = "xyzzy";
+print(f"text:      \"{text3}\"");
+print(f"pattern:    \"{pat3}\"");
+print(f"matches:   {show_ints(boyer_moore(text3, pat3))}  (no matches)");
+print("");
+
+// Empty pattern -> empty list (matches nothing).
+print(f"empty pattern in \"abc\": {show_ints(boyer_moore(\"abc\", \"\"))}");
+print("");
+
+// Sanity assertions.
+assert_eq(boyer_moore("hello world foo", "world"), [6]);
+assert_eq(boyer_moore("abcabcabc", "abc"), [0, 3, 6]);
+assert_eq(boyer_moore("the quick brown fox", "xyzzy"), []);
+assert_eq(boyer_moore("abc", ""), []);
+assert_eq(boyer_moore("aabc", "abc"), [1]);
+print("All assertions passed.");

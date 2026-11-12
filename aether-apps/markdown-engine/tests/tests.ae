@@ -1,0 +1,140 @@
+// aether-apps/markdown-engine/tests/tests.ae
+// ===========================================
+// 25+ assertions covering the markdown engine: each construct
+// (heading, list, blockquote, code block, hr, paragraph, bold,
+// italic, inline code, link, escape) renders to the expected HTML.
+
+import { new, render } from "../src/markdown.ae";
+
+let state = new();
+
+//----------------------------------------------------------------------------
+// Headings
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, "# H1"), "<h1>H1</h1>\n");
+assert_eq(render(state, "## H2"), "<h2>H2</h2>\n");
+assert_eq(render(state, "### H3"), "<h3>H3</h3>\n");
+assert_eq(render(state, "#### H4"), "<h4>H4</h4>\n");
+assert_eq(render(state, "##### H5"), "<h5>H5</h5>\n");
+assert_eq(render(state, "###### H6"), "<h6>H6</h6>\n");
+assert_eq(render(state, "####### Not a heading"), "<p>####### Not a heading</p>\n");
+
+//----------------------------------------------------------------------------
+// Paragraph
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, "Hello"), "<p>Hello</p>\n");
+assert_eq(render(state, "Para 1\n\nPara 2"), "<p>Para 1</p>\n<p>Para 2</p>\n");
+assert_eq(render(state, "Line 1\nLine 2"), "<p>Line 1 Line 2</p>\n");
+
+//----------------------------------------------------------------------------
+// Unordered list
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, "- a\n- b\n- c"), "<ul>\n<li>a</li>\n<li>b</li>\n<li>c</li>\n</ul>\n");
+assert_eq(render(state, "* a\n* b"), "<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n");
+
+//----------------------------------------------------------------------------
+// Ordered list
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, "1. a\n2. b\n3. c"), "<ol>\n<li>a</li>\n<li>b</li>\n<li>c</li>\n</ol>\n");
+
+//----------------------------------------------------------------------------
+// Blockquote
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, "> A quote"), "<blockquote>A quote</blockquote>\n");
+
+//----------------------------------------------------------------------------
+// Horizontal rule
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, "---"), "<hr/>\n");
+
+//----------------------------------------------------------------------------
+// Code block (fenced)
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, "```\ncode here\n```"), "<pre><code>code here\n</code></pre>\n");
+assert_eq(render(state, "```\n<p>not html</p>\n```"), "<pre><code>&lt;p&gt;not html&lt;/p&gt;\n</code></pre>\n");
+
+//----------------------------------------------------------------------------
+// Inline: bold, italic, code, link
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, "**bold**"), "<p><strong>bold</strong></p>\n");
+assert_eq(render(state, "*italic*"), "<p><em>italic</em></p>\n");
+assert_eq(render(state, "`code`"), "<p><code>code</code></p>\n");
+assert_eq(render(state, "[text](url)"), "<p><a href=\"url\">text</a></p>\n");
+
+//----------------------------------------------------------------------------
+// Inline: combinations
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, "**bold** and *italic*"), "<p><strong>bold</strong> and <em>italic</em></p>\n");
+assert_eq(render(state, "text `code` text"), "<p>text <code>code</code> text</p>\n");
+assert_eq(render(state, "[Aether](https://aether.dev)"), "<p><a href=\"https://aether.dev\">Aether</a></p>\n");
+
+//----------------------------------------------------------------------------
+// HTML escaping
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, "a < b > c & d"), "<p>a &lt; b &gt; c &amp; d</p>\n");
+assert_eq(render(state, "<script>"), "<p>&lt;script&gt;</p>\n");
+
+//----------------------------------------------------------------------------
+// Mixed document
+//----------------------------------------------------------------------------
+
+let doc = "# Title\n\nA para.\n\n- list item\n";
+assert_eq(render(state, doc), "<h1>Title</h1>\n<p>A para.</p>\n<ul>\n<li>list item</li>\n</ul>\n");
+
+let doc2 = "## Section\n\n1. first\n2. second\n";
+assert_eq(render(state, doc2), "<h2>Section</h2>\n<ol>\n<li>first</li>\n<li>second</li>\n</ol>\n");
+
+let doc3 = "Intro\n\n> quote\n\nMore text\n";
+assert_eq(render(state, doc3), "<p>Intro</p>\n<blockquote>quote</blockquote>\n<p>More text</p>\n");
+
+let doc4 = "Before\n\n---\n\nAfter\n";
+assert_eq(render(state, doc4), "<p>Before</p>\n<hr/>\n<p>After</p>\n");
+
+//----------------------------------------------------------------------------
+// Code block in document
+//----------------------------------------------------------------------------
+
+let doc5 = "```\nline 1\nline 2\n```\n";
+assert_eq(render(state, doc5), "<pre><code>line 1\nline 2\n</code></pre>\n");
+
+//----------------------------------------------------------------------------
+// Empty input
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, ""), "");
+
+//----------------------------------------------------------------------------
+// Link with special chars in URL
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, "[text](url?a=1&b=2)"), "<p><a href=\"url?a=1&amp;b=2\">text</a></p>\n");
+
+//----------------------------------------------------------------------------
+// Bold inside paragraph
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, "This is **very important** text"), "<p>This is <strong>very important</strong> text</p>\n");
+
+//----------------------------------------------------------------------------
+// Italic inside paragraph
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, "This is *kind of* text"), "<p>This is <em>kind of</em> text</p>\n");
+
+//----------------------------------------------------------------------------
+// Code inside paragraph with HTML special chars
+//----------------------------------------------------------------------------
+
+assert_eq(render(state, "Use `<html>` tag"), "<p>Use <code>&lt;html&gt;</code> tag</p>\n");
+
+print("All " + str(0) + " assertions passed.");

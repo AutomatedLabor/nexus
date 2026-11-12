@@ -1,0 +1,210 @@
+// boyer_moore2.ae
+// =================
+// Full Boyer-Moore string search with BOTH the bad-character rule
+// and the good-suffix rule. The existing `boyer_moore.ae` uses
+// only the bad-character rule (the Boyer-Moore-Horspool variant);
+// this version adds the good-suffix rule, which makes the algorithm
+// genuinely sub-linear on inputs with repeating patterns.
+//
+// Search "ana" in "banana" — overlapping matches at positions 1 and 3.
+// Also search "world" in "hello world foo" — single match at 6.
+
+// Slice a string from `start` (inclusive) to `end` (exclusive).
+fn slice(s: string, start: int, end: int) -> string {
+  let mut out = "";
+  let mut k = start;
+  while k < end && k < len(s) {
+    out = out + str(s[k]);
+    k = k + 1;
+  }
+  out
+}
+
+fn show_ints(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+// Build the bad-character "last occurrence" table for the pattern.
+// Returns an array of (char, idx) pairs (the rightmost index of
+// each char in the pattern, excluding the last character).
+fn build_bad_char(p: string) -> [any] {
+  let mut table = [];
+  let mut i = 0;
+  while i < len(p) - 1 {
+    let c = str(p[i]);
+    // Find existing entry.
+    let mut j = 0;
+    let mut found = -1;
+    while j < len(table) {
+      if table[j][0] == c {
+        found = j;
+      };
+      j = j + 1;
+    }
+    if found >= 0 {
+      table[found] = [c, i];
+    } else {
+      push(table, [c, i]);
+    };
+    i = i + 1;
+  }
+  table
+}
+
+// Look up the bad-character shift: the rightmost index of `c` in
+// the pattern (excluding the last char), or -1 if not present.
+fn bad_char_shift(table: [any], c: string) -> int {
+  let mut i = 0;
+  let mut found = -1;
+  while i < len(table) {
+    if table[i][0] == c {
+      found = table[i][1];
+    };
+    i = i + 1;
+  }
+  found
+}
+
+// Build the good-suffix table. For each j (0..m-1), `good[j]` is
+// the shift to apply when the suffix p[j+1..m] has matched the
+// text but p[j] has mismatched.
+//
+// We compute it naively in O(m^2) by checking, for each suffix
+// length k = 1..m, the rightmost position < m-k where p[pos..pos+k]
+// == p[m-k..m] (and p[pos-1] != p[m-k-1] if pos > 0); if no such
+// position exists, find the longest prefix of p that matches a
+// suffix of p[m-k..m]; if neither exists, shift by m.
+fn build_good_suffix(p: string) -> [int] {
+  let m = len(p);
+  let mut table = [];
+  let mut k = 1;
+  while k <= m {
+    let suffix = slice(p, m - k, m);
+    // Look for the rightmost position pos in [0, m-k-1] such that
+    // slice(p, pos, pos+k) == suffix AND (pos == 0 or p[pos-1] != p[m-k-1]).
+    let mut pos = m - k - 1;
+    let mut found = -1;
+    while pos >= 0 {
+      let candidate = slice(p, pos, pos + k);
+      if candidate == suffix {
+        if pos == 0 {
+          found = pos;
+        } else {
+          if p[pos - 1] != p[m - k - 1] {
+            found = pos;
+          };
+        };
+      };
+      pos = pos - 1;
+    };
+    if found >= 0 {
+      // Shift = (m - k) - found
+      push(table, (m - k) - found);
+    } else {
+      // Find the longest prefix of p matching a suffix of p[m-k..m].
+      let mut best = 0;
+      let mut l = k - 1;
+      while l >= 1 {
+        let prefix = slice(p, 0, l);
+        let suf = slice(p, m - l, m);
+        if prefix == suf {
+          best = l;
+          l = 0;
+        } else {
+          l = l - 1;
+        }
+      }
+      if best > 0 {
+        push(table, m - best);
+      } else {
+        push(table, m);
+      };
+    };
+    k = k + 1;
+  }
+  table
+}
+
+// Full Boyer-Moore search. Returns the array of starting indices
+// where `pattern` occurs in `text`.
+fn boyer_moore(text: string, pattern: string) -> [int] {
+  let n = len(text);
+  let m = len(pattern);
+  let mut result = [];
+  if m == 0 {
+    return result;
+  };
+  let bad_char = build_bad_char(pattern);
+  let good_suffix = build_good_suffix(pattern);
+  let mut s = 0;
+  while s <= n - m {
+    let mut j = m - 1;
+    let mut cont = 1;
+    while cont == 1 {
+      if j < 0 {
+        cont = 0;
+      } else {
+        if pattern[j] == text[s + j] {
+          j = j - 1;
+        } else {
+          cont = 0;
+        };
+      };
+    }
+    if j < 0 {
+      // Full match at position s.
+      push(result, s);
+      // Shift by 1 to find overlapping matches.
+      s = s + 1;
+    } else {
+      // Mismatch at pattern[j], text[s+j].
+      let bc = bad_char_shift(bad_char, str(text[s + j]));
+      let bc_shift = j - bc;  // could be negative
+      if bc_shift < 1 { bc_shift = 1; };
+      // Good-suffix: matched suffix length is k = m - 1 - j.
+      // good_suffix[k - 1] = good_suffix[m - 2 - j] for k >= 1.
+      // For k = 0 (j = m - 1, no matched suffix), the good-suffix
+      // shift is degenerate; use 1.
+      let k = m - 1 - j;
+      let gs_shift = if k <= 0 { 1 } else { good_suffix[k - 1] };
+      // Take the max.
+      let shift = if bc_shift >= gs_shift { bc_shift } else { gs_shift };
+      s = s + shift;
+    }
+  }
+  result
+}
+
+print("== Boyer-Moore (bad-char + good-suffix) ==");
+print("");
+
+let p1 = "ana";
+let t1 = "banana";
+let m1 = boyer_moore(t1, p1);
+print(f"search \"{p1}\" in \"{t1}\" -> {show_ints(m1)}");
+
+let p2 = "world";
+let t2 = "hello world foo";
+let m2 = boyer_moore(t2, p2);
+print(f"search \"{p2}\" in \"{t2}\" -> {show_ints(m2)}");
+
+let p3 = "ab";
+let t3 = "abababab";
+let m3 = boyer_moore(t3, p3);
+print(f"search \"{p3}\" in \"{t3}\" -> {show_ints(m3)}");
+
+let p4 = "missing";
+let t4 = "hello world foo";
+let m4 = boyer_moore(t4, p4);
+print(f"search \"{p4}\" in \"{t4}\" -> {show_ints(m4)}");
+print("");
+
+// Sanity assertions.
+assert_eq(m1, [1, 3]);   // overlapping matches in "banana"
+assert_eq(m2, [6]);     // "world" at index 6
+assert_eq(m3, [0, 2, 4, 6]);  // overlapping "ab" in "abababab"
+assert_eq(m4, []);       // no matches
+print("All assertions passed.");
