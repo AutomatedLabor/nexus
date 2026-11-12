@@ -36,30 +36,32 @@ channels/select/join/race/timeout — real suspend/resume, not just Promises).
 
 | Metric | v2 (start of v3) | v3 (final) |
 |---|---|---|
-| Aether TS files | 100 | **126** |
-| Aether TS LOC | 40,329 | **57,020** |
-| Aether `.ae` files | 0 | **179** (33,476 LOC) |
-| **Total LOC** | ~40K | **~90K** |
-| Test cases | 1,964 | **2,468 passing** |
+| Aether TS files | 100 | **136** |
+| Aether TS LOC | 40,329 | **59,221** |
+| Aether `.ae` files | 0 | **201** (36,442 LOC) |
+| Go port | 0 | **5 files, 5,630 LOC** (229 tests pass) |
+| Python port | 0 | **6 files, 4,363 LOC** (tokenizes Aether) |
+| **Total LOC** | ~40K | **~105K** |
+| Test cases | 1,964 | **2,622 passing** |
 | Runtimes | 2 (tree + VM) | **5** (+ WASM, x86, JIT) |
 | Trait system | no | **yes** (691 LOC) |
 | Borrow checker | no | **yes** (942 LOC, NLL) |
 | Async coroutines | no | **yes** (1,091 LOC, real suspend/resume) |
-| Stdlib modules | 24 | **33** |
-| Stdlib functions | 510 | **600** |
-| Aether packages | 0 | **31** (written in Aether) |
+| Stdlib modules | 24 | **38** |
+| Stdlib functions | 510 | **653** |
+| Aether packages | 0 | **32** (written in Aether) |
 | Real apps in Aether | 0 | **3** (database, web-framework, regex-engine) |
-| Example programs | 72 | **112** |
-| Compiler ports | 0 | **1** (Python: lexer + parser, tokenizes Aether correctly) |
+| Example programs | 72 | **132** |
+| Compiler ports | 0 | **2** (Python lexer+parser; Go lexer+parser, 229 Go tests) |
 | Native codegen backends | 0 | **2** (WASM, x86-64; ARM64/RISC-V are RFC-009/010) |
 | JIT compiler | 0 | **1** (tier-2; tier-3 in-memory x86 is RFC-011) |
 | Formal verification docs | 0 | **50,530 words** (operational semantics, type safety, bytecode verifier, 10 proof outlines) |
 | Docs files | 77 | **116** |
 | Doc words | 187K | **~298K** |
-| Book chapters | 16 | **26** (ch11–ch20 new: traits, borrowing, async, WASM/x86, self-hosting, packages, formal, real apps, road ahead) |
+| Book chapters | 16 | **26** (ch11–ch20 new) |
 | ADRs | 15 | **25** (adr-16–25 new) |
-| RFCs | 7 | **12** (rfc-009–013 new: ARM64, RISC-V, JIT, package registry, mechanized proofs) |
-| Git commits | 23 | **37** |
+| RFCs | 7 | **12** (rfc-009–013 new) |
+| Git commits | 23 | **39** |
 | Live deploy | yes | yes (https://nexus-aip-roj-builder.vercel.app) |
 
 ## Wave completion (honest status)
