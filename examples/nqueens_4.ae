@@ -1,0 +1,113 @@
+// nqueens_4.ae
+// ============
+// Solve the 4-queens problem: place 4 chess queens on a 4x4 board
+// such that no two queens attack each other (i.e. no two queens
+// share a row, column, or diagonal).
+//
+// We use the standard "one queen per row" formulation: `cols[r]`
+// gives the column of the queen in row r. The constraint is that
+// all `cols[r]` are distinct, and no two queens share a diagonal
+// (|col_a - col_b| != |row_a - row_b|).
+//
+// The demo counts all distinct solutions (there are 2 for n = 4)
+// and prints the first one as an ASCII board.
+
+let n = 4;
+
+let mut solutions_count = 0;
+let mut first_solution = [-1, -1, -1, -1];
+
+// Check if placing a queen at (row, col) is safe given the partial
+// assignment `cols[0..row]`.
+fn is_safe(cols: [int], row: int, col: int) -> bool {
+  let mut ok = true;
+  let mut r = 0;
+  while r < row {
+    let c = cols[r];
+    if c == col {
+      ok = false;
+    };
+    if c - r == col - row {
+      ok = false;
+    };
+    if c + r == col + row {
+      ok = false;
+    };
+    r = r + 1;
+  }
+  ok
+}
+
+// Recursive backtracking. `row` is the next row to place a queen in.
+fn solve(cols: [int], row: int) -> bool {
+  if row == n {
+    solutions_count = solutions_count + 1;
+    if first_solution[0] == -1 {
+      let mut i = 0;
+      while i < n {
+        first_solution[i] = cols[i];
+        i = i + 1;
+      }
+    };
+    true
+  } else {
+    let mut solved = false;
+    let mut col = 0;
+    while col < n {
+      if is_safe(cols, row, col) {
+        cols[row] = col;
+        // Recurse (don't stop on first success — we want all solutions).
+        let _ = solve(cols, row + 1);
+        cols[row] = -1;
+      };
+      col = col + 1;
+    }
+    solved
+  }
+}
+
+fn show_board(cols: [int]) -> string {
+  let mut out = "";
+  let mut r = 0;
+  while r < n {
+    let mut row_str = "";
+    let mut c = 0;
+    while c < n {
+      let mut cell = "";
+      if cols[r] == c {
+        cell = "Q";
+      } else {
+        cell = ".";
+      };
+      if c == 0 {
+        row_str = cell;
+      } else {
+        row_str = row_str + " " + cell;
+      };
+      c = c + 1;
+    }
+    if r == 0 {
+      out = row_str;
+    } else {
+      out = out + "\n" + row_str;
+    };
+    r = r + 1;
+  }
+  out
+}
+
+print("== 4-queens solver demo ==");
+print("");
+print("place 4 queens on a 4x4 board with no two attacking each other");
+print("");
+
+let cols = [-1, -1, -1, -1];
+let _ = solve(cols, 0);
+
+print("total distinct solutions: " + str(solutions_count));
+print("");
+print("first solution (Q = queen, . = empty):");
+print(show_board(first_solution));
+
+print("");
+print("4-queens solver complete.");

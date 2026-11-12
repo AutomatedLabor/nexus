@@ -1,0 +1,61 @@
+// aether-string-search/examples/example.ae
+// ==========================================
+// A demo of the aether-string-search package.
+import {
+  naiveMatch, kmpMatch, boyerMooreMatch, rabinKarpMatch,
+  zAlgorithm, computeLps,
+  findAll, countOccur, longestPrefixSuffix,
+} from "../src/lib.ae";
+
+fn show_int(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== aether-string-search example ==");
+print("");
+
+let text = "the quick brown fox jumps over the lazy dog";
+let pat = "fox";
+print("text = " + text);
+print("pat  = " + pat);
+print("naiveMatch   = " + str(naiveMatch(text, pat)));
+print("kmpMatch     = " + str(kmpMatch(text, pat)));
+print("boyerMoore   = " + str(boyerMooreMatch(text, pat)));
+print("rabinKarp    = " + str(rabinKarpMatch(text, pat)));
+
+print("");
+print("-- LPS / Z computations --");
+let lps1 = computeLps("abcabdabcabc");
+let lps2 = computeLps("aaaa");
+let z1 = zAlgorithm("aabcaab");
+let z2 = zAlgorithm("aaaa");
+print("computeLps('abcabdabcabc') = " + show_int(lps1));
+print("computeLps('aaaa')         = " + show_int(lps2));
+print("zAlgorithm('aabcaab')     = " + show_int(z1));
+print("zAlgorithm('aaaa')        = " + show_int(z2));
+
+print("");
+print("-- findAll / countOccur --");
+let fa1 = findAll("abababab", "ab");
+let fa2 = findAll("abcabcabc", "abc");
+let co1 = countOccur("abababab", "ab");
+let co2 = countOccur("hello", "x");
+print("findAll('abababab', 'ab')    = " + show_int(fa1));
+print("findAll('abcabcabc', 'abc') = " + show_int(fa2));
+print("countOccur('abababab', 'ab') = " + str(co1));
+print("countOccur('hello', 'x')     = " + str(co2));
+
+print("");
+print("-- longestPrefixSuffix --");
+let lpsA = longestPrefixSuffix("abcabdabcabc");
+let lpsB = longestPrefixSuffix("aaaa");
+let lpsC = longestPrefixSuffix("abc");
+print("longestPrefixSuffix('abcabdabcabc') = " + str(lpsA));
+print("longestPrefixSuffix('aaaa')         = " + str(lpsB));
+print("longestPrefixSuffix('abc')          = " + str(lpsC));
+
+print("");
+print("All demos ran successfully.");

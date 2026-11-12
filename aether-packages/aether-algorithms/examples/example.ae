@@ -1,0 +1,83 @@
+// aether-algorithms/examples/example.ae
+// =====================================
+// A demo of the aether-algorithms package.
+import {
+  binarySearch, lowerBound, upperBound, ternarySearch,
+  jumpSearch, interpolationSearch, exponentialSearch, fibonacciSearch,
+  tabuSearch, simulatedAnnealing, hillClimbing, gradientDescent,
+} from "../src/lib.ae";
+
+fn show_int(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== aether-algorithms example ==");
+print("");
+
+let sorted = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19];
+print("sorted = " + show_int(sorted));
+print("binarySearch(7)        = " + str(binarySearch(sorted, 7)));
+print("binarySearch(13)       = " + str(binarySearch(sorted, 13)));
+print("binarySearch(20)       = " + str(binarySearch(sorted, 20)));
+print("lowerBound(7)          = " + str(lowerBound(sorted, 7)));
+print("upperBound(7)          = " + str(upperBound(sorted, 7)));
+
+print("");
+print("-- ternarySearch --");
+fn neg_sq(x: int) -> int { -(x - 5) * (x - 5) }
+print("argmax of -(x-5)^2 on [0, 10] = " + str(ternarySearch(neg_sq, 0, 10)));
+fn neg_sq3(x: int) -> int { -(x - 8) * (x - 8) }
+print("argmax of -(x-8)^2 on [0, 15] = " + str(ternarySearch(neg_sq3, 0, 15)));
+
+print("");
+print("-- sorted-array search variants --");
+print("jumpSearch(11)         = " + str(jumpSearch(sorted, 11)));
+print("interpolationSearch(11) = " + str(interpolationSearch(sorted, 11)));
+print("exponentialSearch(11)  = " + str(exponentialSearch(sorted, 11)));
+print("fibonacciSearch(11)    = " + str(fibonacciSearch(sorted, 11)));
+
+print("");
+print("-- tabuSearch (4-city TSP) --");
+let dist = [[0, 10, 15, 20], [10, 0, 35, 25], [15, 35, 0, 30], [20, 25, 30, 0]];
+let route = tabuSearch([0, 1, 2, 3], dist, 20);
+print("best route = " + show_int(route));
+
+fn route_cost_fn(r: [int]) -> int {
+  let mut c = 0;
+  let mut i = 0;
+  while i < len(r) - 1 {
+    c = c + dist[r[i]][r[i + 1]];
+    i = i + 1;
+  }
+  c + dist[r[len(r) - 1]][r[0]]
+}
+print("tour cost = " + str(route_cost_fn(route)));
+
+print("");
+print("-- simulatedAnnealing --");
+fn sq7(x: int) -> int { (x - 7) * (x - 7) }
+let best_x = simulatedAnnealing(sq7, 0, 100);
+print("argmin of (x-7)^2 from x=0, 100 iters = " + str(best_x));
+fn abs23(x: int) -> int { abs(x - 23) }
+let best_x2 = simulatedAnnealing(abs23, 0, 200);
+print("argmin of |x-23| from x=0, 200 iters = " + str(best_x2));
+
+print("");
+print("-- hillClimbing --");
+fn neg_sq_hc(x: int) -> int { -(x - 7) * (x - 7) }
+print("argmax of -(x-7)^2 from x=0 = " + str(hillClimbing(neg_sq_hc, 0)));
+fn neg_sq_hc2(x: int) -> int { -(x - 12) * (x - 12) }
+print("argmax of -(x-12)^2 from x=0 = " + str(hillClimbing(neg_sq_hc2, 0)));
+
+print("");
+print("-- gradientDescent --");
+fn sq5_gd(x: int) -> int { (x - 5) * (x - 5) }
+print("argmin of (x-5)^2 from x=0, step=1, 100 iters = " + str(gradientDescent(sq5_gd, 0, 1, 100)));
+fn sq11_gd(x: int) -> int { (x - 11) * (x - 11) }
+print("argmin of (x-11)^2 from x=20, step=1, 200 iters = " + str(gradientDescent(sq11_gd, 20, 1, 200)));
+
+print("");
+print("All demos ran successfully.");

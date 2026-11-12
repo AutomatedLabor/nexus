@@ -1,0 +1,81 @@
+// aether-math-extra/examples/example.ae
+// =====================================
+// A demo of the aether-math-extra package.
+import {
+  gcdExtended, modInverse,
+  chineseRemainder,
+  isPrimeMillerRabin, primeFactors,
+  totient, mobius,
+  divisors, divisorCount, sumDivisors,
+  perfectNumber, abundantNumber, deficientNumber,
+} from "../src/lib.ae";
+
+fn show_int(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== aether-math-extra example ==");
+print("");
+
+print("-- gcdExtended / modInverse --");
+let g1 = gcdExtended(99, 78);
+print("gcdExtended(99, 78) = " + show_int(g1));
+print("gcdExtended(48, 36) = " + show_int(gcdExtended(48, 36)));
+print("modInverse(3, 11) = " + str(modInverse(3, 11)));
+print("modInverse(7, 11) = " + str(modInverse(7, 11)));
+
+print("");
+print("-- chineseRemainder --");
+print("CRT([2,3],[3,5]) = " + str(chineseRemainder([2, 3], [3, 5])));
+print("CRT([2,3,2],[3,5,7]) = " + str(chineseRemainder([2, 3, 2], [3, 5, 7])));
+
+print("");
+print("-- Miller-Rabin primality --");
+let mut n = 2;
+let mut count = 0;
+while n < 40 {
+  if isPrimeMillerRabin(n) {
+    count = count + 1;
+  };
+  n = n + 1;
+}
+print("primes < 40 count = " + str(count));
+print("isPrimeMillerRabin(561) = " + str(isPrimeMillerRabin(561)) + " (Carmichael)");
+
+print("");
+print("-- primeFactors --");
+print("primeFactors(12)  = " + show_int(primeFactors(12)));
+print("primeFactors(100) = " + show_int(primeFactors(100)));
+print("primeFactors(360) = " + show_int(primeFactors(360)));
+
+print("");
+print("-- totient / mobius --");
+print("totient(9)  = " + str(totient(9)));
+print("totient(10) = " + str(totient(10)));
+print("totient(12) = " + str(totient(12)));
+print("mobius(6)   = " + str(mobius(6)));
+print("mobius(30)  = " + str(mobius(30)));
+print("mobius(4)   = " + str(mobius(4)));
+
+print("");
+print("-- divisors / divisorCount / sumDivisors --");
+print("divisors(12)      = " + show_int(divisors(12)));
+print("divisors(36)      = " + show_int(divisors(36)));
+print("divisorCount(12)  = " + str(divisorCount(12)));
+print("divisorCount(36)  = " + str(divisorCount(36)));
+print("sumDivisors(12)   = " + str(sumDivisors(12)));
+print("sumDivisors(28)   = " + str(sumDivisors(28)));
+
+print("");
+print("-- perfect / abundant / deficient --");
+print("perfectNumber(6)  = " + str(perfectNumber(6)));
+print("perfectNumber(28) = " + str(perfectNumber(28)));
+print("perfectNumber(496) = " + str(perfectNumber(496)));
+print("abundantNumber(12) = " + str(abundantNumber(12)));
+print("deficientNumber(8) = " + str(deficientNumber(8)));
+
+print("");
+print("All demos ran successfully.");

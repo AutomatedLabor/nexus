@@ -1,0 +1,42 @@
+// aether-bits-extra/examples/example.ae
+// =====================================
+// A demo of the aether-bits-extra package.
+import {
+  popcountLookup, parity, reverseBits,
+  bitOnes, bitZeros, bitPosition,
+  bitRange, bitInsert, bitDelete,
+  bitRotateLeft, bitRotateRight, bitMask,
+} from "../src/lib.ae";
+
+print("== aether-bits-extra example ==");
+print("");
+
+let x = 0b10110110;
+print("x = 0b10110110 (182)");
+print("popcountLookup(x)  = " + str(popcountLookup(x)));
+print("parity(x)          = " + str(parity(x)));
+print("bitOnes(x)         = " + str(bitOnes(x)));
+print("bitZeros(x, 8)     = " + str(bitZeros(x, 8)));
+print("bitPosition(x)     = " + str(bitPosition(x)));
+print("reverseBits(x, 8)  = " + str(reverseBits(x, 8)));
+
+print("");
+print("-- bitRange / bitInsert / bitDelete --");
+print("bitRange(x, 2, 3)  = " + str(bitRange(x, 2, 3)));
+print("bitDelete(x, 0, 1) = " + str(bitDelete(x, 0, 1)));
+print("bitInsert(x, 4, 2, 0) = " + str(bitInsert(x, 4, 2, 0)));
+
+print("");
+print("-- bitRotateLeft / bitRotateRight --");
+print("bitRotateLeft(x, 1, 8)  = " + str(bitRotateLeft(x, 1, 8)));
+print("bitRotateRight(x, 1, 8) = " + str(bitRotateRight(x, 1, 8)));
+print("bitRotateLeft(x, 4, 8)  = " + str(bitRotateLeft(x, 4, 8)));
+
+print("");
+print("-- bitMask --");
+print("bitMask(0, 4) = " + str(bitMask(0, 4)));
+print("bitMask(2, 3) = " + str(bitMask(2, 3)));
+print("bitMask(4, 4) = " + str(bitMask(4, 4)));
+
+print("");
+print("All demos ran successfully.");

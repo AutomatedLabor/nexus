@@ -1,0 +1,88 @@
+// aether-bits-extra/tests/tests.ae
+// ================================
+// 25+ assertions covering every pub fn in aether-bits-extra.
+import {
+  popcountLookup, parity, reverseBits,
+  bitOnes, bitZeros, bitPosition,
+  bitRange, bitInsert, bitDelete,
+  bitRotateLeft, bitRotateRight, bitMask,
+} from "../src/lib.ae";
+
+// --- popcountLookup ---
+assert_eq(popcountLookup(0), 0);
+assert_eq(popcountLookup(1), 1);
+assert_eq(popcountLookup(7), 3);
+assert_eq(popcountLookup(255), 8);
+assert_eq(popcountLookup(0xFFFF), 16);
+assert_eq(popcountLookup(0x12345678), 13);
+
+// --- parity ---
+assert_eq(parity(0), 0);
+assert_eq(parity(1), 1);
+assert_eq(parity(3), 0);
+assert_eq(parity(7), 1);
+assert_eq(parity(255), 0);
+
+// --- reverseBits ---
+assert_eq(reverseBits(0b1101, 4), 0b1011);
+assert_eq(reverseBits(0b100, 3), 0b001);
+assert_eq(reverseBits(0, 8), 0);
+assert_eq(reverseBits(0b1010, 4), 0b0101);
+assert_eq(reverseBits(0b1, 1), 1);
+
+// --- bitOnes ---
+assert_eq(bitOnes(0), 0);
+assert_eq(bitOnes(0xFF), 8);
+assert_eq(bitOnes(0b1010), 2);
+
+// --- bitZeros ---
+assert_eq(bitZeros(0, 8), 8);
+assert_eq(bitZeros(0xFF, 8), 0);
+assert_eq(bitZeros(0b1010, 4), 2);
+assert_eq(bitZeros(0b1110, 4), 1);
+
+// --- bitPosition ---
+assert_eq(bitPosition(0), -1);
+assert_eq(bitPosition(1), 0);
+assert_eq(bitPosition(2), 1);
+assert_eq(bitPosition(0b100), 2);
+assert_eq(bitPosition(0b1010), 1);
+assert_eq(bitPosition(0b10000), 4);
+
+// --- bitRange ---
+assert_eq(bitRange(0b101101, 2, 3), 0b011);
+assert_eq(bitRange(0xFF, 4, 4), 0b1111);
+assert_eq(bitRange(0, 0, 4), 0);
+assert_eq(bitRange(0b10101010, 1, 3), 0b101);
+
+// --- bitInsert ---
+assert_eq(bitInsert(0b1111, 1, 2, 0), 0b1001);
+assert_eq(bitInsert(0b10000, 0, 2, 3), 0b10011);
+assert_eq(bitInsert(0, 0, 4, 0b1010), 0b1010);
+
+// --- bitDelete ---
+assert_eq(bitDelete(0b1111, 1, 2), 0b1001);
+assert_eq(bitDelete(0b1010, 0, 1), 0b1010);
+assert_eq(bitDelete(0b1011, 0, 1), 0b1010);
+assert_eq(bitDelete(0xFF, 4, 4), 0b00001111);
+
+// --- bitRotateLeft ---
+assert_eq(bitRotateLeft(0b1010, 1, 4), 0b0101);
+assert_eq(bitRotateLeft(0b1000, 1, 4), 0b0001);
+assert_eq(bitRotateLeft(0b1100, 3, 4), 0b0110);
+assert_eq(bitRotateLeft(0b1010, 0, 4), 0b1010);
+assert_eq(bitRotateLeft(0b1010, 4, 4), 0b1010);  // 4 mod 4 = 0
+
+// --- bitRotateRight ---
+assert_eq(bitRotateRight(0b0101, 1, 4), 0b1010);
+assert_eq(bitRotateRight(0b0001, 1, 4), 0b1000);
+assert_eq(bitRotateRight(0b1100, 1, 4), 0b0110);
+assert_eq(bitRotateRight(0b1010, 0, 4), 0b1010);
+
+// --- bitMask ---
+assert_eq(bitMask(0, 4), 0b1111);
+assert_eq(bitMask(2, 3), 0b11100);
+assert_eq(bitMask(0, 0), 0);
+assert_eq(bitMask(4, 4), 0b11110000);
+
+print("aether-bits-extra: all 25+ assertions passed");

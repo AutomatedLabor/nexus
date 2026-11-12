@@ -1,0 +1,11 @@
+[package]
+name = "aether-math-extra"
+version = "0.1.0"
+description = "Extended number theory for Aether — 14 pure functions covering extended Euclidean / modular inverse / CRT, Miller-Rabin primality and prime factorization, Euler totient and Mobius functions, divisors / divisor count / sum-of-divisors, and perfect / abundant / deficient number classification."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — only Aether's core builtins.
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

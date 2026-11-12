@@ -1,0 +1,148 @@
+// aether-algorithms/tests/tests.ae
+// ==============================
+// 25+ assertions covering every pub fn in aether-algorithms.
+import {
+  binarySearch, lowerBound, upperBound, ternarySearch,
+  jumpSearch, interpolationSearch, exponentialSearch, fibonacciSearch,
+  tabuSearch, simulatedAnnealing, hillClimbing, gradientDescent,
+} from "../src/lib.ae";
+
+// --- binarySearch ---
+assert_eq(binarySearch([1, 3, 5, 7, 9, 11], 7), 3);
+assert_eq(binarySearch([1, 3, 5, 7, 9, 11], 4), -1);
+assert_eq(binarySearch([1, 3, 5, 7, 9, 11], 1), 0);
+assert_eq(binarySearch([1, 3, 5, 7, 9, 11], 11), 5);
+assert_eq(binarySearch([], 5), -1);
+assert_eq(binarySearch([42], 42), 0);
+assert_eq(binarySearch([42], 7), -1);
+
+// --- lowerBound ---
+assert_eq(lowerBound([1, 3, 3, 5, 7], 3), 1);
+assert_eq(lowerBound([1, 3, 5, 7], 4), 2);
+assert_eq(lowerBound([1, 3, 5, 7], 10), 4);
+assert_eq(lowerBound([1, 3, 5, 7], 0), 0);
+assert_eq(lowerBound([], 5), 0);
+
+// --- upperBound ---
+assert_eq(upperBound([1, 3, 3, 5, 7], 3), 3);
+assert_eq(upperBound([1, 3, 5, 7], 4), 2);
+assert_eq(upperBound([1, 3, 5, 7], 10), 4);
+assert_eq(upperBound([1, 3, 5, 7], 0), 0);
+
+// --- ternarySearch ---
+// f(x) = -(x - 5)^2 is unimodal with max at x = 5.
+fn neg_sq(x: int) -> int { -(x - 5) * (x - 5) }
+assert_eq(ternarySearch(neg_sq, 0, 10), 5);
+// f(x) = -(x - 3)^2 has max at x = 3.
+fn neg_sq3(x: int) -> int { -(x - 3) * (x - 3) }
+assert_eq(ternarySearch(neg_sq3, 0, 10), 3);
+// f(x) = -(x - 8)^2 has max at x = 8.
+fn neg_sq8(x: int) -> int { -(x - 8) * (x - 8) }
+assert_eq(ternarySearch(neg_sq8, 0, 10), 8);
+
+// --- jumpSearch ---
+assert_eq(jumpSearch([1, 3, 5, 7, 9, 11, 13, 15], 7), 3);
+assert_eq(jumpSearch([1, 3, 5, 7], 4), -1);
+assert_eq(jumpSearch([1, 3, 5, 7], 1), 0);
+assert_eq(jumpSearch([1, 3, 5, 7], 7), 3);
+assert_eq(jumpSearch([], 5), -1);
+
+// --- interpolationSearch ---
+assert_eq(interpolationSearch([10, 20, 30, 40, 50, 60, 70, 80, 90, 100], 50), 4);
+assert_eq(interpolationSearch([10, 20, 30, 40, 50, 60, 70, 80, 90, 100], 90), 8);
+assert_eq(interpolationSearch([1, 2, 3, 4, 5], 3), 2);
+assert_eq(interpolationSearch([1, 2, 3, 4, 5], 6), -1);
+assert_eq(interpolationSearch([], 5), -1);
+
+// --- exponentialSearch ---
+assert_eq(exponentialSearch([1, 3, 5, 7, 9, 11, 13], 7), 3);
+assert_eq(exponentialSearch([1, 3, 5, 7, 9, 11, 13], 1), 0);
+assert_eq(exponentialSearch([1, 3, 5, 7, 9, 11, 13], 13), 6);
+assert_eq(exponentialSearch([1, 3, 5, 7, 9, 11, 13], 4), -1);
+assert_eq(exponentialSearch([], 5), -1);
+
+// --- fibonacciSearch ---
+assert_eq(fibonacciSearch([1, 3, 5, 7, 9, 11, 13, 15, 17, 19], 11), 5);
+assert_eq(fibonacciSearch([10, 20, 30, 40, 50], 30), 2);
+assert_eq(fibonacciSearch([10, 20, 30, 40, 50], 60), -1);
+assert_eq(fibonacciSearch([10, 20, 30, 40, 50], 10), 0);
+assert_eq(fibonacciSearch([], 5), -1);
+
+// --- tabuSearch ---
+// 4-city TSP. Start at [0,1,2,3], cost = 0->1 (10) + 1->2 (35) + 2->3 (30) + 3->0 (20) = 95.
+// The optimal tour has cost 80 (achieved by, e.g., [0,1,3,2] or any rotation).
+let dist = [[0, 10, 15, 20], [10, 0, 35, 25], [15, 35, 0, 30], [20, 25, 30, 0]];
+let route = tabuSearch([0, 1, 2, 3], dist, 20);
+assert_eq(len(route), 4);
+// Verify all cities are present (multiset preserved).
+let mut cities_present = 0;
+let mut k = 0;
+while k < 4 {
+  let mut found = false;
+  let mut m = 0;
+  while m < 4 {
+    if route[m] == k {
+      found = true;
+    };
+    m = m + 1;
+  }
+  if found {
+    cities_present = cities_present + 1;
+  };
+  k = k + 1;
+}
+assert_eq(cities_present, 4);
+// The route should improve on the naive [0,1,2,3] cost of 95.
+fn route_cost_fn(r: [int]) -> int {
+  let mut c = 0;
+  let mut i = 0;
+  while i < len(r) - 1 {
+    c = c + dist[r[i]][r[i + 1]];
+    i = i + 1;
+  }
+  c + dist[r[len(r) - 1]][r[0]]
+}
+let best_cost = route_cost_fn(route);
+assert_eq(best_cost <= 95, true);
+assert_eq(best_cost == 80, true);  // Optimal for this 4-city instance
+
+// --- simulatedAnnealing ---
+// f(x) = (x - 7)^2 is minimized at x = 7.
+fn sq7(x: int) -> int { (x - 7) * (x - 7) }
+let best_x = simulatedAnnealing(sq7, 0, 100);
+assert_eq(best_x, 7);
+
+// f(x) = abs(x - 23) is minimized at x = 23.
+fn abs23(x: int) -> int { abs(x - 23) }
+let best_x2 = simulatedAnnealing(abs23, 0, 200);
+assert_eq(best_x2, 23);
+
+// --- hillClimbing ---
+// f(x) = -(x - 7)^2 is unimodal with max at x = 7.
+fn neg_sq7(x: int) -> int { -(x - 7) * (x - 7) }
+assert_eq(hillClimbing(neg_sq7, 0), 7);
+assert_eq(hillClimbing(neg_sq7, 5), 7);
+assert_eq(hillClimbing(neg_sq7, 10), 7);
+
+// f(x) = -(x - 3)^2 has max at x = 3.
+fn neg_sq3b(x: int) -> int { -(x - 3) * (x - 3) }
+assert_eq(hillClimbing(neg_sq3b, 0), 3);
+assert_eq(hillClimbing(neg_sq3b, 10), 3);
+
+// f(x) = -(x - 12)^2 has max at x = 12.
+fn neg_sq12(x: int) -> int { -(x - 12) * (x - 12) }
+assert_eq(hillClimbing(neg_sq12, 0), 12);
+assert_eq(hillClimbing(neg_sq12, 11), 12);
+
+// --- gradientDescent ---
+// f(x) = (x - 5)^2 minimized at x = 5.
+fn sq5(x: int) -> int { (x - 5) * (x - 5) }
+assert_eq(gradientDescent(sq5, 0, 1, 100), 5);
+assert_eq(gradientDescent(sq5, 10, 1, 100), 5);
+
+// f(x) = (x - 11)^2 minimized at x = 11.
+fn sq11(x: int) -> int { (x - 11) * (x - 11) }
+assert_eq(gradientDescent(sq11, 0, 1, 200), 11);
+assert_eq(gradientDescent(sq11, 20, 1, 200), 11);
+
+print("aether-algorithms: all 25+ assertions passed");

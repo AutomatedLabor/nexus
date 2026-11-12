@@ -1,0 +1,76 @@
+// hill_climbing.ae
+// =================
+// Hill climbing — start at a random point, repeatedly move to the
+// best neighbor (the one with the highest f-value) until no
+// neighbor is better. The demo climbs f(x) = -(x - 7)^2 (a parabola
+// opening downward with peak at x = 7) starting from x = 0. The
+// peak (local maximum) is x = 7, and hill climbing finds it
+// immediately because the function is unimodal.
+//
+// For a more interesting case, we also climb a bimodal function:
+//   g(x) = -(x - 3)^2 if x < 6, else -(x - 10)^2 + 5
+// which has a local max at x = 3 (value 0) and a global max at
+// x = 10 (value 5). Hill climbing from x = 0 gets stuck at x = 3.
+
+fn f(x: int) -> int {
+  // Unimodal: peak at x = 7.
+  -(x - 7) * (x - 7)
+}
+
+fn g(x: int) -> int {
+  // Bimodal: local max at x = 3, global max at x = 10.
+  if x < 6 {
+    -(x - 3) * (x - 3)
+  } else {
+    -(x - 10) * (x - 10) + 5
+  }
+}
+
+fn hill_climb(func: fn(int) -> int, x0: int) -> int {
+  let mut x = x0;
+  let mut improved = true;
+  while improved {
+    improved = false;
+    let cur = func(x);
+    // Try the two neighbors: x - 1 and x + 1.
+    let left = func(x - 1);
+    let right = func(x + 1);
+    if left > cur {
+      x = x - 1;
+      improved = true;
+    } else {
+      if right > cur {
+        x = x + 1;
+        improved = true;
+      };
+    };
+  }
+  x
+}
+
+print("== Hill climbing demo ==");
+print("");
+
+let peak1 = hill_climb(f, 0);
+print("f(x) = -(x - 7)^2  (peak at x = 7)");
+print("start: x = 0");
+print("hill climbing peak = " + str(peak1));
+print("f(peak) = " + str(f(peak1)));
+
+print("");
+let peak2 = hill_climb(g, 0);
+print("g(x) = bimodal: local max at x = 3 (g=0), global max at x = 10 (g=5)");
+print("start: x = 0");
+print("hill climbing peak = " + str(peak2));
+print("g(peak) = " + str(g(peak2)));
+print("(hill climbing got stuck at the local max because it cannot go downhill to escape)");
+
+print("");
+let peak3 = hill_climb(g, 7);
+print("starting from x = 7 instead:");
+print("hill climbing peak = " + str(peak3));
+print("g(peak) = " + str(g(peak3)));
+print("(starting near the global max, hill climbing finds it)");
+
+print("");
+print("Hill climbing complete.");

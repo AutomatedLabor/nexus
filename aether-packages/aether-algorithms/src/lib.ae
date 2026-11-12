@@ -1,0 +1,567 @@
+// aether-algorithms/src/lib.ae
+// ============================
+// Classic search / optimization algorithms for Aether. 10 pub fns
+// covering the binary-search family (binarySearch, lowerBound,
+// upperBound), unimodal search (ternarySearch), the sorted-array
+// search variants (jumpSearch, interpolationSearch, exponentialSearch,
+// fibonacciSearch), and two metaheuristic stubs (tabuSearch stub,
+// simulatedAnnealing simulated).
+//
+// Built only on Aether's core builtins (+, -, *, /, <, >, ==, abs,
+// int, len, push, panic, min, max). All functions are pure. Iteration
+// uses `while` with explicit indices to avoid the v1 evaluator's
+// for-loop-scope quirk.
+//
+// Conventions:
+//   - Search functions on sorted [int] return the index of the target
+//     or -1 if not found. lowerBound/upperBound return the index of
+//     the first element >= target (lower) or > target (upper).
+//   - ternarySearch takes a function f: int -> int that's unimodal
+//     on [lo, hi] and returns the argmax (the integer x in [lo, hi]
+//     that maximizes f(x)).
+//   - The two metaheuristics (tabuSearch, simulatedAnnealing) take
+//     very small fixed inputs and return deterministic results so
+//     the test suite can assert exact values.
+
+//----------------------------------------------------------------------------
+// Binary search family
+//----------------------------------------------------------------------------
+
+// binarySearch(arr, target) — classic binary search on a sorted
+// array. Returns the index of target in arr, or -1 if not present.
+//   binarySearch([1,3,5,7,9,11], 7)  -> 3
+//   binarySearch([1,3,5,7,9,11], 4)  -> -1
+//   binarySearch([], 5)              -> -1
+pub fn binarySearch(arr: [int], target: int) -> int {
+  let mut lo = 0;
+  let mut hi = len(arr) - 1;
+  let mut found = -1;
+  while lo <= hi && found == -1 {
+    let m = int((lo + hi) / 2);
+    if arr[m] == target {
+      found = m;
+    } else {
+      if arr[m] < target {
+        lo = m + 1;
+      } else {
+        hi = m - 1;
+      };
+    };
+  }
+  found
+}
+
+// lowerBound(arr, target) — index of the first element in arr that is
+// >= target. Returns len(arr) if all elements are < target.
+//   lowerBound([1,3,3,5,7], 3) -> 1
+//   lowerBound([1,3,5,7], 4)   -> 2
+//   lowerBound([1,3,5,7], 10)  -> 4
+pub fn lowerBound(arr: [int], target: int) -> int {
+  let mut lo = 0;
+  let mut hi = len(arr);
+  while lo < hi {
+    let m = int((lo + hi) / 2);
+    if arr[m] < target {
+      lo = m + 1;
+    } else {
+      hi = m;
+    };
+  }
+  lo
+}
+
+// upperBound(arr, target) — index of the first element in arr that is
+// > target. Returns len(arr) if all elements are <= target.
+//   upperBound([1,3,3,5,7], 3) -> 3
+//   upperBound([1,3,5,7], 4)   -> 2
+//   upperBound([1,3,5,7], 10)  -> 4
+pub fn upperBound(arr: [int], target: int) -> int {
+  let mut lo = 0;
+  let mut hi = len(arr);
+  while lo < hi {
+    let m = int((lo + hi) / 2);
+    if arr[m] <= target {
+      lo = m + 1;
+    } else {
+      hi = m;
+    };
+  }
+  lo
+}
+
+//----------------------------------------------------------------------------
+// Unimodal search
+//----------------------------------------------------------------------------
+
+// ternarySearch(f, lo, hi) — find the integer x in [lo, hi] that
+// maximizes the unimodal function f. Assumes f is strictly increasing
+// then strictly decreasing on [lo, hi]. Returns the argmax.
+//   ternarySearch(fn(x) { -(x - 5) * (x - 5) }, 0, 10) -> 5
+//   ternarySearch(fn(x) { x if x < 7 else 14 - x }, 0, 14) -> 7
+// Iterates while (hi - lo) > 2, picking m1, m2 at 1/3 and 2/3, then
+// narrowing to the side with the larger f value.
+pub fn ternarySearch(f: fn(int) -> int, lo: int, hi: int) -> int {
+  let mut l = lo;
+  let mut r = hi;
+  while r - l > 2 {
+    let m1 = l + int((r - l) / 3);
+    let m2 = r - int((r - l) / 3);
+    let f1 = f(m1);
+    let f2 = f(m2);
+    if f1 < f2 {
+      l = m1 + 1;
+    } else {
+      r = m2 - 1;
+    };
+  }
+  // Linear scan over the final small interval.
+  let mut best_x = l;
+  let mut best_v = f(l);
+  let mut x = l + 1;
+  while x <= r {
+    let v = f(x);
+    if v > best_v {
+      best_v = v;
+      best_x = x;
+    };
+    x = x + 1;
+  }
+  best_x
+}
+
+//----------------------------------------------------------------------------
+// Sorted-array search variants
+//----------------------------------------------------------------------------
+
+// jumpSearch(arr, target) — jump search with step sqrt(n). Returns the
+// index of target, or -1 if not present. O(sqrt(n)).
+//   jumpSearch([1,3,5,7,9,11,13,15], 7) -> 3
+//   jumpSearch([1,3,5,7], 4)            -> -1
+pub fn jumpSearch(arr: [int], target: int) -> int {
+  if len(arr) == 0 {
+    -1
+  } else {
+    let n = len(arr);
+    let mut step = 1;
+    while step * step < n {
+      step = step + 1;
+    }
+    let mut prev = 0;
+    let mut cur = step;
+    // Jump forward while arr[cur] < target and cur < n.
+    let mut cont = true;
+    while cont && cur < n {
+      if arr[cur] < target {
+        prev = cur;
+        cur = cur + step;
+      } else {
+        cont = false;
+      };
+    }
+    // After the jump loop, the target — if it exists — lies in the
+    // range [prev, min(cur, n-1)] inclusive.
+    let mut end_idx = cur;
+    if end_idx >= n {
+      end_idx = n - 1;
+    };
+    let mut i = prev;
+    let mut found = -1;
+    while i <= end_idx && found == -1 {
+      if arr[i] == target {
+        found = i;
+      };
+      i = i + 1;
+    }
+    found
+  }
+}
+
+// interpolationSearch(arr, target) — interpolation search. Assumes
+// arr is sorted AND uniformly distributed. Average O(log log n),
+// worst O(n). Returns the index of target, or -1.
+//   interpolationSearch([10,20,30,40,50,60,70,80,90,100], 50) -> 4
+//   interpolationSearch([1,2,3,4,5], 3) -> 2
+pub fn interpolationSearch(arr: [int], target: int) -> int {
+  if len(arr) == 0 {
+    -1
+  } else {
+    let mut lo = 0;
+    let mut hi = len(arr) - 1;
+    let mut found = -1;
+    while lo <= hi && target >= arr[lo] && target <= arr[hi] && found == -1 {
+      if lo == hi {
+        if arr[lo] == target {
+          found = lo;
+        } else {
+          // not found
+        };
+      } else {
+        // Probe position by linear interpolation.
+        let num = (target - arr[lo]) * (hi - lo);
+        let den = arr[hi] - arr[lo];
+        let mut pos = lo + int(num / den);
+        if pos < lo {
+          pos = lo;
+        };
+        if pos > hi {
+          pos = hi;
+        };
+        if arr[pos] == target {
+          found = pos;
+        } else {
+          if arr[pos] < target {
+            lo = pos + 1;
+          } else {
+            hi = pos - 1;
+          };
+        };
+      };
+    }
+    found
+  }
+}
+
+// exponentialSearch(arr, target) — exponential search. Finds the
+// range [2^k, 2^(k+1)) containing target, then binary-searches that
+// range. O(log i) where i is the index of target. Returns -1 if
+// not present.
+//   exponentialSearch([1,3,5,7,9,11,13], 7) -> 3
+//   exponentialSearch([], 5) -> -1
+pub fn exponentialSearch(arr: [int], target: int) -> int {
+  if len(arr) == 0 {
+    -1
+  } else {
+    if arr[0] == target {
+      0
+    } else {
+      let mut i = 1;
+      let n = len(arr);
+      while i < n && arr[i] <= target {
+        i = i * 2;
+      }
+      // Binary search [i/2, min(i, n-1)].
+      let mut lo = int(i / 2);
+      let mut hi = i;
+      if hi > n - 1 {
+        hi = n - 1;
+      };
+      let mut found = -1;
+      while lo <= hi && found == -1 {
+        let m = int((lo + hi) / 2);
+        if arr[m] == target {
+          found = m;
+        } else {
+          if arr[m] < target {
+            lo = m + 1;
+          } else {
+            hi = m - 1;
+          };
+        };
+      }
+      found
+    }
+  }
+}
+
+// fibonacciSearch(arr, target) — Fibonacci search. Like binary
+// search but uses Fibonacci numbers for partitioning (useful on
+// tape-based storage where sequential reads are cheap). Returns the
+// index of target or -1.
+//   fibonacciSearch([1,3,5,7,9,11,13,15,17,19], 11) -> 5
+//   fibonacciSearch([10,20,30,40,50], 30) -> 2
+pub fn fibonacciSearch(arr: [int], target: int) -> int {
+  if len(arr) == 0 {
+    -1
+  } else {
+    let n = len(arr);
+    // Find smallest Fibonacci >= n.
+    let mut fib_m2 = 0;  // (m-2)'th
+    let mut fib_m1 = 1;  // (m-1)'th
+    let mut fib_m = 1;   // m'th
+    while fib_m < n {
+      fib_m2 = fib_m1;
+      fib_m1 = fib_m;
+      fib_m = fib_m2 + fib_m1;
+    }
+    let mut offset = -1;
+    let mut found = -1;
+    while fib_m > 1 && found == -1 {
+      let mut i = offset + fib_m2;
+      if i >= n {
+        i = n - 1;
+      };
+      if arr[i] < target {
+        fib_m = fib_m1;
+        fib_m1 = fib_m2;
+        fib_m2 = fib_m - fib_m1;
+        offset = i;
+      } else {
+        if arr[i] > target {
+          fib_m = fib_m2;
+          fib_m1 = fib_m1 - fib_m2;
+          fib_m2 = fib_m - fib_m1;
+        } else {
+          found = i;
+        };
+      };
+    }
+    // Check the last element.
+    if found == -1 && offset + 1 < n && arr[offset + 1] == target {
+      found = offset + 1;
+    };
+    found
+  }
+}
+
+//----------------------------------------------------------------------------
+// Metaheuristics (deterministic stubs)
+//----------------------------------------------------------------------------
+
+// tabuSearch(cities, distances, iterations) — a tiny tabu search for
+// the Traveling Salesman Problem. `cities` is a list of city indices
+// [0..k-1]. `distances` is a k-by-k matrix (array of arrays) of
+// inter-city distances. `iterations` is the budget. Returns the best
+// route found (a permutation of cities). The implementation is
+// deterministic (starts from [0,1,2,...,k-1], tries 2-opt swaps with
+// a tabu list of recent swaps, picks the best non-tabu move).
+//   tabuSearch([0,1,2,3], [[0,10,15,20],[10,0,35,25],[15,35,0,30],
+//     [20,25,30,0]], 20) -> [0, 1, 3, 2]
+pub fn tabuSearch(cities: [int], distances: [[int]], iterations: int) -> [int] {
+  let k = len(cities);
+  if k <= 2 {
+    cities
+  } else {
+    // Initial route: 0, 1, 2, ..., k-1, 0 (closed loop). We
+    // represent the route as the permutation of cities visited
+    // (without the closing 0; the route total includes returning
+    // to start).
+    let mut route = [];
+    let mut i = 0;
+    while i < k {
+      push(route, i);
+      i = i + 1;
+    }
+    let mut best_route = copy_arr(route);
+    let mut best_cost = route_cost(route, distances);
+    let mut tabu = [];  // list of [i, j] swaps recently made.
+    let mut iter = 0;
+    while iter < iterations {
+      // Try all 2-opt swaps (i, j) with i < j.
+      let mut best_swap_cost = best_cost;
+      let mut best_swap = [-1, -1];
+      let mut i = 0;
+      while i < k - 1 {
+        let mut j = i + 1;
+        while j < k {
+          if !is_tabu(tabu, i, j) {
+            let candidate = swap_at(copy_arr(route), i, j);
+            let cost = route_cost(candidate, distances);
+            if cost < best_swap_cost {
+              best_swap_cost = cost;
+              best_swap = [i, j];
+            };
+          };
+          j = j + 1;
+        };
+        i = i + 1;
+      }
+      if best_swap[0] != -1 {
+        route = swap_at(copy_arr(route), best_swap[0], best_swap[1]);
+        push(tabu, [best_swap[0], best_swap[1]]);
+        if len(tabu) > 3 {
+          // Drop oldest tabu entry.
+          tabu = drop_first(tabu);
+        };
+        if best_swap_cost < best_cost {
+          best_cost = best_swap_cost;
+          best_route = copy_arr(route);
+        };
+      };
+      iter = iter + 1;
+    }
+    best_route
+  }
+}
+
+// Internal: copy an array.
+fn copy_arr(arr: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// Internal: swap two positions in arr.
+fn swap_at(arr: [int], i: int, j: int) -> [int] {
+  let tmp = arr[i];
+  arr[i] = arr[j];
+  arr[j] = tmp;
+  arr
+}
+
+// Internal: total route cost (closed loop).
+fn route_cost(route: [int], distances: [[int]]) -> int {
+  let mut cost = 0;
+  let mut i = 0;
+  while i < len(route) - 1 {
+    cost = cost + distances[route[i]][route[i + 1]];
+    i = i + 1;
+  }
+  cost + distances[route[len(route) - 1]][route[0]]
+}
+
+// Internal: returns true if (i, j) (or symmetric (j, i)) is in tabu.
+fn is_tabu(tabu: [[int]], i: int, j: int) -> bool {
+  let mut found = false;
+  let mut k = 0;
+  while k < len(tabu) {
+    if (tabu[k][0] == i && tabu[k][1] == j) || (tabu[k][0] == j && tabu[k][1] == i) {
+      found = true;
+    };
+    k = k + 1;
+  }
+  found
+}
+
+// Internal: drop first element of array.
+fn drop_first(arr: [[int]]) -> [[int]] {
+  let mut out = [];
+  let mut i = 1;
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+// hillClimbing(f, x0) — a tiny deterministic hill climbing to find the
+// local maximum of f near x0. The neighborhood is {x-1, x+1}. At each
+// step, evaluates both neighbors and moves to the better one if it
+// strictly exceeds the current value. Stops when no neighbor improves.
+// Returns the argmax found. Because the neighborhood is +/-1 only,
+// hillClimbing is guaranteed to find a local maximum, not necessarily
+// the global one.
+//   hillClimbing(fn(x) { -(x - 7) * (x - 7) }, 0)  -> 7
+//   hillClimbing(fn(x) { -(x - 3) * (x - 3) }, 1)  -> 3
+pub fn hillClimbing(f: fn(int) -> int, x0: int) -> int {
+  let mut x = x0;
+  let mut v = f(x0);
+  let mut improved = true;
+  while improved {
+    improved = false;
+    let v_up = f(x + 1);
+    let v_down = f(x - 1);
+    if v_up > v && v_up >= v_down {
+      x = x + 1;
+      v = v_up;
+      improved = true;
+    } else {
+      if v_down > v {
+        x = x - 1;
+        v = v_down;
+        improved = true;
+      };
+    };
+  }
+  x
+}
+
+// gradientDescent(f, x0, stepSize, iterations) — a tiny deterministic
+// (simulated) gradient descent to find the local minimum of f near
+// x0. Because Aether integers are exact, we use a sign-based step
+// rather than a fractional learning rate: at each iteration we
+// estimate the gradient direction via central finite difference
+//   direction = sign(f(x-1) - f(x+1))   // +1 means f decreases to the right
+// and step by `stepSize` in that direction. Stops early when no
+// neighbor strictly improves on the current value (local min).
+// Returns the best x found (lowest f value) along the trajectory.
+//   gradientDescent(fn(x) { (x - 5) * (x - 5) }, 0, 1, 100) -> 5
+//   gradientDescent(fn(x) { (x - 11) * (x - 11) }, 0, 1, 200) -> 11
+pub fn gradientDescent(f: fn(int) -> int, x0: int, stepSize: int, iterations: int) -> int {
+  let mut x = x0;
+  let mut best = x0;
+  let mut best_v = f(x0);
+  let mut i = 0;
+  let mut done = false;
+  while i < iterations && !done {
+    let f_up = f(x + 1);
+    let f_down = f(x - 1);
+    let v = f(x);
+    // Direction of steepest descent among the two neighbors.
+    let mut dx = 0;
+    if f_up < v && f_up <= f_down {
+      dx = stepSize;
+    } else {
+      if f_down < v && f_down < f_up {
+        dx = -stepSize;
+      };
+    };
+    if dx == 0 {
+      // Neither neighbor strictly improves — local min reached.
+      done = true;
+    } else {
+      x = x + dx;
+      let nv = f(x);
+      if nv < best_v {
+        best_v = nv;
+        best = x;
+      };
+    };
+    i = i + 1;
+  }
+  best
+}
+
+// simulatedAnnealing(f, x0, iterations) — a tiny simulated annealing
+// to find the x that minimizes f(x). The "neighbor" of x is x +/- 1.
+// The temperature starts at 100.0 and cools to 1.0 by iteration
+// `iterations`. Returns the best x found. Deterministic because
+// the random state is a fixed LCG.
+//   simulatedAnnealing(fn(x) { (x - 7) * (x - 7) }, 0, 50) -> 7
+//   simulatedAnnealing(fn(x) { abs(x - 23) }, 0, 100) -> 23
+pub fn simulatedAnnealing(f: fn(int) -> int, x0: int, iterations: int) -> int {
+  let mut x = x0;
+  let mut best = x0;
+  let mut best_v = f(x0);
+  let state = [1];
+  let mut i = 0;
+  while i < iterations {
+    // Propose a neighbor: x +/- 1, chosen by LCG.
+    let r = abs(lcg_next_sa(state)) % 2;
+    let mut nx = x + 1;
+    if r == 0 {
+      nx = x - 1;
+    };
+    let nv = f(nx);
+    let delta = nv - f(x);
+    if delta < 0 {
+      x = nx;
+      if nv < best_v {
+        best_v = nv;
+        best = nx;
+      };
+    } else {
+      // Accept with probability exp(-delta / T). We use a simple
+      // threshold: accept if LCG / modulus < T / (T + delta).
+      let t = 100.0 - 99.0 * float(i) / float(iterations);
+      let p = t / (t + float(delta));
+      let r2 = float(abs(lcg_next_sa(state)) % 1000) / 1000.0;
+      if r2 < p {
+        x = nx;
+      };
+    };
+    i = i + 1;
+  }
+  best
+}
+
+// Internal LCG for simulatedAnnealing (same constants as in
+// aether-collections-extra, kept private to this package).
+fn lcg_next_sa(state: [int]) -> int {
+  let s = (state[0] * 1664525 + 1013904223) % 2147483647;
+  state[0] = s;
+  s
+}

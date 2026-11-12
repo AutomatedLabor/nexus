@@ -1,0 +1,430 @@
+// aether-string-search/src/lib.ae
+// =================================
+// String-search algorithms for Aether. 10 pub functions covering the
+// classic exact-substring-matching algorithms (naive, KMP, Boyer-Moore
+// simplified, Rabin-Karp), their helper computations (LPS array, Z
+// array), and the common "all matches" / "count occurrences" /
+// "longest prefix that is also a suffix" utilities.
+//
+// Built only on Aether's core builtins (charCode, fromCharCode, strSlice,
+// len, push, int, abs, panic). No host primitives. All functions are
+// pure: they never mutate their inputs and operate on ASCII-range
+// strings. Iteration uses `while` with explicit indices to avoid the
+// v1 evaluator's for-loop-scope quirk.
+//
+// Conventions:
+//   - `text` and `pat` are `string`.
+//   - Index results are 0-based. -1 means "no match".
+//   - `findAll` returns `[int]` of starting positions (possibly []).
+//   - `countOccur` counts *non-overlapping* occurrences (matches consume
+//     their characters; the next search starts after the previous match
+//     ends). This matches Python's `str.count` for overlapping patterns.
+//   - LPS/Z arrays are `[int]` of length equal to the input string.
+
+//----------------------------------------------------------------------------
+// Helpers (private)
+//----------------------------------------------------------------------------
+
+// Substring equality test: does text[i..i+len(pat)] == pat?
+fn substr_eq_at(text: string, i: int, pat: string) -> bool {
+  if i + len(pat) > len(text) {
+    false
+  } else {
+    let mut ok = true;
+    let mut k = 0;
+    while k < len(pat) && ok {
+      if charCode(text, i + k) != charCode(pat, k) {
+        ok = false;
+      };
+      k = k + 1;
+    }
+    ok
+  }
+}
+
+//----------------------------------------------------------------------------
+// Naive matcher
+//----------------------------------------------------------------------------
+
+// naiveMatch(text, pat) — brute-force O(n*m) substring search.
+//   naiveMatch("the quick brown fox", "brown") -> 10
+//   naiveMatch("hello world", "xyz") -> -1
+// Returns the first index of pat in text, or -1 if not found.
+// Empty pat is always found at index 0.
+pub fn naiveMatch(text: string, pat: string) -> int {
+  if len(pat) == 0 {
+    0
+  } else {
+    if len(pat) > len(text) {
+      -1
+    } else {
+      let mut found = -1;
+      let mut i = 0;
+      while i + len(pat) <= len(text) && found == -1 {
+        if substr_eq_at(text, i, pat) {
+          found = i;
+        } else {
+          i = i + 1;
+        };
+      }
+      found
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// KMP: LPS computation + matcher
+//----------------------------------------------------------------------------
+
+// computeLps(pat) — compute the Longest-Proper-Prefix-that-is-also-Suffix
+// array used by KMP. lps[i] = length of the longest proper prefix of
+// pat[0..i+1] that is also a suffix of pat[0..i+1].
+//   computeLps("abcabdabcabc") -> [0,0,0,1,2,0,1,2,3,4,5,3]
+//   computeLps("aaaa") -> [0,1,2,3]
+//   computeLps("") -> []
+pub fn computeLps(pat: string) -> [int] {
+  if len(pat) == 0 {
+    []
+  } else {
+    let n = len(pat);
+    let mut lps = [];
+    let mut k = 0;
+    while k < n {
+      push(lps, 0);
+      k = k + 1;
+    }
+    // lps[0] is always 0 (proper prefix of length-1 string is empty).
+    let mut len_ = 0;
+    let mut i = 1;
+    while i < n {
+      if charCode(pat, i) == charCode(pat, len_) {
+        len_ = len_ + 1;
+        lps[i] = len_;
+        i = i + 1;
+      } else {
+        if len_ != 0 {
+          len_ = lps[len_ - 1];
+        } else {
+          lps[i] = 0;
+          i = i + 1;
+        };
+      }
+    }
+    lps
+  }
+}
+
+// kmpMatch(text, pat) — KMP substring search. O(n+m).
+//   kmpMatch("ababcabababcd", "abababc") -> 6
+//   kmpMatch("hello", "xyz") -> -1
+// Returns the first index of pat in text, or -1 if not found.
+// Empty pat is always found at index 0.
+pub fn kmpMatch(text: string, pat: string) -> int {
+  if len(pat) == 0 {
+    0
+  } else {
+    if len(pat) > len(text) {
+      -1
+    } else {
+      let lps = computeLps(pat);
+      let mut i = 0;
+      let mut j = 0;
+      let mut found = -1;
+      while i < len(text) && found == -1 {
+        if charCode(text, i) == charCode(pat, j) {
+          i = i + 1;
+          j = j + 1;
+          if j == len(pat) {
+            found = i - j;
+          };
+        } else {
+          if j != 0 {
+            j = lps[j - 1];
+          } else {
+            i = i + 1;
+          };
+        };
+      }
+      found
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Boyer-Moore (simplified — bad-character heuristic only)
+//----------------------------------------------------------------------------
+
+// boyerMooreMatch(text, pat) — Boyer-Moore with the bad-character
+// heuristic only (no good-suffix table). Average O(n/m), worst O(n*m).
+//   boyerMooreMatch("HERE IS A SIMPLE EXAMPLE", "EXAMPLE") -> 17
+//   boyerMooreMatch("hello", "xyz") -> -1
+// Returns the first index of pat in text, or -1 if not found.
+pub fn boyerMooreMatch(text: string, pat: string) -> int {
+  if len(pat) == 0 {
+    0
+  } else {
+    if len(pat) > len(text) {
+      -1
+    } else {
+      // Build bad-character table: map char code -> last index in pat.
+      // We represent the table as two parallel arrays (codes, idxs).
+      let mut codes = [];
+      let mut idxs = [];
+      let mut k = 0;
+      while k < len(pat) {
+        let c = charCode(pat, k);
+        let mut slot = -1;
+        let mut m = 0;
+        while m < len(codes) {
+          if codes[m] == c {
+            slot = m;
+          };
+          m = m + 1;
+        }
+        if slot == -1 {
+          push(codes, c);
+          push(idxs, k);
+        } else {
+          idxs[slot] = k;
+        };
+        k = k + 1;
+      }
+      // Search: align pat at s=0; scan right-to-left.
+      let mut s = 0;
+      let mut found = -1;
+      while s + len(pat) <= len(text) && found == -1 {
+        let mut j = len(pat) - 1;
+        let mut mismatch = false;
+        while j >= 0 && !mismatch {
+          if charCode(text, s + j) == charCode(pat, j) {
+            j = j - 1;
+          } else {
+            mismatch = true;
+          };
+        }
+        if !mismatch {
+          found = s;
+        } else {
+          // j is the mismatch position in pat; badCharShift.
+          let bad_c = charCode(text, s + j);
+          let mut last_in_pat = -1;
+          let mut m = 0;
+          while m < len(codes) {
+            if codes[m] == bad_c {
+              last_in_pat = idxs[m];
+            };
+            m = m + 1;
+          }
+          let shift = j - last_in_pat;
+          if shift < 1 {
+            s = s + 1;
+          } else {
+            s = s + shift;
+          };
+        };
+      }
+      found
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Rabin-Karp
+//----------------------------------------------------------------------------
+
+// rabinKarpMatch(text, pat) — Rabin-Karp rolling-hash substring search.
+// Uses a polynomial rolling hash with base 256 and modulus 2^31-1.
+//   rabinKarpMatch("the quick brown fox", "brown") -> 10
+//   rabinKarpMatch("hello", "xyz") -> -1
+// Returns the first index of pat in text, or -1 if not found.
+// Falls back to a verification substring compare on hash hit (no false
+// positives returned).
+pub fn rabinKarpMatch(text: string, pat: string) -> int {
+  if len(pat) == 0 {
+    0
+  } else {
+    if len(pat) > len(text) {
+      -1
+    } else {
+      let base = 256;
+      let modulus = 2147483647;
+      let mut pat_hash = 0;
+      let mut k = 0;
+      while k < len(pat) {
+        let c = charCode(pat, k);
+        if c < 0 {
+          // Clamp negative char codes (shouldn't happen for ASCII).
+        };
+        pat_hash = (pat_hash * base + charCode(pat, k)) % modulus;
+        k = k + 1;
+      }
+      let mut txt_hash = 0;
+      let mut k = 0;
+      while k < len(pat) {
+        txt_hash = (txt_hash * base + charCode(text, k)) % modulus;
+        k = k + 1;
+      }
+      // Precompute base^(len(pat)-1) mod modulus for the rolling update.
+      let mut h = 1;
+      let mut k = 1;
+      while k < len(pat) {
+        h = (h * base) % modulus;
+        k = k + 1;
+      }
+      let mut i = 0;
+      let mut found = -1;
+      while i + len(pat) <= len(text) && found == -1 {
+        if txt_hash == pat_hash {
+          if substr_eq_at(text, i, pat) {
+            found = i;
+          };
+        };
+        if found == -1 && i + len(pat) < len(text) {
+          // Roll the hash: remove text[i], add text[i + len(pat)].
+          let out_c = charCode(text, i);
+          let in_c = charCode(text, i + len(pat));
+          txt_hash = (txt_hash - (out_c * h) % modulus + modulus) % modulus;
+          txt_hash = (txt_hash * base + in_c) % modulus;
+        };
+        i = i + 1;
+      }
+      found
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Z-array
+//----------------------------------------------------------------------------
+
+// zAlgorithm(s) — compute the Z array. z[i] = length of the longest
+// substring starting at i that is also a prefix of s. z[0] is
+// conventionally 0 (or len(s); we use 0).
+//   zAlgorithm("aabcaab") -> [0, 1, 0, 0, 3, 1, 0]
+//   zAlgorithm("aaaa") -> [0, 3, 2, 1]
+//   zAlgorithm("") -> []
+pub fn zAlgorithm(s: string) -> [int] {
+  if len(s) == 0 {
+    []
+  } else {
+    let n = len(s);
+    let mut z = [];
+    let mut k = 0;
+    while k < n {
+      push(z, 0);
+      k = k + 1;
+    }
+    // z[0] is 0 by convention here.
+    let mut l = 0;
+    let mut r = 0;
+    let mut i = 1;
+    while i < n {
+      if i < r {
+        // Inside a Z-box; use the mirror value.
+        let mirror = i - l;
+        let z_mirror = z[mirror];
+        if i + z_mirror < r {
+          z[i] = z_mirror;
+        } else {
+          // Extend manually from r.
+          let mut k2 = r - i;
+          while i + k2 < n && charCode(s, i + k2) == charCode(s, k2) {
+            k2 = k2 + 1;
+          }
+          z[i] = k2;
+          l = i;
+          r = i + k2;
+        };
+      } else {
+        // Outside any Z-box: extend from i manually.
+        let mut k2 = 0;
+        while i + k2 < n && charCode(s, i + k2) == charCode(s, k2) {
+          k2 = k2 + 1;
+        }
+        z[i] = k2;
+        l = i;
+        r = i + k2;
+      };
+      i = i + 1;
+    }
+    z
+  }
+}
+
+// computeZ(s) — alias for zAlgorithm (same computation).
+pub fn computeZ(s: string) -> [int] {
+  zAlgorithm(s)
+}
+
+//----------------------------------------------------------------------------
+// findAll / countOccur / longestPrefixSuffix
+//----------------------------------------------------------------------------
+
+// findAll(text, pat) — all starting indices of non-overlapping matches.
+//   findAll("abababab", "ab") -> [0, 2, 4, 6]
+//   findAll("aaaa", "aa") -> [0, 2]    (non-overlapping!)
+//   findAll("hello", "x") -> []
+// Uses KMP-style scanning for O(n+m) time.
+pub fn findAll(text: string, pat: string) -> [int] {
+  if len(pat) == 0 {
+    // Empty pattern matches at every position; we return [0, 1, ... len].
+    let mut out = [];
+    let mut k = 0;
+    while k <= len(text) {
+      push(out, k);
+      k = k + 1;
+    }
+    out
+  } else {
+    if len(pat) > len(text) {
+      []
+    } else {
+      let lps = computeLps(pat);
+      let mut out = [];
+      let mut i = 0;
+      let mut j = 0;
+      while i < len(text) {
+        if charCode(text, i) == charCode(pat, j) {
+          i = i + 1;
+          j = j + 1;
+          if j == len(pat) {
+            push(out, i - j);
+            // Non-overlapping: reset j to 0 (skip the matched chars).
+            j = 0;
+          };
+        } else {
+          if j != 0 {
+            j = lps[j - 1];
+          } else {
+            i = i + 1;
+          };
+        };
+      }
+      out
+    }
+  }
+}
+
+// countOccur(text, pat) — count non-overlapping occurrences.
+//   countOccur("abababab", "ab") -> 4
+//   countOccur("aaaa", "aa") -> 2
+//   countOccur("hello", "x") -> 0
+pub fn countOccur(text: string, pat: string) -> int {
+  len(findAll(text, pat))
+}
+
+// longestPrefixSuffix(s) — length of the longest proper prefix of s
+// that is also a suffix of s. "Proper" means strictly shorter than s.
+//   longestPrefixSuffix("abcabdabcabc") -> 3
+//   longestPrefixSuffix("aaaa") -> 3
+//   longestPrefixSuffix("") -> 0
+//   longestPrefixSuffix("abc") -> 0
+// Computed as lps[len(s)-1] (the last entry of the KMP LPS array).
+pub fn longestPrefixSuffix(s: string) -> int {
+  if len(s) == 0 {
+    0
+  } else {
+    let lps = computeLps(s);
+    lps[len(lps) - 1]
+  }
+}

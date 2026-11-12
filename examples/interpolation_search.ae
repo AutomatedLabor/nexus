@@ -1,0 +1,84 @@
+// interpolation_search.ae
+// =======================
+// Interpolation search — like binary search but probes by linear
+// interpolation rather than the midpoint. Works well on uniformly
+// distributed sorted arrays. The demo searches for 50 in
+// [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] and prints the index
+// (which should be 4).
+//
+// Algorithm:
+//   - Maintain [lo, hi].
+//   - Probe at pos = lo + (target - arr[lo]) * (hi - lo) / (arr[hi] - arr[lo])
+//   - If arr[pos] == target, done.
+//   - If arr[pos] < target, lo = pos + 1.
+//   - Else hi = pos - 1.
+//   - Guard against target being out of the array's range.
+//
+// Complexity: average O(log log n) on uniformly distributed data,
+// worst case O(n) (e.g. when the distribution is highly skewed).
+
+fn interpolation_search(arr: [int], target: int) -> int {
+  if len(arr) == 0 {
+    -1
+  } else {
+    let mut lo = 0;
+    let mut hi = len(arr) - 1;
+    let mut found = -1;
+    while lo <= hi && target >= arr[lo] && target <= arr[hi] && found == -1 {
+      if lo == hi {
+        if arr[lo] == target {
+          found = lo;
+        };
+      } else {
+        let num = (target - arr[lo]) * (hi - lo);
+        let den = arr[hi] - arr[lo];
+        let mut pos = lo + int(num / den);
+        if pos < lo {
+          pos = lo;
+        };
+        if pos > hi {
+          pos = hi;
+        };
+        if arr[pos] == target {
+          found = pos;
+        } else {
+          if arr[pos] < target {
+            lo = pos + 1;
+          } else {
+            hi = pos - 1;
+          };
+        };
+      };
+    }
+    found
+  }
+}
+
+print("== Interpolation search demo ==");
+print("");
+
+let arr = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+print("arr = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]");
+
+let target = 50;
+let idx = interpolation_search(arr, target);
+print("target = 50");
+print("index = " + str(idx));
+
+// A couple more probes to show the speed.
+print("");
+print("probing several targets:");
+
+let mut i = 0;
+while i < 10 {
+  let v = arr[i];
+  let p = interpolation_search(arr, v);
+  print("  arr[" + str(i) + "] = " + str(v) + " -> index " + str(p));
+  i = i + 1;
+}
+
+let p_missing = interpolation_search(arr, 55);
+print("55 (missing) -> " + str(p_missing));
+
+print("");
+print("Interpolation search complete.");

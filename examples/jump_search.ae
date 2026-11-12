@@ -1,0 +1,76 @@
+// jump_search.ae
+// ===============
+// Jump search — find target by jumping ahead in steps of sqrt(n),
+// then doing a linear scan within the identified block. Works on
+// sorted arrays. The demo searches for 23 in a sorted array of
+// 25 elements and prints the index.
+//
+// Algorithm:
+//   - Compute step = ceil(sqrt(n)).
+//   - Jump forward by step until arr[min(cur, n) - 1] >= target.
+//   - Linear scan from prev to min(cur, n) - 1.
+//
+// Complexity: O(sqrt(n)) time. This is optimal for the "sequential
+// read + linear scan" model (e.g. paged storage where a sequential
+// block read is cheap).
+
+fn jump_search(arr: [int], target: int) -> int {
+  if len(arr) == 0 {
+    -1
+  } else {
+    let n = len(arr);
+    let mut step = 1;
+    while step * step < n {
+      step = step + 1;
+    }
+    let mut prev = 0;
+    let mut cur = step;
+    let mut cont = true;
+    while cont && cur < n {
+      if arr[cur] < target {
+        prev = cur;
+        cur = cur + step;
+      } else {
+        cont = false;
+      };
+    }
+    let mut end_idx = cur;
+    if end_idx >= n {
+      end_idx = n - 1;
+    };
+    let mut i = prev;
+    let mut found = -1;
+    while i <= end_idx && found == -1 {
+      if arr[i] == target {
+        found = i;
+      };
+      i = i + 1;
+    }
+    found
+  }
+}
+
+print("== Jump search demo ==");
+print("");
+
+// Build a sorted array of 25 elements: [2, 5, 8, 11, ..., 74].
+let arr = [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 41, 44, 47, 50, 53, 56, 59, 62, 65, 68, 71, 74];
+print("arr has " + str(len(arr)) + " elements (sorted, arithmetic)");
+
+let target = 23;
+let idx = jump_search(arr, target);
+print("target = " + str(target));
+print("index = " + str(idx));
+
+// Verify with a few more searches.
+print("");
+print("more searches:");
+let target2 = 2;
+print("  target " + str(target2) + " -> index " + str(jump_search(arr, target2)));
+let target3 = 74;
+print("  target " + str(target3) + " -> index " + str(jump_search(arr, target3)));
+let target4 = 100;
+print("  target " + str(target4) + " (missing) -> index " + str(jump_search(arr, target4)));
+
+print("");
+print("Jump search complete.");

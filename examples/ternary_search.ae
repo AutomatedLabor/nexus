@@ -1,0 +1,71 @@
+// ternary_search.ae
+// ==================
+// Ternary search — find the integer x in [lo, hi] that maximizes a
+// unimodal function f. We use f(x) = -(x - 5)^2, which is unimodal
+// (strictly increasing then strictly decreasing) with its maximum
+// at x = 5. The demo searches [0, 10] and prints the argmax.
+//
+// Algorithm:
+//   - Maintain a range [l, r] of candidate x values.
+//   - At each step, pick m1 = l + (r - l)/3 and m2 = r - (r - l)/3.
+//   - If f(m1) < f(m2), the maximum lies in (m1, r]; set l = m1 + 1.
+//   - Else the maximum lies in [l, m2); set r = m2 - 1.
+//   - When r - l <= 2, scan linearly over the small remaining range.
+//
+// Complexity: O(log n) on the interval length, where each iteration
+// reduces the range by 2/3.
+
+fn f(x: int) -> int {
+  // Unimodal: max at x = 5.
+  -(x - 5) * (x - 5)
+}
+
+fn ternary_search(g: fn(int) -> int, lo: int, hi: int) -> int {
+  let mut l = lo;
+  let mut r = hi;
+  while r - l > 2 {
+    let m1 = l + int((r - l) / 3);
+    let m2 = r - int((r - l) / 3);
+    if g(m1) < g(m2) {
+      l = m1 + 1;
+    } else {
+      r = m2 - 1;
+    };
+  }
+  let mut best_x = l;
+  let mut best_v = g(l);
+  let mut x = l + 1;
+  while x <= r {
+    let v = g(x);
+    if v > best_v {
+      best_v = v;
+      best_x = x;
+    };
+    x = x + 1;
+  }
+  best_x
+}
+
+print("== Ternary search demo ==");
+print("");
+print("f(x) = -(x - 5)^2  (max at x = 5)");
+
+let lo = 0;
+let hi = 10;
+let argmax = ternary_search(f, lo, hi);
+print("search interval = [0, 10]");
+print("argmax = " + str(argmax));
+print("f(argmax) = " + str(f(argmax)));
+
+// A second unimodal function: max at x = 8.
+fn g(x: int) -> int {
+  -(x - 8) * (x - 8)
+}
+let argmax2 = ternary_search(g, 0, 20);
+print("");
+print("g(x) = -(x - 8)^2  (max at x = 8)");
+print("search interval = [0, 20]");
+print("argmax = " + str(argmax2));
+
+print("");
+print("Ternary search complete.");

@@ -1,0 +1,11 @@
+[package]
+name = "aether-collections-extra"
+version = "0.1.0"
+description = "Extra collection operations for Aether — 14 pure functions covering chunk/window/sliding, partition, groupBy/countBy/indexBy, set-like ops (unique/difference/intersection/union/symmetricDifference), and deterministic shuffle/sample."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — only Aether's core builtins.
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

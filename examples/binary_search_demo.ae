@@ -1,0 +1,60 @@
+// binary_search_demo.ae
+// ======================
+// Demo of the classic binary-search algorithm. Searches for the
+// value 7 in the sorted array [1, 3, 5, 7, 9, 11, 13] and prints
+// the index where it's found (or -1 if absent).
+//
+// Algorithm:
+//   - Maintain a half-open range [lo, hi] of candidate positions.
+//   - At each step, look at the middle element. If it's the target,
+//     we're done. If it's less than the target, move lo past the
+//     middle. If it's greater, move hi before the middle.
+//   - Stop when lo > hi (target not in array).
+//
+// Complexity: O(log n) time, O(1) auxiliary space.
+//
+// Iteration uses `while` with explicit index variables (defensive
+// against the v1 evaluator's for-loop-scope quirk).
+
+fn binary_search(arr: [int], target: int) -> int {
+  let mut lo = 0;
+  let mut hi = len(arr) - 1;
+  let mut found = -1;
+  while lo <= hi && found == -1 {
+    let m = int((lo + hi) / 2);
+    if arr[m] == target {
+      found = m;
+    } else {
+      if arr[m] < target {
+        lo = m + 1;
+      } else {
+        hi = m - 1;
+      };
+    };
+  }
+  found
+}
+
+print("== Binary search demo ==");
+print("");
+
+let arr = [1, 3, 5, 7, 9, 11, 13];
+print("arr = [1, 3, 5, 7, 9, 11, 13]");
+
+let target = 7;
+let idx = binary_search(arr, target);
+print("target = 7");
+print("index = " + str(idx));
+
+// A couple of negative cases for clarity.
+let idx_missing = binary_search(arr, 8);
+print("index of 8 (missing) = " + str(idx_missing));
+
+let idx_first = binary_search(arr, 1);
+print("index of 1 (first)   = " + str(idx_first));
+
+let idx_last = binary_search(arr, 13);
+print("index of 13 (last)   = " + str(idx_last));
+
+print("");
+print("Binary search complete.");

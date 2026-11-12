@@ -1,0 +1,107 @@
+// constraint_satisfaction.ae
+// ==========================
+// Solve a tiny graph-coloring constraint satisfaction problem
+// (CSP). We have a 4-node graph with edges A-B, A-C, B-C, B-D, C-D
+// and three colors (0, 1, 2). The goal is to assign a color to each
+// node such that no two adjacent nodes share a color.
+//
+// Algorithm: simple backtracking with constraint propagation.
+//   - Maintain a partial assignment (one color per node, or -1 if
+//     unassigned).
+//   - Pick the next unassigned node.
+//   - Try each color in turn.
+//   - For each color, check if it's consistent with already-assigned
+//     neighbors.
+//   - If consistent, recurse; if recursion fails, undo (backtrack).
+//
+// The demo prints the assignment and the total number of
+// backtracks used.
+
+// Graph as adjacency list: neighbors[i] is the list of i's neighbors.
+let neighbors = [
+  [1, 2],       // node 0 (A): neighbors B, C
+  [0, 2, 3],    // node 1 (B): neighbors A, C, D
+  [0, 1, 3],    // node 2 (C): neighbors A, B, D
+  [1, 2],       // node 3 (D): neighbors B, C
+];
+let num_colors = 3;
+let num_nodes = 4;
+
+// assignment[i] = color of node i, or -1 if unassigned.
+let mut assignment = [-1, -1, -1, -1];
+
+// Track backtrack count.
+let mut backtrack_count = 0;
+
+fn consistent(node: int, color: int, assign: [int]) -> bool {
+  let mut ok = true;
+  let mut k = 0;
+  let nbrs = neighbors[node];
+  while k < len(nbrs) {
+    let nbr = nbrs[k];
+    if assign[nbr] == color {
+      ok = false;
+    };
+    k = k + 1;
+  }
+  ok
+}
+
+fn backtrack(node: int, assign: [int]) -> bool {
+  if node == num_nodes {
+    true
+  } else {
+    let mut solved = false;
+    let mut c = 0;
+    while c < num_colors && !solved {
+      if consistent(node, c, assign) {
+        assign[node] = c;
+        if backtrack(node + 1, assign) {
+          solved = true;
+        } else {
+          assign[node] = -1;
+          backtrack_count = backtrack_count + 1;
+        };
+      };
+      c = c + 1;
+    }
+    solved
+  }
+}
+
+print("== Graph coloring CSP demo ==");
+print("");
+print("graph: 4 nodes (A=0, B=1, C=2, D=3), edges A-B, A-C, B-C, B-D, C-D");
+print("colors: 3 (0, 1, 2)");
+print("");
+
+let solved = backtrack(0, assignment);
+if solved {
+  print("solution found:");
+  let mut i = 0;
+  while i < num_nodes {
+    let name = "?";
+    let mut name_str = "";
+    if i == 0 {
+      name_str = "A";
+    };
+    if i == 1 {
+      name_str = "B";
+    };
+    if i == 2 {
+      name_str = "C";
+    };
+    if i == 3 {
+      name_str = "D";
+    };
+    print("  node " + name_str + " (" + str(i) + ") -> color " + str(assignment[i]));
+    i = i + 1;
+  }
+  print("");
+  print("backtracks used: " + str(backtrack_count));
+} else {
+  print("no solution exists");
+};
+
+print("");
+print("Constraint satisfaction complete.");

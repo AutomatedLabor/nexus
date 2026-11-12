@@ -1,0 +1,76 @@
+// aether-string-search/tests/tests.ae
+// ====================================
+// 25+ assertions covering every pub fn in aether-string-search.
+import {
+  naiveMatch, kmpMatch, boyerMooreMatch, rabinKarpMatch,
+  zAlgorithm, computeZ, computeLps,
+  findAll, countOccur, longestPrefixSuffix,
+} from "../src/lib.ae";
+
+// --- naiveMatch ---
+assert_eq(naiveMatch("hello world", "world"), 6);
+assert_eq(naiveMatch("hello world", "xyz"), -1);
+assert_eq(naiveMatch("the quick brown fox", "brown"), 10);
+assert_eq(naiveMatch("abc", ""), 0);
+assert_eq(naiveMatch("abc", "abcd"), -1);
+assert_eq(naiveMatch("aaa", "aa"), 0);
+
+// --- computeLps ---
+assert_eq(computeLps(""), []);
+assert_eq(computeLps("a"), [0]);
+assert_eq(computeLps("aaaa"), [0, 1, 2, 3]);
+assert_eq(computeLps("abcabdabcabc"), [0, 0, 0, 1, 2, 0, 1, 2, 3, 4, 5, 3]);
+assert_eq(computeLps("abcabc"), [0, 0, 0, 1, 2, 3]);
+
+// --- kmpMatch ---
+assert_eq(kmpMatch("ababcabababcd", "abababc"), 5);
+assert_eq(kmpMatch("hello world", "world"), 6);
+assert_eq(kmpMatch("hello", "xyz"), -1);
+assert_eq(kmpMatch("abc", ""), 0);
+assert_eq(kmpMatch("aaaa", "aa"), 0);
+assert_eq(kmpMatch("ABCDEF", "DEF"), 3);
+
+// --- boyerMooreMatch ---
+assert_eq(boyerMooreMatch("HERE IS A SIMPLE EXAMPLE", "EXAMPLE"), 17);
+assert_eq(boyerMooreMatch("hello world", "world"), 6);
+assert_eq(boyerMooreMatch("hello", "xyz"), -1);
+assert_eq(boyerMooreMatch("abc", ""), 0);
+assert_eq(boyerMooreMatch("ABABABAB", "ABAB"), 0);
+
+// --- rabinKarpMatch ---
+assert_eq(rabinKarpMatch("the quick brown fox", "brown"), 10);
+assert_eq(rabinKarpMatch("hello", "xyz"), -1);
+assert_eq(rabinKarpMatch("abc", ""), 0);
+assert_eq(rabinKarpMatch("aaaa", "aa"), 0);
+assert_eq(rabinKarpMatch("ABCDEF", "DEF"), 3);
+
+// --- zAlgorithm / computeZ ---
+assert_eq(zAlgorithm(""), []);
+assert_eq(zAlgorithm("aabcaab"), [0, 1, 0, 0, 3, 1, 0]);
+assert_eq(zAlgorithm("aaaa"), [0, 3, 2, 1]);
+assert_eq(zAlgorithm("abcde"), [0, 0, 0, 0, 0]);
+assert_eq(computeZ("aabcaab"), [0, 1, 0, 0, 3, 1, 0]);
+assert_eq(computeZ("aaaa"), [0, 3, 2, 1]);
+
+// --- findAll ---
+assert_eq(findAll("abababab", "ab"), [0, 2, 4, 6]);
+assert_eq(findAll("aaaa", "aa"), [0, 2]);
+assert_eq(findAll("hello", "x"), []);
+assert_eq(findAll("abcabcabc", "abc"), [0, 3, 6]);
+assert_eq(findAll("aaa", "a"), [0, 1, 2]);
+
+// --- countOccur ---
+assert_eq(countOccur("abababab", "ab"), 4);
+assert_eq(countOccur("aaaa", "aa"), 2);
+assert_eq(countOccur("hello", "x"), 0);
+assert_eq(countOccur("aaa", "a"), 3);
+assert_eq(countOccur("abcabcabc", "abc"), 3);
+
+// --- longestPrefixSuffix ---
+assert_eq(longestPrefixSuffix("abcabdabcabc"), 3);
+assert_eq(longestPrefixSuffix("aaaa"), 3);
+assert_eq(longestPrefixSuffix(""), 0);
+assert_eq(longestPrefixSuffix("abc"), 0);
+assert_eq(longestPrefixSuffix("abcabc"), 3);
+
+print("aether-string-search: all 25+ assertions passed");

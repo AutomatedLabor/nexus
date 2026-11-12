@@ -1,0 +1,11 @@
+[package]
+name = "aether-bits-extra"
+version = "0.1.0"
+description = "Extra bit operations for Aether — 12 pure functions covering lookup-table popcount, parity, reverseBits, bit-count helpers (bitOnes, bitZeros), bitPosition, range extraction (bitRange, bitInsert, bitDelete), rotation (bitRotateLeft, bitRotateRight), and a general-purpose bitMask generator."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — only Aether's core builtins.
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.

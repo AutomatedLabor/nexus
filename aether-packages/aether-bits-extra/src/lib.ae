@@ -1,0 +1,264 @@
+// aether-bits-extra/src/lib.ae
+// ============================
+// Extra bit operations for Aether. 12 pub functions covering:
+//   popcount via a 256-entry lookup table, parity (popcount mod 2),
+//   reverseBits, bit count helpers (bitOnes, bitZeros), position
+//   helpers (bitPosition), extraction helpers (bitRange, bitInsert,
+//   bitDelete), rotation (bitRotateLeft, bitRotateRight), and a
+//   general-purpose bitMask generator.
+//
+// Built only on Aether's core builtins (+, -, *, /, %, <<, >>, &,
+//   |, ^, ~, int, len, push, min, max, panic). All operations are
+// on 32-bit integers (JS bitwise ops are 32-bit). Iteration uses
+// `while` with explicit indices to avoid the v1 evaluator's
+// for-loop-scope quirk.
+//
+// Conventions:
+//   - All inputs are non-negative ints in [0, 2^32).
+//   - Bit positions are 0-based: bit 0 is the LSB.
+//   - For rotations, the width parameter `n` is the number of bits
+//     considered (e.g. rotate within the low 8 bits).
+
+//----------------------------------------------------------------------------
+// Lookup-table-based popcount
+//----------------------------------------------------------------------------
+
+// Internal: build a 256-entry table of popcount(i) for i in 0..256.
+fn build_popcount_table() -> [int] {
+  let mut table = [];
+  let mut i = 0;
+  while i < 256 {
+    let mut c = 0;
+    let mut x = i;
+    while x != 0 {
+      c = c + 1;
+      x = x & (x - 1);  // clear lowest set bit
+    }
+    push(table, c);
+    i = i + 1;
+  }
+  table
+}
+
+// popcountLookup(x) — population count (number of set bits) of x,
+// computed via a 256-entry lookup table. ~4 lookups for a 32-bit int.
+//   popcountLookup(0)        -> 0
+//   popcountLookup(7)       -> 3
+//   popcountLookup(255)     -> 8
+//   popcountLookup(0xFFFF)   -> 16
+pub fn popcountLookup(x: int) -> int {
+  let table = build_popcount_table();
+  let mut count = 0;
+  let mut v = x;
+  let mut k = 0;
+  while k < 4 {
+    count = count + table[v & 255];
+    v = int((v & 0xFFFFFFFF) / 256);
+    k = k + 1;
+  }
+  count
+}
+
+// parity(x) — parity of x: 0 if even number of set bits, 1 if odd.
+//   parity(0)  -> 0
+//   parity(1)  -> 1
+//   parity(3)  -> 0   (two set bits)
+//   parity(7)  -> 1   (three set bits)
+pub fn parity(x: int) -> int {
+  popcountLookup(x) % 2
+}
+
+//----------------------------------------------------------------------------
+// Reverse
+//----------------------------------------------------------------------------
+
+// reverseBits(x, n) — reverse the low n bits of x. Bits above n are
+// zeroed. Panics if n < 0 or n > 32.
+//   reverseBits(0b1101, 4)  -> 0b1011   (11)
+//   reverseBits(0b100, 3)   -> 0b001    (1)
+//   reverseBits(0, 8)       -> 0
+pub fn reverseBits(x: int, n: int) -> int {
+  if n < 0 {
+    panic("reverseBits: n must be non-negative")
+  } else {
+    if n > 32 {
+      panic("reverseBits: n must be <= 32")
+    } else {
+      let mut result = 0;
+      let mut v = x;
+      let mut k = 0;
+      while k < n {
+        result = (result << 1) | (v & 1);
+        v = int(v / 2);
+        k = k + 1;
+      }
+      result
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Bit-count helpers
+//----------------------------------------------------------------------------
+
+// bitOnes(x) — count of set bits in x. Alias for popcountLookup.
+//   bitOnes(0)    -> 0
+//   bitOnes(0xFF) -> 8
+pub fn bitOnes(x: int) -> int {
+  popcountLookup(x)
+}
+
+// bitZeros(x, n) — count of zero bits in the low n bits of x.
+//   bitZeros(0, 8)        -> 8
+//   bitZeros(0xFF, 8)      -> 0
+//   bitZeros(0b1010, 4)   -> 2
+pub fn bitZeros(x: int, n: int) -> int {
+  if n < 0 {
+    panic("bitZeros: n must be non-negative")
+  } else {
+    let mask = (1 << n) - 1;
+    let low = x & mask;
+    n - popcountLookup(low)
+  }
+}
+
+//----------------------------------------------------------------------------
+// Position helpers
+//----------------------------------------------------------------------------
+
+// bitPosition(x) — position of the lowest set bit in x (0-based), or
+// -1 if x is 0.
+//   bitPosition(0)  -> -1
+//   bitPosition(1)  -> 0
+//   bitPosition(2)  -> 1
+//   bitPosition(0b100)  -> 2
+//   bitPosition(0b1010) -> 1
+pub fn bitPosition(x: int) -> int {
+  if x == 0 {
+    -1
+  } else {
+    let mut pos = 0;
+    let mut v = x;
+    while v & 1 == 0 {
+      v = int(v / 2);
+      pos = pos + 1;
+    }
+    pos
+  }
+}
+
+//----------------------------------------------------------------------------
+// Extraction helpers
+//----------------------------------------------------------------------------
+
+// bitRange(x, start, len_) — extract the len_ bits of x starting at
+// bit position start. Result is right-justified (the extracted bits
+// occupy positions 0..len_-1 of the result).
+//   bitRange(0b101101, 2, 3) -> 0b011 (3)
+//   bitRange(0xFF, 4, 4)     -> 0b1111 (15)
+//   bitRange(0, 0, 4)        -> 0
+pub fn bitRange(x: int, start: int, len_: int) -> int {
+  if start < 0 || len_ < 0 {
+    panic("bitRange: start and len must be non-negative")
+  } else {
+    let mask = (1 << len_) - 1;
+    (x >> start) & mask
+  }
+}
+
+// bitInsert(x, start, len_, value) — return x with the len_ bits at
+// position start replaced by the low len_ bits of value.
+//   bitInsert(0b1111, 1, 2, 0)  -> 0b1001 (9)
+//   bitInsert(0b10000, 0, 2, 3) -> 0b10011 (19)
+pub fn bitInsert(x: int, start: int, len_: int, value: int) -> int {
+  if start < 0 || len_ < 0 {
+    panic("bitInsert: start and len must be non-negative")
+  } else {
+    let mask = (1 << len_) - 1;
+    let cleared = x & ~(mask << start);
+    cleared | ((value & mask) << start)
+  }
+}
+
+// bitDelete(x, start, len_) — return x with the len_ bits at position
+// start cleared to 0.
+//   bitDelete(0b1111, 1, 2)  -> 0b1001 (9)
+//   bitDelete(0b1010, 0, 1)  -> 0b1010 (10, low bit already 0)
+//   bitDelete(0b1011, 0, 1)  -> 0b1010 (10)
+pub fn bitDelete(x: int, start: int, len_: int) -> int {
+  if start < 0 || len_ < 0 {
+    panic("bitDelete: start and len must be non-negative")
+  } else {
+    let mask = (1 << len_) - 1;
+    x & ~(mask << start)
+  }
+}
+
+//----------------------------------------------------------------------------
+// Rotation
+//----------------------------------------------------------------------------
+
+// bitRotateLeft(x, n, width) — rotate the low `width` bits of x left
+// by n positions. Panics if width < 1 or width > 32 or n < 0.
+//   bitRotateLeft(0b1010, 1, 4) -> 0b0101 (5)
+//   bitRotateLeft(0b1000, 1, 4) -> 0b0001 (1)
+//   bitRotateLeft(0b1100, 3, 4) -> 0b0110 (6)
+pub fn bitRotateLeft(x: int, n: int, width: int) -> int {
+  if width < 1 || width > 32 {
+    panic("bitRotateLeft: width must be in 1..32")
+  } else {
+    if n < 0 {
+      panic("bitRotateLeft: n must be non-negative")
+    } else {
+      let mut r = n % width;
+      let mask = (1 << width) - 1;
+      let v = x & mask;
+      if r == 0 {
+        v
+      } else {
+        let left = (v << r) & mask;
+        let right = int(v / (1 << (width - r)));
+        left | right
+      }
+    }
+  }
+}
+
+// bitRotateRight(x, n, width) — rotate the low `width` bits of x
+// right by n positions. Inverse of bitRotateLeft.
+//   bitRotateRight(0b0101, 1, 4) -> 0b1010 (10)
+//   bitRotateRight(0b0001, 1, 4) -> 0b1000 (8)
+//   bitRotateRight(0b1100, 1, 4) -> 0b0110 (6)
+pub fn bitRotateRight(x: int, n: int, width: int) -> int {
+  if width < 1 || width > 32 {
+    panic("bitRotateRight: width must be in 1..32")
+  } else {
+    if n < 0 {
+      panic("bitRotateRight: n must be non-negative")
+    } else {
+      let r = n % width;
+      if r == 0 {
+        x & ((1 << width) - 1)
+      } else {
+        bitRotateLeft(x, width - r, width)
+      }
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Mask generator
+//----------------------------------------------------------------------------
+
+// bitMask(start, len_) — a mask with len_ consecutive 1-bits starting
+// at bit position start, all other bits 0.
+//   bitMask(0, 4)  -> 0b1111   (15)
+//   bitMask(2, 3)  -> 0b11100 (28)
+//   bitMask(0, 0)  -> 0
+pub fn bitMask(start: int, len_: int) -> int {
+  if start < 0 || len_ < 0 {
+    panic("bitMask: start and len must be non-negative")
+  } else {
+    ((1 << len_) - 1) << start
+  }
+}

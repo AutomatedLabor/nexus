@@ -1,0 +1,169 @@
+// tabu_search.ae
+// ==============
+// A tiny tabu search for the Traveling Salesman Problem on 4 cities.
+// Starts from the naive route [0, 1, 2, 3] (cost 95) and iteratively
+// applies 2-opt swaps (exchanging two cities' positions) while
+// maintaining a short tabu list of recent swaps. The demo prints the
+// best route found and its total cost.
+//
+// Algorithm:
+//   - Initial route: [0, 1, 2, ..., k-1] (closed loop, returning to 0).
+//   - At each iteration, try all 2-opt swaps (i, j) with i < j.
+//   - Skip swaps that are tabu (recently performed, listed in `tabu`).
+//   - Among the non-tabu swaps, pick the one that reduces cost the most.
+//   - Apply it; add the swap to `tabu`; drop the oldest tabu entry if
+//     the list is full (size > 3).
+//   - Update best_route if the new route is better than best.
+//
+// Complexity: O(iterations * k^2 * k) where the last k is the route
+// cost computation. For 4 cities and 20 iterations this is fast.
+
+fn copy_arr(arr: [int]) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+fn swap_at(arr: [int], i: int, j: int) -> [int] {
+  let mut out = [];
+  let mut k = 0;
+  while k < len(arr) {
+    if k == i {
+      push(out, arr[j]);
+    } else {
+      if k == j {
+        push(out, arr[i]);
+      } else {
+        push(out, arr[k]);
+      };
+    };
+    k = k + 1;
+  }
+  out
+}
+
+fn route_cost(route: [int], distances: [[int]]) -> int {
+  let mut cost = 0;
+  let mut i = 0;
+  while i < len(route) - 1 {
+    cost = cost + distances[route[i]][route[i + 1]];
+    i = i + 1;
+  }
+  cost + distances[route[len(route) - 1]][route[0]]
+}
+
+fn is_tabu(tabu: [[int]], i: int, j: int) -> bool {
+  let mut found = false;
+  let mut k = 0;
+  while k < len(tabu) {
+    if (tabu[k][0] == i && tabu[k][1] == j) || (tabu[k][0] == j && tabu[k][1] == i) {
+      found = true;
+    };
+    k = k + 1;
+  }
+  found
+}
+
+fn drop_first(arr: [[int]]) -> [[int]] {
+  let mut out = [];
+  let mut i = 1;
+  while i < len(arr) {
+    push(out, arr[i]);
+    i = i + 1;
+  }
+  out
+}
+
+fn initial_tabu() -> [[int]] {
+  []
+}
+
+fn initial_route(k: int) -> [int] {
+  let mut out = [];
+  let mut i = 0;
+  while i < k {
+    push(out, i);
+    i = i + 1;
+  }
+  out
+}
+
+fn tabu_search(cities: [int], distances: [[int]], iterations: int) -> [int] {
+  let k = len(cities);
+  if k <= 2 {
+    cities
+  } else {
+    let mut route = initial_route(k);
+    let mut best_route = copy_arr(route);
+    let mut best_cost = route_cost(route, distances);
+    let mut tabu = initial_tabu();
+    let mut iter = 0;
+    while iter < iterations {
+      let mut best_swap_cost = best_cost + 1;  // start worse than current
+      let best_swap_init: [int] = [-1, -1];
+      let mut best_swap = best_swap_init;
+      let mut i = 0;
+      while i < k - 1 {
+        let mut j = i + 1;
+        while j < k {
+          if !is_tabu(tabu, i, j) {
+            let candidate = swap_at(copy_arr(route), i, j);
+            let cost = route_cost(candidate, distances);
+            if cost < best_swap_cost {
+              best_swap_cost = cost;
+              best_swap = [i, j];
+            };
+          };
+          j = j + 1;
+        };
+        i = i + 1;
+      }
+      if best_swap[0] != -1 {
+        route = swap_at(copy_arr(route), best_swap[0], best_swap[1]);
+        push(tabu, [best_swap[0], best_swap[1]]);
+        if len(tabu) > 3 {
+          tabu = drop_first(tabu);
+        };
+        if best_swap_cost < best_cost {
+          best_cost = best_swap_cost;
+          best_route = copy_arr(route);
+        };
+      };
+      iter = iter + 1;
+    }
+    best_route
+  }
+}
+
+print("== Tabu search demo (4-city TSP) ==");
+print("");
+
+let dist = [
+  [0, 10, 15, 20],
+  [10, 0, 35, 25],
+  [15, 35, 0, 30],
+  [20, 25, 30, 0],
+];
+
+print("distance matrix (4x4):");
+let mut r = 0;
+while r < 4 {
+  let row = dist[r];
+  print("  [" + str(row[0]) + ", " + str(row[1]) + ", " + str(row[2]) + ", " + str(row[3]) + "]");
+  r = r + 1;
+}
+
+let naive_cost = 10 + 35 + 30 + 20;  // 0->1->2->3->0
+print("");
+print("naive route [0, 1, 2, 3] cost = " + str(naive_cost));
+
+let best_route = tabu_search([0, 1, 2, 3], dist, 20);
+print("best route after tabu search = [" + str(best_route[0]) + ", " + str(best_route[1]) + ", " + str(best_route[2]) + ", " + str(best_route[3]) + "]");
+print("best cost = " + str(route_cost(best_route, dist)));
+
+print("");
+print("Tabu search complete.");

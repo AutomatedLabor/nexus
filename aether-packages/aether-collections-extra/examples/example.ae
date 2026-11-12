@@ -1,0 +1,67 @@
+// aether-collections-extra/examples/example.ae
+// ============================================
+// A demo of the aether-collections-extra package: shows each function
+// category with a small input/output snapshot.
+import {
+  chunk, window, sliding, partition,
+  groupBy, countBy, indexBy,
+  unique, difference, intersection, union, symmetricDifference,
+  shuffle, sample,
+} from "../src/lib.ae";
+
+fn show_int(arr: [int]) -> string {
+  let body = reduce(arr, fn(acc: string, x: int) -> string {
+    if acc == "" { str(x) } else { acc + ", " + str(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+fn show_arr2(arr: [[int]]) -> string {
+  let body = reduce(arr, fn(acc: string, x: [int]) -> string {
+    if acc == "" { show_int(x) } else { acc + ", " + show_int(x) }
+  }, "");
+  "[" + body + "]"
+}
+
+print("== aether-collections-extra example ==");
+print("");
+
+let xs = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+print(f"xs              = {show_int(xs)}");
+print(f"chunk(xs, 3)    = {show_arr2(chunk(xs, 3))}");
+print(f"window(xs, 3)   = {show_arr2(window(xs, 3))}");
+print(f"sliding(xs,3,2) = {show_arr2(sliding(xs, 3, 2))}");
+
+fn is_even(x: int) -> bool { x % 2 == 0 }
+let parts = partition(xs, is_even);
+print(f"partition even  = {show_arr2(parts)}");
+
+fn parity(x: int) -> int { x % 2 }
+let groups = groupBy(xs, parity);
+print(f"groupBy parity  = {show_arr2(groups)}");
+
+let counts = countBy(xs, parity);
+print(f"countBy parity  = {show_arr2(counts)}");
+
+fn tens(x: int) -> int { int(x / 10) }
+let idxs = indexBy([10, 20, 11, 21, 12], tens);
+print(f"indexBy tens    = {show_arr2(idxs)}");
+
+let dup = [1, 1, 2, 3, 3, 2, 1, 4, 5];
+print(f"unique(dup)    = {show_int(unique(dup))}");
+
+let a = [1, 2, 3, 4];
+let b = [2, 4, 6, 8];
+print(f"a              = {show_int(a)}");
+print(f"b              = {show_int(b)}");
+print(f"difference(a,b)= {show_int(difference(a, b))}");
+print(f"intersection   = {show_int(intersection(a, b))}");
+print(f"union          = {show_int(union(a, b))}");
+print(f"symDiff        = {show_int(symmetricDifference(a, b))}");
+
+let to_shuffle = [1, 2, 3, 4, 5, 6, 7, 8];
+print(f"shuffle        = {show_int(shuffle(to_shuffle))}");
+print(f"sample 4       = {show_int(sample(to_shuffle, 4))}");
+
+print("");
+print("All demos ran successfully.");

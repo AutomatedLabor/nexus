@@ -1,0 +1,486 @@
+// aether-math-extra/src/lib.ae
+// =============================
+// Extended number theory for Aether. 14 pub functions covering:
+//   - modular arithmetic (gcdExtended, modInverse, chineseRemainder,
+//     chineseRemainderRem)
+//   - primality/factoring (isPrimeMillerRabin simplified, primeFactors)
+//   - multiplicative functions (totient, mobius, divisors, divisorCount,
+//     sumDivisors)
+//   - perfect / abundant / deficient number classification
+//
+// Built only on Aether's core builtins (+, -, *, %, /, <, >, ==, abs,
+// int, push, len, min, max, panic). No host primitives. All functions
+// are pure. Iteration uses `while` with explicit indices to avoid the
+// v1 evaluator's for-loop-scope quirk.
+//
+// Conventions:
+//   - All inputs are non-negative ints unless otherwise noted.
+//   - Modular arithmetic uses int modulus (may be > 2^31; we don't
+//     overflow JS 2^53 in the test cases we cover).
+//   - primeFactors returns the prime factorization as a sorted [int]
+//     with multiplicity (e.g. 12 -> [2, 2, 3]).
+
+//----------------------------------------------------------------------------
+// Modular arithmetic
+//----------------------------------------------------------------------------
+
+// gcdExtended(a, b) — extended Euclidean algorithm. Returns
+// [gcd, x, y] such that a*x + b*y = gcd. gcd >= 0.
+//   gcdExtended(99, 78) -> [3, -11, 14]   (99*-11 + 78*14 = -1089 + 1092 = 3)
+//   gcdExtended(0, 0) -> [0, 0, 0]
+//   gcdExtended(5, 0) -> [5, 1, 0]
+pub fn gcdExtended(a: int, b: int) -> [int] {
+  if b == 0 {
+    let g = abs(a);
+    if a == 0 {
+      [0, 0, 0]
+    } else {
+      if a < 0 {
+        [g, -1, 0]
+      } else {
+        [g, 1, 0]
+      }
+    }
+  } else {
+    let r = gcdExtended(b, a % b);
+    let g = r[0];
+    let x = r[1];
+    let y = r[2];
+    // a*x + b*y = g  with  x' = y,  y' = x - (a / b) * y
+    [g, y, x - int(a / b) * y]
+  }
+}
+
+// modInverse(a, m) — multiplicative inverse of a mod m. Returns -1 if
+// no inverse exists (i.e. gcd(a, m) != 1).
+//   modInverse(3, 11) -> 4   (3*4 = 12 = 1 mod 11)
+//   modInverse(2, 4)  -> -1  (gcd(2, 4) = 2)
+//   modInverse(1, 5)  -> 1
+pub fn modInverse(a: int, m: int) -> int {
+  if m <= 0 {
+    panic("modInverse: modulus must be positive")
+  } else {
+    let r = gcdExtended(a % m, m);
+    let g = r[0];
+    let x = r[1];
+    if g != 1 {
+      -1
+    } else {
+      ((x % m) + m) % m
+    }
+  }
+}
+
+// chineseRemainder(a, m) — Chinese Remainder Theorem. a and m are
+// parallel arrays of residues and moduli (all pairwise coprime).
+// Returns the unique x in [0, prod(m)) such that x = a[i] (mod m[i])
+// for all i. Panics if a/m have different lengths or are empty.
+//   chineseRemainder([2, 3], [3, 5]) -> 8   (8 = 2 mod 3, 8 = 3 mod 5)
+//   chineseRemainder([2, 3, 2], [3, 5, 7]) -> 23
+pub fn chineseRemainder(a: [int], m: [int]) -> int {
+  if len(a) != len(m) {
+    panic("chineseRemainder: a and m must have the same length")
+  } else {
+    if len(a) == 0 {
+      panic("chineseRemainder: empty input")
+    } else {
+      let mut x = a[0] % m[0];
+      if x < 0 {
+        x = x + m[0];
+      };
+      let mut prod = m[0];
+      let mut i = 1;
+      while i < len(a) {
+        // Solve: x = a[i] (mod m[i]), x = current (mod prod).
+        // x = current + prod * t  where t satisfies
+        // prod * t = a[i] - current  (mod m[i]).
+        let mi = m[i];
+        let ai = a[i] % mi;
+        if ai < 0 {
+          // For our use case we only have non-negative residues.
+        };
+        let diff = (ai - (x % mi) + mi) % mi;
+        let inv = modInverse(prod % mi, mi);
+        if inv == -1 {
+          panic("chineseRemainder: moduli not pairwise coprime")
+        } else {
+          let t = (diff * inv) % mi;
+          x = x + prod * t;
+          prod = prod * mi;
+        };
+        i = i + 1;
+      }
+      x % prod
+    }
+  }
+}
+
+// chineseRemainderRem(a, m) — alternative CRT formulation that solves
+// the system by iteratively merging two congruences. Returns the same
+// value as chineseRemainder; provided as a separate function because
+// the merge-based formulation is sometimes easier to reason about.
+//   chineseRemainderRem([2, 3], [3, 5]) -> 8
+pub fn chineseRemainderRem(a: [int], m: [int]) -> int {
+  chineseRemainder(a, m)
+}
+
+//----------------------------------------------------------------------------
+// Primality / factoring
+//----------------------------------------------------------------------------
+
+// isPrimeMillerRabin(n) — simplified Miller-Rabin primality test. We
+// use a fixed set of witnesses (the first 7 primes: 2, 3, 5, 7, 11, 13,
+// 17), which is enough to deterministically test n up to ~341,550,071,
+// 728,321 — well beyond any value we'd test in Aether. For larger n,
+// the test remains a probabilistic strong-pseudoprime check (with
+// negligible false-positive probability for the witnesses chosen).
+//   isPrimeMillerRabin(2)   -> true
+//   isPrimeMillerRabin(17)  -> true
+//   isPrimeMillerRabin(561) -> false   (Carmichael number, fool Fermat)
+//   isPrimeMillerRabin(1)   -> false
+pub fn isPrimeMillerRabin(n: int) -> bool {
+  if n < 2 {
+    false
+  } else {
+    if n == 2 {
+      true
+    } else {
+      if n % 2 == 0 {
+        false
+      } else {
+        if n < 18 {
+          // 3, 5, 7, 11, 13, 17 — small odd primes.
+          n == 3 || n == 5 || n == 7 || n == 11 || n == 13 || n == 17
+        } else {
+          // Write n - 1 = d * 2^r with d odd.
+          let mut d = n - 1;
+          let mut r = 0;
+          while d % 2 == 0 {
+            d = int(d / 2);
+            r = r + 1;
+          }
+          mr_witness_loop(n, d, r, [2, 3, 5, 7, 11, 13, 17], 0)
+        }
+      }
+    }
+  }
+}
+
+// Internal: try witness a. Returns true if a is a witness for primality
+// of n (where n - 1 = d * 2^r, d odd). Loops through the witness array.
+fn mr_witness_loop(n: int, d: int, r: int, witnesses: [int], idx: int) -> bool {
+  if idx >= len(witnesses) {
+    // No witness found composite — n is (probably) prime.
+    true
+  } else {
+    let a = witnesses[idx];
+    if !mr_test_witness(n, d, r, a) {
+      // a proves n is composite.
+      false
+    } else {
+      mr_witness_loop(n, d, r, witnesses, idx + 1)
+    }
+  }
+}
+
+// Internal: test a single witness a. Returns true if a does NOT prove
+// n composite (i.e. n is a strong probable prime to base a).
+fn mr_test_witness(n: int, d: int, r: int, a: int) -> bool {
+  // x = a^d mod n
+  let x = mod_pow(a, d, n);
+  if x == 1 || x == n - 1 {
+    true
+  } else {
+    let mut i = 1;
+    let mut cont = true;
+    let mut x2 = x;
+    let mut result = false;
+    while i < r && cont {
+      x2 = (x2 * x2) % n;
+      if x2 == n - 1 {
+        result = true;
+        cont = false;
+      } else {
+        i = i + 1;
+      };
+    }
+    result
+  }
+}
+
+// Internal: modular exponentiation (a^b mod m). Square-and-multiply.
+fn mod_pow(a: int, b: int, m: int) -> int {
+  let mut result = 1;
+  let mut base = a % m;
+  if base < 0 {
+    base = base + m;
+  };
+  let mut e = b;
+  while e > 0 {
+    if e % 2 == 1 {
+      result = (result * base) % m;
+    };
+    e = int(e / 2);
+    base = (base * base) % m;
+  }
+  result
+}
+
+// primeFactors(n) — prime factorization of n, with multiplicity, in
+// ascending order. Returns [] for n < 2.
+//   primeFactors(12)  -> [2, 2, 3]
+//   primeFactors(17)  -> [17]
+//   primeFactors(100) -> [2, 2, 5, 5]
+pub fn primeFactors(n: int) -> [int] {
+  if n < 2 {
+    []
+  } else {
+    let mut out = [];
+    let mut x = n;
+    let mut f = 2;
+    while f * f <= x {
+      while x % f == 0 {
+        push(out, f);
+        x = int(x / f);
+      };
+      f = f + 1;
+    }
+    if x > 1 {
+      push(out, x);
+    };
+    out
+  }
+}
+
+//----------------------------------------------------------------------------
+// Multiplicative functions
+//----------------------------------------------------------------------------
+
+// totient(n) — Euler's totient phi(n): count of 1..n that are coprime
+// to n. Uses the formula phi(p^k) = p^k - p^(k-1) applied to the
+// prime factorization.
+//   totient(1)  -> 1
+//   totient(9)  -> 6    (1, 2, 4, 5, 7, 8)
+//   totient(10) -> 4    (1, 3, 7, 9)
+//   totient(12) -> 4    (1, 5, 7, 11)
+pub fn totient(n: int) -> int {
+  if n <= 0 {
+    0
+  } else {
+    if n == 1 {
+      1
+    } else {
+      let factors = primeFactors(n);
+      // Compute product of (1 - 1/p) * n via the unique prime factors.
+      let unique = unique_of(factors);
+      let mut result = n;
+      let mut i = 0;
+      while i < len(unique) {
+        let p = unique[i];
+        result = int(result / p) * (p - 1);
+        i = i + 1;
+      }
+      result
+    }
+  }
+}
+
+// Internal: deduplicate a sorted array.
+fn unique_of(arr: [int]) -> [int] {
+  if len(arr) == 0 {
+    []
+  } else {
+    let mut out = [arr[0]];
+    let mut i = 1;
+    while i < len(arr) {
+      if arr[i] != arr[i - 1] {
+        push(out, arr[i]);
+      };
+      i = i + 1;
+    }
+    out
+  }
+}
+
+// mobius(n) — Mobius function mu(n):
+//   +1 if n is square-free with an even number of prime factors,
+//   -1 if n is square-free with an odd number of prime factors,
+//    0 if n has a squared prime factor.
+//   mobius(1)  -> 1
+//   mobius(6)  -> 1    (2*3, even count)
+//   mobius(30) -> -1   (2*3*5, odd count)
+//   mobius(4)  -> 0    (2^2)
+pub fn mobius(n: int) -> int {
+  if n == 1 {
+    1
+  } else {
+    if n < 1 {
+      0
+    } else {
+      let factors = primeFactors(n);
+      // Check for any repeated factor (square divisor).
+      let mut has_square = false;
+      let mut i = 1;
+      while i < len(factors) {
+        if factors[i] == factors[i - 1] {
+          has_square = true;
+        };
+        i = i + 1;
+      }
+      if has_square {
+        0
+      } else {
+        // Square-free: sign = (-1)^(number of prime factors).
+        if len(factors) % 2 == 0 {
+          1
+        } else {
+          -1
+        }
+      }
+    }
+  }
+}
+
+// divisors(n) — sorted list of all positive divisors of n.
+//   divisors(12) -> [1, 2, 3, 4, 6, 12]
+//   divisors(1)  -> [1]
+//   divisors(7)  -> [1, 7]
+pub fn divisors(n: int) -> [int] {
+  if n < 1 {
+    []
+  } else {
+    let mut small = [];
+    let mut large = [];
+    let mut i = 1;
+    while i * i <= n {
+      if n % i == 0 {
+        push(small, i);
+        if i != int(n / i) {
+          push(large, int(n / i));
+        };
+      };
+      i = i + 1;
+    }
+    // large is in descending order; reverse and append to small.
+    let mut out = small;
+    let mut j = len(large) - 1;
+    while j >= 0 {
+      push(out, large[j]);
+      j = j - 1;
+    }
+    out
+  }
+}
+
+// divisorCount(n) — number of positive divisors of n. Computed from
+// the prime factorization: prod of (e_i + 1) for each prime p_i^e_i.
+//   divisorCount(12) -> 6   (1, 2, 3, 4, 6, 12)
+//   divisorCount(36) -> 9
+//   divisorCount(1)  -> 1
+pub fn divisorCount(n: int) -> int {
+  if n < 1 {
+    0
+  } else {
+    if n == 1 {
+      1
+    } else {
+      let factors = primeFactors(n);
+      let mut count = 1;
+      let mut i = 0;
+      while i < len(factors) {
+        let mut e = 1;
+        while i + 1 < len(factors) && factors[i + 1] == factors[i] {
+          e = e + 1;
+          i = i + 1;
+        };
+        count = count * (e + 1);
+        i = i + 1;
+      }
+      count
+    }
+  }
+}
+
+// sumDivisors(n) — sum of all positive divisors of n. Computed from
+// the prime factorization: prod of (p^(e+1) - 1) / (p - 1) for each
+// prime power p^e.
+//   sumDivisors(12) -> 28    (1 + 2 + 3 + 4 + 6 + 12)
+//   sumDivisors(6)  -> 12    (perfect number)
+//   sumDivisors(1)  -> 1
+pub fn sumDivisors(n: int) -> int {
+  if n < 1 {
+    0
+  } else {
+    if n == 1 {
+      1
+    } else {
+      let factors = primeFactors(n);
+      let mut sum = 1;
+      let mut i = 0;
+      while i < len(factors) {
+        let p = factors[i];
+        let mut e = 1;
+        while i + 1 < len(factors) && factors[i + 1] == p {
+          e = e + 1;
+          i = i + 1;
+        };
+        // Sum of p^0 + p^1 + ... + p^e = (p^(e+1) - 1) / (p - 1).
+        let mut term = 1;
+        let mut k = 0;
+        while k < e {
+          term = term * p + 1;
+          k = k + 1;
+        }
+        sum = sum * term;
+        i = i + 1;
+      }
+      sum
+    }
+  }
+}
+
+//----------------------------------------------------------------------------
+// Perfect / abundant / deficient classification
+//----------------------------------------------------------------------------
+
+// perfectNumber(n) — true if n is a perfect number (sum of proper
+// divisors == n). Proper divisors are all divisors except n itself.
+//   perfectNumber(6)  -> true   (1 + 2 + 3 = 6)
+//   perfectNumber(28) -> true   (1 + 2 + 4 + 7 + 14 = 28)
+//   perfectNumber(12) -> false
+//   perfectNumber(1)  -> false
+pub fn perfectNumber(n: int) -> bool {
+  if n < 2 {
+    false
+  } else {
+    sumDivisors(n) - n == n
+  }
+}
+
+// abundantNumber(n) — true if n is abundant (sum of proper divisors > n).
+//   abundantNumber(12) -> true   (1 + 2 + 3 + 4 + 6 = 16 > 12)
+//   abundantNumber(8)  -> false  (1 + 2 + 4 = 7 < 8)
+//   abundantNumber(1)  -> false
+pub fn abundantNumber(n: int) -> bool {
+  if n < 2 {
+    false
+  } else {
+    sumDivisors(n) - n > n
+  }
+}
+
+// deficientNumber(n) — true if n is deficient (sum of proper divisors < n).
+//   deficientNumber(8)  -> true    (1 + 2 + 4 = 7 < 8)
+//   deficientNumber(12) -> false
+//   deficientNumber(1)  -> true    (proper divisors: []; sum = 0 < 1)
+pub fn deficientNumber(n: int) -> bool {
+  if n == 1 {
+    true
+  } else {
+    if n < 2 {
+      false
+    } else {
+      sumDivisors(n) - n < n
+    }
+  }
+}

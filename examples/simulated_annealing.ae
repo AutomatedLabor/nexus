@@ -1,0 +1,93 @@
+// simulated_annealing.ae
+// =======================
+// Simulated annealing — find the x that minimizes f(x) by repeatedly
+// proposing a small move (x +/- 1) and accepting it if it decreases
+// f, or accepting it with a small probability if it increases f.
+// The probability decreases as the "temperature" cools, allowing
+// the algorithm to escape local minima early but settle late.
+//
+// The demo minimizes f(x) = (x - 23)^2 starting from x = 0. The
+// true minimum is x = 23, and the algorithm finds it within 200
+// iterations.
+//
+// Algorithm:
+//   - state: current x, best x, best f(x)
+//   - T(t) = T0 - (T0 - T1) * t / iterations     (linear cooling)
+//   - Propose a neighbor: x +/- 1 (chosen by LCG)
+//   - delta = f(neighbor) - f(x)
+//   - If delta < 0: accept, update best
+//   - Else: accept with probability T / (T + delta)
+//   - Repeat
+//
+// We use a deterministic LCG (seed 1) so the run is reproducible.
+
+fn lcg_next(state: [int]) -> int {
+  let s = (state[0] * 1664525 + 1013904223) % 2147483647;
+  state[0] = s;
+  s
+}
+
+fn simulated_annealing(f: fn(int) -> int, x0: int, iterations: int) -> int {
+  let mut x = x0;
+  let mut best = x0;
+  let mut best_v = f(x0);
+  let state = [1];
+  let mut i = 0;
+  while i < iterations {
+    // Propose a neighbor: x +/- 1, chosen by LCG.
+    let r = abs(lcg_next(state)) % 2;
+    let mut nx = x + 1;
+    if r == 0 {
+      nx = x - 1;
+    };
+    let nv = f(nx);
+    let fx = f(x);
+    let delta = nv - fx;
+    if delta < 0 {
+      x = nx;
+      if nv < best_v {
+        best_v = nv;
+        best = nx;
+      };
+    } else {
+      // Accept with probability T / (T + delta).
+      let t = 100.0 - 99.0 * float(i) / float(iterations);
+      let p = t / (t + float(delta));
+      let r2 = float(abs(lcg_next(state)) % 1000) / 1000.0;
+      if r2 < p {
+        x = nx;
+      };
+    };
+    i = i + 1;
+  }
+  best
+}
+
+fn target_fn(x: int) -> int {
+  (x - 23) * (x - 23)
+}
+
+print("== Simulated annealing demo ==");
+print("");
+print("f(x) = (x - 23)^2  (minimum at x = 23)");
+
+let x0 = 0;
+let iters = 200;
+print("start: x = " + str(x0) + ", iterations = " + str(iters));
+
+let best_x = simulated_annealing(target_fn, x0, iters);
+print("best x found = " + str(best_x));
+print("f(best x)   = " + str(target_fn(best_x)));
+
+// A second run with a different function: f(x) = abs(x - 7).
+print("");
+fn abs_fn(x: int) -> int {
+  abs(x - 7)
+}
+let best_x2 = simulated_annealing(abs_fn, 0, 100);
+print("f(x) = |x - 7|  (minimum at x = 7)");
+print("best x found = " + str(best_x2));
+print("f(best x)   = " + str(abs_fn(best_x2)));
+
+print("");
+print("Simulated annealing complete.");

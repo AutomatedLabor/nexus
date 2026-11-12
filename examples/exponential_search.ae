@@ -1,0 +1,82 @@
+// exponential_search.ae
+// ======================
+// Exponential (a.k.a. galloping) search — find target by first
+// exponentially expanding the search range (1, 2, 4, 8, ...) until
+// arr[i] >= target, then binary-searching the small range [i/2, i].
+// The demo searches for 47 in a sorted array of 50 elements.
+//
+// Algorithm:
+//   - If arr[0] == target, return 0.
+//   - i = 1; while i < n && arr[i] <= target: i *= 2.
+//   - Binary search [i/2, min(i, n - 1)].
+//
+// Complexity: O(log i) where i is the index of target. Excellent
+// when the target is near the start of an unbounded / very large
+// array (e.g. streaming data, very large file indexes).
+
+fn binary_search(arr: [int], target: int, lo: int, hi: int) -> int {
+  let mut l = lo;
+  let mut r = hi;
+  let mut found = -1;
+  while l <= r && found == -1 {
+    let m = int((l + r) / 2);
+    if arr[m] == target {
+      found = m;
+    } else {
+      if arr[m] < target {
+        l = m + 1;
+      } else {
+        r = m - 1;
+      };
+    };
+  }
+  found
+}
+
+fn exponential_search(arr: [int], target: int) -> int {
+  if len(arr) == 0 {
+    -1
+  } else {
+    if arr[0] == target {
+      0
+    } else {
+      let mut i = 1;
+      let n = len(arr);
+      while i < n && arr[i] <= target {
+        i = i * 2;
+      }
+      let mut lo = int(i / 2);
+      let mut hi = i;
+      if hi > n - 1 {
+        hi = n - 1;
+      };
+      binary_search(arr, target, lo, hi)
+    }
+  }
+}
+
+print("== Exponential search demo ==");
+print("");
+
+// Sorted array of 50 elements: [1, 3, 5, 7, ..., 99] (odd numbers).
+let arr = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91, 93, 95, 97, 99];
+print("arr has " + str(len(arr)) + " elements (odd numbers 1..99)");
+
+let target = 47;
+let idx = exponential_search(arr, target);
+print("target = " + str(target));
+print("index = " + str(idx));
+
+// Try a few more — early vs late targets to show the asymmetry.
+print("");
+print("early target (close to start, O(log i) fast):");
+let e1 = exponential_search(arr, 7);
+print("  target 7  -> index " + str(e1));
+print("late target (still O(log n) because expansion stops at n):");
+let e2 = exponential_search(arr, 97);
+print("  target 97 -> index " + str(e2));
+let e3 = exponential_search(arr, 100);
+print("  target 100 (missing) -> " + str(e3));
+
+print("");
+print("Exponential search complete.");

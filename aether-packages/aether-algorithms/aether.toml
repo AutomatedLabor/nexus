@@ -1,0 +1,11 @@
+[package]
+name = "aether-algorithms"
+version = "0.1.0"
+description = "Classic search and optimization algorithms for Aether — 10 pure functions covering binary search and lower/upper bound, ternary search on unimodal functions, jump/interpolation/exponential/fibonacci search on sorted arrays, and small deterministic tabu search (TSP) and simulated annealing metaheuristics."
+edition = "v3"
+
+[dependencies]
+# No external dependencies — only Aether's core builtins.
+
+[exports]
+# Exposed via `pub fn` declarations in src/lib.ae.
